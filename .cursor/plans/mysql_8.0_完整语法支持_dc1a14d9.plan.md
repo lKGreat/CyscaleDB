@@ -208,7 +208,7 @@ todos:
     status: completed
   - id: 2.2.1
     content: ON DELETE/UPDATE 关键字 - 添加到 Token.cs
-    status: in_progress
+    status: completed
   - id: 2.2.2
     content: ForeignKeyConstraint AST 增强 - 添加 OnDelete/OnUpdate 属性
     status: pending

@@ -267,6 +267,12 @@ public enum TokenType
     COLUMN,             // COLUMN keyword
     TO,                 // RENAME TO
     AFTER,              // ADD COLUMN AFTER
+
+    // Foreign key action keywords (ON DELETE/UPDATE)
+    CASCADE,            // CASCADE action
+    RESTRICT,           // RESTRICT action
+    NO,                 // NO (for NO ACTION)
+    ACTION,             // ACTION (for NO ACTION)
 }
 
 /// <summary>
@@ -458,6 +464,12 @@ public static class Keywords
         ["COLUMN"] = TokenType.COLUMN,
         ["TO"] = TokenType.TO,
         ["AFTER"] = TokenType.AFTER,
+
+        // Foreign key action keywords
+        ["CASCADE"] = TokenType.CASCADE,
+        ["RESTRICT"] = TokenType.RESTRICT,
+        ["NO"] = TokenType.NO,
+        ["ACTION"] = TokenType.ACTION,
     };
 
     /// <summary>
