@@ -315,6 +315,10 @@ public enum ErrorCode
     IndexNotFound = 1207,
     IndexExists = 1208,
     
+    // Auth errors (1250-1299)
+    UserNotFound = 1250,
+    AccessDenied = 1251,
+
     // Data errors (1300-1399)
     TypeMismatch = 1300,
     DataTruncated = 1301,

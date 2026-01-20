@@ -16,7 +16,7 @@ todos:
     status: completed
   - id: user-auth
     content: 实现基础用户认证系统
-    status: in_progress
+    status: completed
 ---
 
 # Navicat MySQL 客户端兼容性实施计划

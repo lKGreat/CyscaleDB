@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using CyscaleDB.Core.Auth;
 using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Execution;
 using CyscaleDB.Core.Storage;
@@ -207,12 +208,31 @@ public sealed class MySqlServer : IDisposable
                 var responsePacket = await reader.ReadPacketAsync(cancellationToken);
                 var response = Handshake.ParseHandshakeResponse(responsePacket);
 
-                _logger.Debug("Client authenticated: username={0}, database={1}, capabilities=0x{2:X8}",
+                _logger.Debug("Client connecting: username={0}, database={1}, capabilities=0x{2:X8}",
                     response.Username, response.Database ?? "(none)", response.Capabilities);
+
+                // Validate authentication
+                var clientHost = GetClientHost(clientEndPoint);
+                var authBytes = string.IsNullOrEmpty(response.AuthResponse)
+                    ? Array.Empty<byte>()
+                    : Encoding.Latin1.GetBytes(response.AuthResponse);
+
+                if (!UserManager.Instance.ValidatePassword(response.Username, authBytes, salt, clientHost))
+                {
+                    _logger.Warning("Authentication failed for user '{0}'@'{1}'", response.Username, clientHost);
+                    await SendErrorPacketAsync(writer, 1045, "28000",
+                        $"Access denied for user '{response.Username}'@'{clientHost}' (using password: {(authBytes.Length > 0 ? "YES" : "NO")})",
+                        cancellationToken);
+                    return;
+                }
+
+                _logger.Info("Client authenticated: username={0}, database={1}",
+                    response.Username, response.Database ?? "(none)");
 
                 // Create client session with negotiated capabilities
                 var clientCapabilities = (MySqlCapabilities)(response.Capabilities & (int)ServerCapabilities);
                 var session = new ClientSession(clientCapabilities, _executor);
+                session.Username = response.Username;
 
                 // Send OK packet (authentication success)
                 await SendOkPacketAsync(writer, session, cancellationToken);
@@ -724,6 +744,28 @@ public sealed class MySqlServer : IDisposable
             _disposed = true;
         }
     }
+
+    /// <summary>
+    /// Extracts the host address from a client endpoint string.
+    /// </summary>
+    private static string GetClientHost(string clientEndPoint)
+    {
+        if (string.IsNullOrEmpty(clientEndPoint))
+            return "localhost";
+
+        // Parse IPv4:port or [IPv6]:port format
+        var colonIndex = clientEndPoint.LastIndexOf(':');
+        if (colonIndex > 0)
+        {
+            var host = clientEndPoint[..colonIndex];
+            // Remove brackets for IPv6
+            if (host.StartsWith('[') && host.EndsWith(']'))
+                host = host[1..^1];
+            return host;
+        }
+
+        return clientEndPoint;
+    }
 }
 
 /// <summary>
@@ -739,6 +781,7 @@ internal sealed class ClientSession
     public bool MultiStatements { get; set; } = true;
     public bool InTransaction { get; set; }
     public bool AutoCommit { get; set; } = true;
+    public string Username { get; set; } = "root";
 
     public string CurrentDatabase
     {
