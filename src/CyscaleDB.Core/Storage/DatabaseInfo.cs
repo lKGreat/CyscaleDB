@@ -38,6 +38,16 @@ public sealed class DatabaseInfo
     private readonly Dictionary<string, ViewInfo> _views;
 
     /// <summary>
+    /// The foreign keys in this database, keyed by constraint name.
+    /// </summary>
+    private readonly Dictionary<string, ForeignKeyDefinition> _foreignKeys;
+
+    /// <summary>
+    /// The CHECK constraints in this database, keyed by constraint name.
+    /// </summary>
+    private readonly Dictionary<string, CheckConstraintDefinition> _checkConstraints;
+
+    /// <summary>
     /// Gets all tables in this database.
     /// </summary>
     public IReadOnlyCollection<TableSchema> Tables => _tables.Values;
@@ -46,6 +56,16 @@ public sealed class DatabaseInfo
     /// Gets all views in this database.
     /// </summary>
     public IReadOnlyCollection<ViewInfo> Views => _views.Values;
+
+    /// <summary>
+    /// Gets all foreign keys in this database.
+    /// </summary>
+    public IReadOnlyCollection<ForeignKeyDefinition> ForeignKeys => _foreignKeys.Values;
+
+    /// <summary>
+    /// Gets all CHECK constraints in this database.
+    /// </summary>
+    public IReadOnlyCollection<CheckConstraintDefinition> CheckConstraints => _checkConstraints.Values;
 
     /// <summary>
     /// Gets the number of tables in this database.
@@ -97,6 +117,8 @@ public sealed class DatabaseInfo
         Collation = collation;
         _tables = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
         _views = new Dictionary<string, ViewInfo>(StringComparer.OrdinalIgnoreCase);
+        _foreignKeys = new Dictionary<string, ForeignKeyDefinition>(StringComparer.OrdinalIgnoreCase);
+        _checkConstraints = new Dictionary<string, CheckConstraintDefinition>(StringComparer.OrdinalIgnoreCase);
         _nextTableId = 1;
         _nextViewId = 1;
     }
@@ -197,6 +219,132 @@ public sealed class DatabaseInfo
 
     #endregion
 
+    #region Foreign Key Management
+
+    /// <summary>
+    /// Gets a foreign key by constraint name.
+    /// </summary>
+    public ForeignKeyDefinition? GetForeignKey(string constraintName)
+    {
+        return _foreignKeys.TryGetValue(constraintName, out var fk) ? fk : null;
+    }
+
+    /// <summary>
+    /// Checks if a foreign key exists.
+    /// </summary>
+    public bool HasForeignKey(string constraintName) => _foreignKeys.ContainsKey(constraintName);
+
+    /// <summary>
+    /// Adds a foreign key to this database.
+    /// </summary>
+    public void AddForeignKey(ForeignKeyDefinition foreignKey)
+    {
+        if (_foreignKeys.ContainsKey(foreignKey.ConstraintName))
+            throw new CyscaleException($"Foreign key constraint '{foreignKey.ConstraintName}' already exists", ErrorCode.ConstraintViolation);
+
+        _foreignKeys[foreignKey.ConstraintName] = foreignKey;
+    }
+
+    /// <summary>
+    /// Removes a foreign key from this database.
+    /// </summary>
+    public bool RemoveForeignKey(string constraintName)
+    {
+        return _foreignKeys.Remove(constraintName);
+    }
+
+    /// <summary>
+    /// Gets all foreign keys on a specific table.
+    /// </summary>
+    public IReadOnlyList<ForeignKeyDefinition> GetForeignKeysOnTable(string tableName)
+    {
+        return _foreignKeys.Values
+            .Where(fk => fk.TableName.Equals(tableName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Gets all foreign keys referencing a specific table.
+    /// </summary>
+    public IReadOnlyList<ForeignKeyDefinition> GetForeignKeysReferencingTable(string tableName)
+    {
+        return _foreignKeys.Values
+            .Where(fk => fk.ReferencedTableName.Equals(tableName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Removes all foreign keys on a table (used when dropping a table).
+    /// </summary>
+    public void RemoveForeignKeysOnTable(string tableName)
+    {
+        var keysToRemove = GetForeignKeysOnTable(tableName).Select(fk => fk.ConstraintName).ToList();
+        foreach (var key in keysToRemove)
+        {
+            _foreignKeys.Remove(key);
+        }
+    }
+
+    #endregion
+
+    #region CHECK Constraint Management
+
+    /// <summary>
+    /// Gets a CHECK constraint by constraint name.
+    /// </summary>
+    public CheckConstraintDefinition? GetCheckConstraint(string constraintName)
+    {
+        return _checkConstraints.TryGetValue(constraintName, out var chk) ? chk : null;
+    }
+
+    /// <summary>
+    /// Checks if a CHECK constraint exists.
+    /// </summary>
+    public bool HasCheckConstraint(string constraintName) => _checkConstraints.ContainsKey(constraintName);
+
+    /// <summary>
+    /// Adds a CHECK constraint to this database.
+    /// </summary>
+    public void AddCheckConstraint(CheckConstraintDefinition checkConstraint)
+    {
+        if (_checkConstraints.ContainsKey(checkConstraint.ConstraintName))
+            throw new CyscaleException($"CHECK constraint '{checkConstraint.ConstraintName}' already exists", ErrorCode.ConstraintViolation);
+
+        _checkConstraints[checkConstraint.ConstraintName] = checkConstraint;
+    }
+
+    /// <summary>
+    /// Removes a CHECK constraint from this database.
+    /// </summary>
+    public bool RemoveCheckConstraint(string constraintName)
+    {
+        return _checkConstraints.Remove(constraintName);
+    }
+
+    /// <summary>
+    /// Gets all CHECK constraints on a specific table.
+    /// </summary>
+    public IReadOnlyList<CheckConstraintDefinition> GetCheckConstraintsOnTable(string tableName)
+    {
+        return _checkConstraints.Values
+            .Where(c => c.TableName.Equals(tableName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Removes all CHECK constraints on a table (used when dropping a table).
+    /// </summary>
+    public void RemoveCheckConstraintsOnTable(string tableName)
+    {
+        var constraintsToRemove = GetCheckConstraintsOnTable(tableName).Select(c => c.ConstraintName).ToList();
+        foreach (var name in constraintsToRemove)
+        {
+            _checkConstraints.Remove(name);
+        }
+    }
+
+    #endregion
+
     /// <summary>
     /// Serializes this database info to bytes.
     /// </summary>
@@ -230,6 +378,24 @@ public sealed class DatabaseInfo
             var viewBytes = view.Serialize();
             writer.Write(viewBytes.Length);
             writer.Write(viewBytes);
+        }
+
+        // Write foreign keys
+        writer.Write(_foreignKeys.Count);
+        foreach (var fk in _foreignKeys.Values)
+        {
+            var fkBytes = fk.Serialize();
+            writer.Write(fkBytes.Length);
+            writer.Write(fkBytes);
+        }
+
+        // Write CHECK constraints
+        writer.Write(_checkConstraints.Count);
+        foreach (var chk in _checkConstraints.Values)
+        {
+            var chkBytes = chk.Serialize();
+            writer.Write(chkBytes.Length);
+            writer.Write(chkBytes);
         }
 
         return stream.ToArray();
@@ -296,6 +462,46 @@ public sealed class DatabaseInfo
             catch
             {
                 // Older format without views - ignore
+            }
+        }
+
+        // Try to read foreign keys - may not exist in older formats
+        if (stream.Position < stream.Length)
+        {
+            try
+            {
+                var fkCount = reader.ReadInt32();
+                for (int i = 0; i < fkCount; i++)
+                {
+                    var fkLength = reader.ReadInt32();
+                    var fkBytes = reader.ReadBytes(fkLength);
+                    var fk = ForeignKeyDefinition.Deserialize(fkBytes);
+                    db._foreignKeys[fk.ConstraintName] = fk;
+                }
+            }
+            catch
+            {
+                // Older format without foreign keys - ignore
+            }
+        }
+
+        // Try to read CHECK constraints - may not exist in older formats
+        if (stream.Position < stream.Length)
+        {
+            try
+            {
+                var chkCount = reader.ReadInt32();
+                for (int i = 0; i < chkCount; i++)
+                {
+                    var chkLength = reader.ReadInt32();
+                    var chkBytes = reader.ReadBytes(chkLength);
+                    var chk = CheckConstraintDefinition.Deserialize(chkBytes);
+                    db._checkConstraints[chk.ConstraintName] = chk;
+                }
+            }
+            catch
+            {
+                // Older format without CHECK constraints - ignore
             }
         }
 

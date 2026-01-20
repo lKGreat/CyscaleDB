@@ -603,6 +603,21 @@ public class TableConstraint
     /// For FOREIGN KEY: the referenced columns.
     /// </summary>
     public List<string> ReferencedColumns { get; set; } = [];
+
+    /// <summary>
+    /// For FOREIGN KEY: the action to take on DELETE.
+    /// </summary>
+    public ForeignKeyReferentialAction OnDelete { get; set; } = ForeignKeyReferentialAction.Restrict;
+
+    /// <summary>
+    /// For FOREIGN KEY: the action to take on UPDATE.
+    /// </summary>
+    public ForeignKeyReferentialAction OnUpdate { get; set; } = ForeignKeyReferentialAction.Restrict;
+
+    /// <summary>
+    /// For CHECK: the check expression.
+    /// </summary>
+    public Expression? CheckExpression { get; set; }
 }
 
 /// <summary>
@@ -614,6 +629,39 @@ public enum ConstraintType
     Unique,
     ForeignKey,
     Check
+}
+
+/// <summary>
+/// Referential actions for foreign key constraints.
+/// Specifies the action to take when the referenced row is deleted or updated.
+/// </summary>
+public enum ForeignKeyReferentialAction
+{
+    /// <summary>
+    /// Reject the delete or update operation if there are dependent rows.
+    /// This is the default behavior.
+    /// </summary>
+    Restrict,
+
+    /// <summary>
+    /// Same as RESTRICT but checked at the end of the statement.
+    /// </summary>
+    NoAction,
+
+    /// <summary>
+    /// Automatically delete or update the dependent rows.
+    /// </summary>
+    Cascade,
+
+    /// <summary>
+    /// Set the foreign key column(s) to NULL.
+    /// </summary>
+    SetNull,
+
+    /// <summary>
+    /// Set the foreign key column(s) to their default values.
+    /// </summary>
+    SetDefault
 }
 
 /// <summary>
@@ -907,6 +955,16 @@ public class AddForeignKeyAction : AlterTableAction
     /// The referenced columns.
     /// </summary>
     public List<string> ReferencedColumns { get; set; } = [];
+
+    /// <summary>
+    /// The action to take when the referenced row is deleted.
+    /// </summary>
+    public ForeignKeyReferentialAction OnDelete { get; set; } = ForeignKeyReferentialAction.Restrict;
+
+    /// <summary>
+    /// The action to take when the referenced row is updated.
+    /// </summary>
+    public ForeignKeyReferentialAction OnUpdate { get; set; } = ForeignKeyReferentialAction.Restrict;
 }
 
 /// <summary>

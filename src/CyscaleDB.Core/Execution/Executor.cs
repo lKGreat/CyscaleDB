@@ -906,6 +906,9 @@ public sealed class Executor
                 schema,
                 ReferencedRowExists);
 
+            // Validate CHECK constraints on the new row
+            ValidateCheckConstraints(dbName, stmt.TableName, row, schema);
+
             table.InsertRow(row);
             insertedCount++;
         }
@@ -916,6 +919,43 @@ public sealed class Executor
 
         _logger.Debug("Inserted {0} rows into {1}", insertedCount, stmt.TableName);
         return ExecutionResult.Modification(insertedCount, lastId);
+    }
+
+    /// <summary>
+    /// Validates all CHECK constraints on a row.
+    /// Throws an exception if any constraint is violated.
+    /// </summary>
+    private void ValidateCheckConstraints(string dbName, string tableName, Row row, TableSchema schema)
+    {
+        var db = _catalog.GetDatabase(dbName);
+        if (db == null) return;
+
+        var checkConstraints = db.GetCheckConstraintsOnTable(tableName);
+        if (checkConstraints.Count == 0) return;
+
+        foreach (var constraint in checkConstraints)
+        {
+            // Get or parse the expression
+            var expression = constraint.Expression;
+            if (expression == null)
+            {
+                // Parse the expression from text (needed after deserialization)
+                var parser = new Parsing.Parser(constraint.ExpressionText);
+                expression = parser.ParseSingleExpression();
+            }
+
+            // Build evaluator and evaluate against the row
+            var evaluator = BuildExpression(expression, schema);
+            var result = evaluator.Evaluate(row);
+
+            // CHECK constraint must evaluate to TRUE (not FALSE, not NULL)
+            if (result.Type != DataType.Boolean || !result.AsBoolean())
+            {
+                throw new CyscaleException(
+                    $"CHECK constraint '{constraint.ConstraintName}' violated: {constraint.ExpressionText}",
+                    ErrorCode.ConstraintViolation);
+            }
+        }
     }
 
     /// <summary>
@@ -1096,6 +1136,9 @@ public sealed class Executor
                 var newValue = EvaluateLiteralExpression(setClause.Value);
                 newRow.Values[ordinal] = newValue;
             }
+
+            // Validate CHECK constraints on the new row values
+            ValidateCheckConstraints(dbName, stmt.TableName, newRow, schema);
 
             rowsToUpdate.Add((row.RowId, row, newRow));
         }
@@ -1534,6 +1577,42 @@ public sealed class Executor
         )).ToList();
 
         _catalog.CreateTable(dbName, stmt.TableName, columns);
+
+        // Process table-level constraints
+        var db = _catalog.GetDatabase(dbName);
+        if (db != null && stmt.Constraints.Count > 0)
+        {
+            foreach (var constraint in stmt.Constraints)
+            {
+                switch (constraint.Type)
+                {
+                    case ConstraintType.ForeignKey:
+                        var fkDef = ForeignKeyDefinition.FromConstraint(stmt.TableName, constraint);
+                        db.AddForeignKey(fkDef);
+                        _foreignKeyManager.AddForeignKey(
+                            constraint.Name ?? fkDef.ConstraintName,
+                            dbName,
+                            stmt.TableName,
+                            constraint.Columns,
+                            dbName, // referenced database is same as current
+                            constraint.ReferencedTable!,
+                            constraint.ReferencedColumns,
+                            ConvertReferentialAction(constraint.OnDelete),
+                            ConvertReferentialAction(constraint.OnUpdate));
+                        break;
+
+                    case ConstraintType.Check:
+                        if (constraint.CheckExpression != null)
+                        {
+                            var checkDef = CheckConstraintDefinition.FromConstraint(stmt.TableName, constraint);
+                            db.AddCheckConstraint(checkDef);
+                        }
+                        break;
+                }
+            }
+            _catalog.UpdateTableSchema(_catalog.GetTableSchema(dbName, stmt.TableName)!);
+        }
+
         return ExecutionResult.Ddl($"Table '{stmt.TableName}' created");
     }
 
@@ -1681,24 +1760,100 @@ public sealed class Executor
                     break;
 
                 case AddForeignKeyAction addFk:
-                    var fkName = addFk.ConstraintName ?? $"fk_{stmt.TableName}_{addFk.ReferencedTable}";
-                    messages.Add($"Added FOREIGN KEY '{fkName}'");
-                    actionsPerformed++;
+                    {
+                        var fkDef = ForeignKeyDefinition.FromAction(stmt.TableName, addFk);
+                        var db = _catalog.GetDatabase(dbName);
+                        if (db != null)
+                        {
+                            db.AddForeignKey(fkDef);
+                            _foreignKeyManager.AddForeignKey(
+                                fkDef.ConstraintName,
+                                dbName,
+                                stmt.TableName,
+                                addFk.Columns,
+                                dbName, // referenced database is same as current
+                                addFk.ReferencedTable,
+                                addFk.ReferencedColumns,
+                                ConvertReferentialAction(addFk.OnDelete),
+                                ConvertReferentialAction(addFk.OnUpdate));
+                            _catalog.Flush();
+                        }
+                        messages.Add($"Added FOREIGN KEY '{fkDef.ConstraintName}'");
+                        actionsPerformed++;
+                    }
                     break;
 
                 case DropForeignKeyAction dropFk:
-                    messages.Add($"Dropped FOREIGN KEY '{dropFk.ConstraintName}'");
-                    actionsPerformed++;
+                    {
+                        var db = _catalog.GetDatabase(dbName);
+                        if (db != null)
+                        {
+                            db.RemoveForeignKey(dropFk.ConstraintName);
+                            _foreignKeyManager.DropForeignKey(dbName, dropFk.ConstraintName);
+                            _catalog.Flush();
+                        }
+                        messages.Add($"Dropped FOREIGN KEY '{dropFk.ConstraintName}'");
+                        actionsPerformed++;
+                    }
                     break;
 
                 case AddConstraintAction addConstr:
-                    messages.Add($"Added constraint '{addConstr.Constraint.Name}'");
-                    actionsPerformed++;
+                    {
+                        var db = _catalog.GetDatabase(dbName);
+                        if (db != null)
+                        {
+                            switch (addConstr.Constraint.Type)
+                            {
+                                case ConstraintType.ForeignKey:
+                                    var fkDef = ForeignKeyDefinition.FromConstraint(stmt.TableName, addConstr.Constraint);
+                                    db.AddForeignKey(fkDef);
+                                    _foreignKeyManager.AddForeignKey(
+                                        fkDef.ConstraintName,
+                                        dbName,
+                                        stmt.TableName,
+                                        addConstr.Constraint.Columns,
+                                        dbName, // referenced database is same as current
+                                        addConstr.Constraint.ReferencedTable!,
+                                        addConstr.Constraint.ReferencedColumns,
+                                        ConvertReferentialAction(addConstr.Constraint.OnDelete),
+                                        ConvertReferentialAction(addConstr.Constraint.OnUpdate));
+                                    break;
+
+                                case ConstraintType.Check:
+                                    if (addConstr.Constraint.CheckExpression != null)
+                                    {
+                                        var checkDef = CheckConstraintDefinition.FromConstraint(stmt.TableName, addConstr.Constraint);
+                                        db.AddCheckConstraint(checkDef);
+                                    }
+                                    break;
+                            }
+                            _catalog.Flush();
+                        }
+                        messages.Add($"Added constraint '{addConstr.Constraint.Name}'");
+                        actionsPerformed++;
+                    }
                     break;
 
                 case DropConstraintAction dropConstr:
-                    messages.Add($"Dropped constraint '{dropConstr.ConstraintName}'");
-                    actionsPerformed++;
+                    {
+                        var db = _catalog.GetDatabase(dbName);
+                        if (db != null)
+                        {
+                            // Try to drop as foreign key first, then as check constraint
+                            if (db.HasForeignKey(dropConstr.ConstraintName))
+                            {
+                                db.RemoveForeignKey(dropConstr.ConstraintName);
+                                _foreignKeyManager.DropForeignKey(dbName, dropConstr.ConstraintName);
+                            }
+                            else if (db.HasCheckConstraint(dropConstr.ConstraintName))
+                            {
+                                db.RemoveCheckConstraint(dropConstr.ConstraintName);
+                            }
+                            _catalog.Flush();
+                        }
+                        messages.Add($"Dropped constraint '{dropConstr.ConstraintName}'");
+                        actionsPerformed++;
+                    }
                     break;
 
                 default:
@@ -1733,6 +1888,22 @@ public sealed class Executor
             isAutoIncrement: colDef.IsAutoIncrement,
             defaultValue: defaultValue
         );
+    }
+
+    /// <summary>
+    /// Converts an AST ForeignKeyReferentialAction to a storage ForeignKeyAction.
+    /// </summary>
+    private static ForeignKeyAction ConvertReferentialAction(ForeignKeyReferentialAction action)
+    {
+        return action switch
+        {
+            ForeignKeyReferentialAction.Restrict => ForeignKeyAction.Restrict,
+            ForeignKeyReferentialAction.NoAction => ForeignKeyAction.NoAction,
+            ForeignKeyReferentialAction.Cascade => ForeignKeyAction.Cascade,
+            ForeignKeyReferentialAction.SetNull => ForeignKeyAction.SetNull,
+            ForeignKeyReferentialAction.SetDefault => ForeignKeyAction.SetDefault,
+            _ => ForeignKeyAction.Restrict
+        };
     }
 
     #endregion

@@ -72,6 +72,22 @@ public sealed class Parser
         return statements;
     }
 
+    /// <summary>
+    /// Parses a single expression (e.g., for CHECK constraint evaluation).
+    /// </summary>
+    public Expression ParseSingleExpression()
+    {
+        var expr = ParseExpression();
+        
+        // Expect EOF
+        if (!Check(TokenType.EOF))
+        {
+            throw Error($"Unexpected token after expression: {_currentToken.Value}");
+        }
+
+        return expr;
+    }
+
     private Statement ParseStatement()
     {
         return _currentToken.Type switch
@@ -1087,6 +1103,18 @@ public sealed class Parser
             Expect(TokenType.LeftParen);
             constraint.ReferencedColumns = ParseIdentifierList();
             Expect(TokenType.RightParen);
+
+            // Parse optional ON DELETE/UPDATE actions
+            var (onDelete, onUpdate) = ParseForeignKeyReferentialActions();
+            constraint.OnDelete = onDelete;
+            constraint.OnUpdate = onUpdate;
+        }
+        else if (Match(TokenType.CHECK))
+        {
+            constraint.Type = ConstraintType.Check;
+            Expect(TokenType.LeftParen);
+            constraint.CheckExpression = ParseExpression();
+            Expect(TokenType.RightParen);
         }
         else
         {
@@ -1378,7 +1406,87 @@ public sealed class Parser
         action.ReferencedColumns = ParseIdentifierList();
         Expect(TokenType.RightParen);
 
+        // Parse optional ON DELETE/UPDATE actions
+        var (onDelete, onUpdate) = ParseForeignKeyReferentialActions();
+        action.OnDelete = onDelete;
+        action.OnUpdate = onUpdate;
+
         return action;
+    }
+
+    /// <summary>
+    /// Parses optional ON DELETE and ON UPDATE referential actions.
+    /// Syntax: [ON DELETE action] [ON UPDATE action]
+    /// Actions: RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
+    /// </summary>
+    private (ForeignKeyReferentialAction OnDelete, ForeignKeyReferentialAction OnUpdate) ParseForeignKeyReferentialActions()
+    {
+        var onDelete = ForeignKeyReferentialAction.Restrict;
+        var onUpdate = ForeignKeyReferentialAction.Restrict;
+
+        // ON DELETE and ON UPDATE can appear in any order
+        for (int i = 0; i < 2; i++)
+        {
+            if (!Check(TokenType.ON))
+                break;
+
+            Advance(); // consume ON
+
+            if (Match(TokenType.DELETE))
+            {
+                onDelete = ParseForeignKeyAction();
+            }
+            else if (Match(TokenType.UPDATE))
+            {
+                onUpdate = ParseForeignKeyAction();
+            }
+            else
+            {
+                throw Error($"Expected DELETE or UPDATE after ON, got: {_currentToken.Value}");
+            }
+        }
+
+        return (onDelete, onUpdate);
+    }
+
+    /// <summary>
+    /// Parses a single referential action.
+    /// Actions: RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
+    /// </summary>
+    private ForeignKeyReferentialAction ParseForeignKeyAction()
+    {
+        if (Match(TokenType.RESTRICT))
+        {
+            return ForeignKeyReferentialAction.Restrict;
+        }
+        else if (Match(TokenType.CASCADE))
+        {
+            return ForeignKeyReferentialAction.Cascade;
+        }
+        else if (Match(TokenType.SET))
+        {
+            if (Match(TokenType.NULL))
+            {
+                return ForeignKeyReferentialAction.SetNull;
+            }
+            else if (Match(TokenType.DEFAULT))
+            {
+                return ForeignKeyReferentialAction.SetDefault;
+            }
+            else
+            {
+                throw Error($"Expected NULL or DEFAULT after SET, got: {_currentToken.Value}");
+            }
+        }
+        else if (Match(TokenType.NO))
+        {
+            Expect(TokenType.ACTION);
+            return ForeignKeyReferentialAction.NoAction;
+        }
+        else
+        {
+            throw Error($"Expected referential action (RESTRICT, CASCADE, SET NULL, SET DEFAULT, NO ACTION), got: {_currentToken.Value}");
+        }
     }
 
     private AddConstraintAction ParseAddConstraintAction()
@@ -1424,20 +1532,18 @@ public sealed class Parser
             Expect(TokenType.LeftParen);
             constraint.ReferencedColumns = ParseIdentifierList();
             Expect(TokenType.RightParen);
+
+            // Parse optional ON DELETE/UPDATE actions
+            var (onDelete, onUpdate) = ParseForeignKeyReferentialActions();
+            constraint.OnDelete = onDelete;
+            constraint.OnUpdate = onUpdate;
         }
         else if (Match(TokenType.CHECK))
         {
             constraint.Type = ConstraintType.Check;
-            // CHECK constraints would need expression support
             Expect(TokenType.LeftParen);
-            // Skip to matching paren for now
-            int depth = 1;
-            while (depth > 0 && !Check(TokenType.EOF))
-            {
-                if (Check(TokenType.LeftParen)) depth++;
-                else if (Check(TokenType.RightParen)) depth--;
-                Advance();
-            }
+            constraint.CheckExpression = ParseExpression();
+            Expect(TokenType.RightParen);
         }
         else
         {

@@ -211,25 +211,25 @@ todos:
     status: completed
   - id: 2.2.2
     content: ForeignKeyConstraint AST 增强 - 添加 OnDelete/OnUpdate 属性
-    status: pending
+    status: completed
   - id: 2.2.3
     content: 外键完整语法解析 - REFERENCES t(c) ON DELETE CASCADE ON UPDATE SET NULL
-    status: pending
+    status: completed
   - id: 2.2.4
     content: 外键元数据存储 - Catalog 保存外键定义，测试持久化
-    status: pending
+    status: completed
   - id: 2.3.1
     content: CHECK 约束 AST - 添加 CheckConstraint 节点
-    status: pending
+    status: completed
   - id: 2.3.2
     content: CHECK 约束解析 - CHECK (age > 0 AND age < 150)
-    status: pending
+    status: completed
   - id: 2.3.3
     content: CHECK 约束 INSERT 验证 - 插入时检查约束，测试拒绝
-    status: pending
+    status: completed
   - id: 2.3.4
     content: CHECK 约束 UPDATE 验证 - 更新时检查约束，测试拒绝
-    status: pending
+    status: completed
   - id: 3.1.1
     content: PROCEDURE/CALL/DECLARE 等关键字 - 添加到 Token.cs
     status: pending
