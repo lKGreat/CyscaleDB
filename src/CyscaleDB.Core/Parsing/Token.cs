@@ -239,6 +239,34 @@ public enum TokenType
 
     // System variable prefix
     AtAt,               // @@
+
+    // CTE (Common Table Expression) keywords
+    WITH,               // WITH clause for CTE
+    RECURSIVE,          // RECURSIVE for recursive CTEs
+
+    // Window function keywords
+    OVER,               // OVER clause for window functions
+    PARTITION,          // PARTITION BY
+    ROWS,               // ROWS frame
+    RANGE,              // RANGE frame
+    UNBOUNDED,          // UNBOUNDED PRECEDING/FOLLOWING
+    PRECEDING,          // PRECEDING
+    FOLLOWING,          // FOLLOWING
+    CURRENT,            // CURRENT ROW
+    ROW,                // CURRENT ROW
+    NULLS,              // NULLS FIRST/LAST
+    FIRST,              // NULLS FIRST
+    LAST,               // NULLS LAST
+
+    // ALTER TABLE keywords
+    ALTER,              // ALTER TABLE
+    ADD,                // ADD COLUMN
+    MODIFY,             // MODIFY COLUMN
+    CHANGE,             // CHANGE COLUMN
+    RENAME,             // RENAME
+    COLUMN,             // COLUMN keyword
+    TO,                 // RENAME TO
+    AFTER,              // ADD COLUMN AFTER
 }
 
 /// <summary>
@@ -402,6 +430,34 @@ public static class Keywords
         ["LOCKED"] = TokenType.LOCKED,
         ["LOCK"] = TokenType.LOCK,
         ["MODE"] = TokenType.MODE,
+
+        // CTE (Common Table Expression) keywords
+        ["WITH"] = TokenType.WITH,
+        ["RECURSIVE"] = TokenType.RECURSIVE,
+
+        // Window function keywords
+        ["OVER"] = TokenType.OVER,
+        ["PARTITION"] = TokenType.PARTITION,
+        ["ROWS"] = TokenType.ROWS,
+        ["RANGE"] = TokenType.RANGE,
+        ["UNBOUNDED"] = TokenType.UNBOUNDED,
+        ["PRECEDING"] = TokenType.PRECEDING,
+        ["FOLLOWING"] = TokenType.FOLLOWING,
+        ["CURRENT"] = TokenType.CURRENT,
+        ["ROW"] = TokenType.ROW,
+        ["NULLS"] = TokenType.NULLS,
+        ["FIRST"] = TokenType.FIRST,
+        ["LAST"] = TokenType.LAST,
+
+        // ALTER TABLE keywords
+        ["ALTER"] = TokenType.ALTER,
+        ["ADD"] = TokenType.ADD,
+        ["MODIFY"] = TokenType.MODIFY,
+        ["CHANGE"] = TokenType.CHANGE,
+        ["RENAME"] = TokenType.RENAME,
+        ["COLUMN"] = TokenType.COLUMN,
+        ["TO"] = TokenType.TO,
+        ["AFTER"] = TokenType.AFTER,
     };
 
     /// <summary>

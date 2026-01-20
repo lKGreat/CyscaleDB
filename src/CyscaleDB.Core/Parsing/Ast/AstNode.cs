@@ -36,6 +36,7 @@ public interface IAstVisitor<T>
     T VisitCreateViewStatement(CreateViewStatement node);
     T VisitDropViewStatement(DropViewStatement node);
     T VisitOptimizeTableStatement(OptimizeTableStatement node);
+    T VisitAlterTableStatement(AlterTableStatement node);
     
     // SET statements
     T VisitSetStatement(SetStatement node);
@@ -67,4 +68,5 @@ public interface IAstVisitor<T>
     T VisitColumnDefinitionNode(ColumnDefinitionNode node);
     T VisitSystemVariableExpression(SystemVariableExpression node);
     T VisitCaseExpression(CaseExpression node);
+    T VisitWindowFunctionCall(WindowFunctionCall node);
 }

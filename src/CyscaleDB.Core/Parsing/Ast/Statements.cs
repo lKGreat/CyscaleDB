@@ -17,6 +17,11 @@ public abstract class Statement : AstNode
 public class SelectStatement : Statement
 {
     /// <summary>
+    /// The WITH clause (CTEs) for this SELECT.
+    /// </summary>
+    public WithClause? WithClause { get; set; }
+
+    /// <summary>
     /// Whether DISTINCT is specified.
     /// </summary>
     public bool IsDistinct { get; set; }
@@ -93,6 +98,43 @@ public class SelectStatement : Statement
     public bool SkipLocked { get; set; }
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitSelectStatement(this);
+}
+
+/// <summary>
+/// Represents a WITH clause containing one or more CTEs (Common Table Expressions).
+/// </summary>
+public class WithClause
+{
+    /// <summary>
+    /// Whether this is a recursive CTE (WITH RECURSIVE).
+    /// </summary>
+    public bool IsRecursive { get; set; }
+
+    /// <summary>
+    /// The list of CTE definitions.
+    /// </summary>
+    public List<CteDefinition> Ctes { get; set; } = [];
+}
+
+/// <summary>
+/// Represents a single CTE (Common Table Expression) definition.
+/// </summary>
+public class CteDefinition
+{
+    /// <summary>
+    /// The name of the CTE (used to reference it in the main query).
+    /// </summary>
+    public string Name { get; set; } = null!;
+
+    /// <summary>
+    /// Optional column names for the CTE.
+    /// </summary>
+    public List<string> Columns { get; set; } = [];
+
+    /// <summary>
+    /// The SELECT query that defines the CTE.
+    /// </summary>
+    public SelectStatement Query { get; set; } = null!;
 }
 
 /// <summary>
@@ -313,6 +355,23 @@ public class SubqueryTableReference : TableReference
     /// The alias for this subquery (required).
     /// </summary>
     public string Alias { get; set; } = null!;
+}
+
+/// <summary>
+/// A reference to a CTE (Common Table Expression) in the FROM clause.
+/// This is used when parsing to mark references to CTEs defined in WITH clauses.
+/// </summary>
+public class CteTableReference : TableReference
+{
+    /// <summary>
+    /// The name of the CTE being referenced.
+    /// </summary>
+    public string CteName { get; set; } = null!;
+
+    /// <summary>
+    /// The alias for this CTE reference (optional).
+    /// </summary>
+    public string? Alias { get; set; }
 }
 
 #endregion
@@ -614,6 +673,251 @@ public class DropDatabaseStatement : Statement
     public bool IfExists { get; set; }
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDropDatabaseStatement(this);
+}
+
+/// <summary>
+/// Represents an ALTER TABLE statement.
+/// </summary>
+public class AlterTableStatement : Statement
+{
+    /// <summary>
+    /// The table name.
+    /// </summary>
+    public string TableName { get; set; } = null!;
+
+    /// <summary>
+    /// The database name (optional).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// The list of alterations to perform.
+    /// </summary>
+    public List<AlterTableAction> Actions { get; set; } = [];
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitAlterTableStatement(this);
+}
+
+/// <summary>
+/// Base class for ALTER TABLE actions.
+/// </summary>
+public abstract class AlterTableAction
+{
+}
+
+/// <summary>
+/// ADD COLUMN action.
+/// </summary>
+public class AddColumnAction : AlterTableAction
+{
+    /// <summary>
+    /// The column definition.
+    /// </summary>
+    public ColumnDef Column { get; set; } = null!;
+
+    /// <summary>
+    /// Optional position - FIRST or AFTER column_name.
+    /// </summary>
+    public string? AfterColumn { get; set; }
+
+    /// <summary>
+    /// Whether to add the column first.
+    /// </summary>
+    public bool IsFirst { get; set; }
+}
+
+/// <summary>
+/// DROP COLUMN action.
+/// </summary>
+public class DropColumnAction : AlterTableAction
+{
+    /// <summary>
+    /// The column name to drop.
+    /// </summary>
+    public string ColumnName { get; set; } = null!;
+}
+
+/// <summary>
+/// MODIFY COLUMN action (change column definition but keep name).
+/// </summary>
+public class ModifyColumnAction : AlterTableAction
+{
+    /// <summary>
+    /// The new column definition (Name contains existing column name).
+    /// </summary>
+    public ColumnDef Column { get; set; } = null!;
+
+    /// <summary>
+    /// Optional position - FIRST or AFTER column_name.
+    /// </summary>
+    public string? AfterColumn { get; set; }
+
+    /// <summary>
+    /// Whether to move the column first.
+    /// </summary>
+    public bool IsFirst { get; set; }
+}
+
+/// <summary>
+/// CHANGE COLUMN action (rename and/or change definition).
+/// </summary>
+public class ChangeColumnAction : AlterTableAction
+{
+    /// <summary>
+    /// The old column name.
+    /// </summary>
+    public string OldColumnName { get; set; } = null!;
+
+    /// <summary>
+    /// The new column definition (Name contains new column name).
+    /// </summary>
+    public ColumnDef NewColumn { get; set; } = null!;
+
+    /// <summary>
+    /// Optional position - FIRST or AFTER column_name.
+    /// </summary>
+    public string? AfterColumn { get; set; }
+
+    /// <summary>
+    /// Whether to move the column first.
+    /// </summary>
+    public bool IsFirst { get; set; }
+}
+
+/// <summary>
+/// RENAME COLUMN action.
+/// </summary>
+public class RenameColumnAction : AlterTableAction
+{
+    /// <summary>
+    /// The old column name.
+    /// </summary>
+    public string OldName { get; set; } = null!;
+
+    /// <summary>
+    /// The new column name.
+    /// </summary>
+    public string NewName { get; set; } = null!;
+}
+
+/// <summary>
+/// RENAME TABLE action.
+/// </summary>
+public class RenameTableAction : AlterTableAction
+{
+    /// <summary>
+    /// The new table name.
+    /// </summary>
+    public string NewName { get; set; } = null!;
+}
+
+/// <summary>
+/// ADD INDEX action.
+/// </summary>
+public class AddIndexAction : AlterTableAction
+{
+    /// <summary>
+    /// The index name (optional - auto-generated if null).
+    /// </summary>
+    public string? IndexName { get; set; }
+
+    /// <summary>
+    /// The columns to index.
+    /// </summary>
+    public List<string> Columns { get; set; } = [];
+
+    /// <summary>
+    /// Whether this is a UNIQUE index.
+    /// </summary>
+    public bool IsUnique { get; set; }
+}
+
+/// <summary>
+/// DROP INDEX action.
+/// </summary>
+public class DropIndexAction : AlterTableAction
+{
+    /// <summary>
+    /// The index name.
+    /// </summary>
+    public string IndexName { get; set; } = null!;
+}
+
+/// <summary>
+/// ADD CONSTRAINT action.
+/// </summary>
+public class AddConstraintAction : AlterTableAction
+{
+    /// <summary>
+    /// The constraint to add.
+    /// </summary>
+    public TableConstraint Constraint { get; set; } = null!;
+}
+
+/// <summary>
+/// DROP CONSTRAINT action.
+/// </summary>
+public class DropConstraintAction : AlterTableAction
+{
+    /// <summary>
+    /// The constraint name.
+    /// </summary>
+    public string ConstraintName { get; set; } = null!;
+}
+
+/// <summary>
+/// ADD PRIMARY KEY action.
+/// </summary>
+public class AddPrimaryKeyAction : AlterTableAction
+{
+    /// <summary>
+    /// The columns for the primary key.
+    /// </summary>
+    public List<string> Columns { get; set; } = [];
+}
+
+/// <summary>
+/// DROP PRIMARY KEY action.
+/// </summary>
+public class DropPrimaryKeyAction : AlterTableAction
+{
+}
+
+/// <summary>
+/// ADD FOREIGN KEY action.
+/// </summary>
+public class AddForeignKeyAction : AlterTableAction
+{
+    /// <summary>
+    /// The constraint name (optional).
+    /// </summary>
+    public string? ConstraintName { get; set; }
+
+    /// <summary>
+    /// The columns in this table.
+    /// </summary>
+    public List<string> Columns { get; set; } = [];
+
+    /// <summary>
+    /// The referenced table.
+    /// </summary>
+    public string ReferencedTable { get; set; } = null!;
+
+    /// <summary>
+    /// The referenced columns.
+    /// </summary>
+    public List<string> ReferencedColumns { get; set; } = [];
+}
+
+/// <summary>
+/// DROP FOREIGN KEY action.
+/// </summary>
+public class DropForeignKeyAction : AlterTableAction
+{
+    /// <summary>
+    /// The foreign key constraint name.
+    /// </summary>
+    public string ConstraintName { get; set; } = null!;
 }
 
 #endregion

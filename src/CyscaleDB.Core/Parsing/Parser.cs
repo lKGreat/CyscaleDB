@@ -76,6 +76,7 @@ public sealed class Parser
     {
         return _currentToken.Type switch
         {
+            TokenType.WITH => ParseWithStatement(),
             TokenType.SELECT => ParseSelectStatement(),
             TokenType.UNION => throw Error("UNION cannot appear at the start of a statement. Use SELECT ... UNION SELECT ..."),
             TokenType.INSERT => ParseInsertStatement(),
@@ -83,6 +84,7 @@ public sealed class Parser
             TokenType.DELETE => ParseDeleteStatement(),
             TokenType.CREATE => ParseCreateStatement(),
             TokenType.DROP => ParseDropStatement(),
+            TokenType.ALTER => ParseAlterStatement(),
             TokenType.USE => ParseUseStatement(),
             TokenType.SHOW => ParseShowStatement(),
             TokenType.DESCRIBE => ParseDescribeStatement(),
@@ -95,6 +97,63 @@ public sealed class Parser
             TokenType.KILL => ParseKillStatement(),
             _ => throw Error($"Unexpected token at start of statement: {_currentToken.Value}")
         };
+    }
+
+    /// <summary>
+    /// Parses a statement starting with WITH (CTE).
+    /// </summary>
+    private SelectStatement ParseWithStatement()
+    {
+        var withClause = ParseWithClause();
+        var stmt = ParseSelectStatement();
+        stmt.WithClause = withClause;
+        return stmt;
+    }
+
+    /// <summary>
+    /// Parses a WITH clause containing one or more CTEs.
+    /// Syntax: WITH [RECURSIVE] cte_name [(column_list)] AS (subquery) [, ...]
+    /// </summary>
+    private WithClause ParseWithClause()
+    {
+        Expect(TokenType.WITH);
+        
+        var withClause = new WithClause();
+        
+        // Check for RECURSIVE
+        if (Match(TokenType.RECURSIVE))
+        {
+            withClause.IsRecursive = true;
+        }
+
+        // Parse CTE definitions
+        do
+        {
+            var cte = new CteDefinition();
+            
+            // CTE name
+            cte.Name = ExpectIdentifier();
+
+            // Optional column list
+            if (Match(TokenType.LeftParen))
+            {
+                cte.Columns = ParseIdentifierList();
+                Expect(TokenType.RightParen);
+            }
+
+            // AS keyword
+            Expect(TokenType.AS);
+
+            // Subquery in parentheses
+            Expect(TokenType.LeftParen);
+            cte.Query = ParseSelectStatement();
+            Expect(TokenType.RightParen);
+
+            withClause.Ctes.Add(cte);
+        }
+        while (Match(TokenType.Comma));
+
+        return withClause;
     }
 
     private OptimizeTableStatement ParseOptimizeStatement()
@@ -1154,6 +1213,342 @@ public sealed class Parser
         return stmt;
     }
 
+    /// <summary>
+    /// Parses an ALTER TABLE statement.
+    /// </summary>
+    private AlterTableStatement ParseAlterStatement()
+    {
+        Expect(TokenType.ALTER);
+        Expect(TokenType.TABLE);
+
+        var stmt = new AlterTableStatement();
+        stmt.TableName = ExpectIdentifier();
+
+        if (Match(TokenType.Dot))
+        {
+            stmt.DatabaseName = stmt.TableName;
+            stmt.TableName = ExpectIdentifier();
+        }
+
+        // Parse one or more actions
+        do
+        {
+            stmt.Actions.Add(ParseAlterTableAction());
+        }
+        while (Match(TokenType.Comma));
+
+        return stmt;
+    }
+
+    /// <summary>
+    /// Parses a single ALTER TABLE action.
+    /// </summary>
+    private AlterTableAction ParseAlterTableAction()
+    {
+        if (Match(TokenType.ADD))
+        {
+            return ParseAddAction();
+        }
+        else if (Match(TokenType.DROP))
+        {
+            return ParseDropAction();
+        }
+        else if (Match(TokenType.MODIFY))
+        {
+            return ParseModifyColumnAction();
+        }
+        else if (Match(TokenType.CHANGE))
+        {
+            return ParseChangeColumnAction();
+        }
+        else if (Match(TokenType.RENAME))
+        {
+            return ParseRenameAction();
+        }
+
+        throw Error($"Expected ADD, DROP, MODIFY, CHANGE, or RENAME in ALTER TABLE, got: {_currentToken.Value}");
+    }
+
+    private AlterTableAction ParseAddAction()
+    {
+        // ADD COLUMN, ADD INDEX, ADD PRIMARY KEY, ADD FOREIGN KEY, ADD CONSTRAINT, ADD UNIQUE
+        if (Match(TokenType.COLUMN))
+        {
+            return ParseAddColumnAction();
+        }
+        else if (Match(TokenType.INDEX) || Match(TokenType.KEY))
+        {
+            return ParseAddIndexAction();
+        }
+        else if (Check(TokenType.PRIMARY))
+        {
+            Advance();
+            Expect(TokenType.KEY);
+            return ParseAddPrimaryKeyAction();
+        }
+        else if (Check(TokenType.FOREIGN))
+        {
+            Advance();
+            Expect(TokenType.KEY);
+            return ParseAddForeignKeyAction();
+        }
+        else if (Match(TokenType.UNIQUE))
+        {
+            // ADD UNIQUE [INDEX/KEY] index_name (columns)
+            Match(TokenType.INDEX);
+            Match(TokenType.KEY);
+            return ParseAddIndexAction(isUnique: true);
+        }
+        else if (Match(TokenType.CONSTRAINT))
+        {
+            return ParseAddConstraintAction();
+        }
+        else
+        {
+            // Default to ADD COLUMN
+            return ParseAddColumnAction();
+        }
+    }
+
+    private AddColumnAction ParseAddColumnAction()
+    {
+        var action = new AddColumnAction();
+        action.Column = ParseColumnDefinition();
+
+        // Check for FIRST or AFTER
+        if (Match(TokenType.FIRST))
+        {
+            action.IsFirst = true;
+        }
+        else if (Match(TokenType.AFTER))
+        {
+            action.AfterColumn = ExpectIdentifier();
+        }
+
+        return action;
+    }
+
+    private AddIndexAction ParseAddIndexAction(bool isUnique = false)
+    {
+        var action = new AddIndexAction();
+        action.IsUnique = isUnique;
+
+        // Optional index name
+        if (Check(TokenType.Identifier))
+        {
+            action.IndexName = ExpectIdentifier();
+        }
+
+        Expect(TokenType.LeftParen);
+        action.Columns = ParseIdentifierList();
+        Expect(TokenType.RightParen);
+
+        return action;
+    }
+
+    private AddPrimaryKeyAction ParseAddPrimaryKeyAction()
+    {
+        var action = new AddPrimaryKeyAction();
+
+        Expect(TokenType.LeftParen);
+        action.Columns = ParseIdentifierList();
+        Expect(TokenType.RightParen);
+
+        return action;
+    }
+
+    private AddForeignKeyAction ParseAddForeignKeyAction()
+    {
+        var action = new AddForeignKeyAction();
+
+        // Optional constraint name  
+        if (Check(TokenType.Identifier))
+        {
+            action.ConstraintName = ExpectIdentifier();
+        }
+
+        Expect(TokenType.LeftParen);
+        action.Columns = ParseIdentifierList();
+        Expect(TokenType.RightParen);
+
+        Expect(TokenType.REFERENCES);
+        action.ReferencedTable = ExpectIdentifier();
+
+        Expect(TokenType.LeftParen);
+        action.ReferencedColumns = ParseIdentifierList();
+        Expect(TokenType.RightParen);
+
+        return action;
+    }
+
+    private AddConstraintAction ParseAddConstraintAction()
+    {
+        var action = new AddConstraintAction();
+        var constraint = new TableConstraint();
+
+        // Constraint name
+        constraint.Name = ExpectIdentifier();
+
+        // Constraint type
+        if (Check(TokenType.PRIMARY))
+        {
+            Advance();
+            Expect(TokenType.KEY);
+            constraint.Type = ConstraintType.PrimaryKey;
+
+            Expect(TokenType.LeftParen);
+            constraint.Columns = ParseIdentifierList();
+            Expect(TokenType.RightParen);
+        }
+        else if (Match(TokenType.UNIQUE))
+        {
+            constraint.Type = ConstraintType.Unique;
+
+            Expect(TokenType.LeftParen);
+            constraint.Columns = ParseIdentifierList();
+            Expect(TokenType.RightParen);
+        }
+        else if (Check(TokenType.FOREIGN))
+        {
+            Advance();
+            Expect(TokenType.KEY);
+            constraint.Type = ConstraintType.ForeignKey;
+
+            Expect(TokenType.LeftParen);
+            constraint.Columns = ParseIdentifierList();
+            Expect(TokenType.RightParen);
+
+            Expect(TokenType.REFERENCES);
+            constraint.ReferencedTable = ExpectIdentifier();
+
+            Expect(TokenType.LeftParen);
+            constraint.ReferencedColumns = ParseIdentifierList();
+            Expect(TokenType.RightParen);
+        }
+        else if (Match(TokenType.CHECK))
+        {
+            constraint.Type = ConstraintType.Check;
+            // CHECK constraints would need expression support
+            Expect(TokenType.LeftParen);
+            // Skip to matching paren for now
+            int depth = 1;
+            while (depth > 0 && !Check(TokenType.EOF))
+            {
+                if (Check(TokenType.LeftParen)) depth++;
+                else if (Check(TokenType.RightParen)) depth--;
+                Advance();
+            }
+        }
+        else
+        {
+            throw Error($"Expected PRIMARY KEY, UNIQUE, FOREIGN KEY, or CHECK after constraint name");
+        }
+
+        action.Constraint = constraint;
+        return action;
+    }
+
+    private AlterTableAction ParseDropAction()
+    {
+        if (Match(TokenType.COLUMN))
+        {
+            var name = ExpectIdentifier();
+            return new DropColumnAction { ColumnName = name };
+        }
+        else if (Match(TokenType.INDEX) || Match(TokenType.KEY))
+        {
+            var name = ExpectIdentifier();
+            return new DropIndexAction { IndexName = name };
+        }
+        else if (Check(TokenType.PRIMARY))
+        {
+            Advance();
+            Expect(TokenType.KEY);
+            return new DropPrimaryKeyAction();
+        }
+        else if (Check(TokenType.FOREIGN))
+        {
+            Advance();
+            Expect(TokenType.KEY);
+            var name = ExpectIdentifier();
+            return new DropForeignKeyAction { ConstraintName = name };
+        }
+        else if (Match(TokenType.CONSTRAINT))
+        {
+            var name = ExpectIdentifier();
+            return new DropConstraintAction { ConstraintName = name };
+        }
+        else
+        {
+            // Default to DROP COLUMN
+            var name = ExpectIdentifier();
+            return new DropColumnAction { ColumnName = name };
+        }
+    }
+
+    private ModifyColumnAction ParseModifyColumnAction()
+    {
+        Match(TokenType.COLUMN); // Optional COLUMN keyword
+        
+        var action = new ModifyColumnAction();
+        action.Column = ParseColumnDefinition();
+
+        if (Match(TokenType.FIRST))
+        {
+            action.IsFirst = true;
+        }
+        else if (Match(TokenType.AFTER))
+        {
+            action.AfterColumn = ExpectIdentifier();
+        }
+
+        return action;
+    }
+
+    private ChangeColumnAction ParseChangeColumnAction()
+    {
+        Match(TokenType.COLUMN); // Optional COLUMN keyword
+
+        var action = new ChangeColumnAction();
+        action.OldColumnName = ExpectIdentifier();
+        action.NewColumn = ParseColumnDefinition();
+
+        if (Match(TokenType.FIRST))
+        {
+            action.IsFirst = true;
+        }
+        else if (Match(TokenType.AFTER))
+        {
+            action.AfterColumn = ExpectIdentifier();
+        }
+
+        return action;
+    }
+
+    private AlterTableAction ParseRenameAction()
+    {
+        if (Match(TokenType.COLUMN))
+        {
+            var oldName = ExpectIdentifier();
+            Expect(TokenType.TO);
+            var newName = ExpectIdentifier();
+            return new RenameColumnAction { OldName = oldName, NewName = newName };
+        }
+        else if (Match(TokenType.TO) || Match(TokenType.AS))
+        {
+            var newName = ExpectIdentifier();
+            return new RenameTableAction { NewName = newName };
+        }
+        else
+        {
+            // RENAME old_name TO new_name (column rename without COLUMN keyword)
+            var oldName = ExpectIdentifier();
+            Expect(TokenType.TO);
+            var newName = ExpectIdentifier();
+            return new RenameColumnAction { OldName = oldName, NewName = newName };
+        }
+    }
+
     #endregion
 
     #region Utility Statements
@@ -2059,7 +2454,7 @@ public sealed class Parser
                _currentToken.Type == TokenType.MAX;
     }
 
-    private FunctionCall ParseFunctionCall(string functionName)
+    private Expression ParseFunctionCall(string functionName)
     {
         var func = new FunctionCall { FunctionName = functionName.ToUpperInvariant() };
         Expect(TokenType.LeftParen);
@@ -2102,7 +2497,165 @@ public sealed class Parser
         }
 
         Expect(TokenType.RightParen);
+
+        // Check for OVER clause (window function)
+        if (Check(TokenType.OVER))
+        {
+            return ParseWindowFunctionFromFunctionCall(func);
+        }
+
         return func;
+    }
+
+    /// <summary>
+    /// Converts a FunctionCall to a WindowFunctionCall with OVER clause.
+    /// </summary>
+    private WindowFunctionCall ParseWindowFunctionFromFunctionCall(FunctionCall func)
+    {
+        Expect(TokenType.OVER);
+
+        var windowFunc = new WindowFunctionCall
+        {
+            FunctionName = func.FunctionName,
+            Arguments = func.Arguments,
+            WindowSpec = ParseWindowSpec()
+        };
+
+        return windowFunc;
+    }
+
+    /// <summary>
+    /// Parses a window specification (OVER clause content).
+    /// Syntax: OVER ([window_name] [PARTITION BY ...] [ORDER BY ...] [frame_clause])
+    /// </summary>
+    private WindowSpec ParseWindowSpec()
+    {
+        var spec = new WindowSpec();
+
+        Expect(TokenType.LeftParen);
+
+        // Check for window name reference
+        if (Check(TokenType.Identifier) && !Check(TokenType.PARTITION) && !Check(TokenType.ORDER))
+        {
+            spec.WindowName = ExpectIdentifier();
+        }
+
+        // PARTITION BY clause
+        if (Check(TokenType.PARTITION))
+        {
+            Advance();
+            Expect(TokenType.BY);
+            spec.PartitionBy = ParseExpressionList();
+        }
+
+        // ORDER BY clause
+        if (Check(TokenType.ORDER))
+        {
+            Advance();
+            Expect(TokenType.BY);
+            spec.OrderBy = ParseOrderByList();
+        }
+
+        // Frame clause (ROWS or RANGE)
+        if (Check(TokenType.ROWS) || Check(TokenType.RANGE))
+        {
+            spec.Frame = ParseWindowFrame();
+        }
+
+        Expect(TokenType.RightParen);
+
+        return spec;
+    }
+
+    /// <summary>
+    /// Parses a window frame clause.
+    /// Syntax: (ROWS|RANGE) (frame_start | BETWEEN frame_start AND frame_end)
+    /// </summary>
+    private WindowFrame ParseWindowFrame()
+    {
+        var frame = new WindowFrame();
+
+        // Frame type
+        if (Match(TokenType.ROWS))
+        {
+            frame.FrameType = WindowFrameType.Rows;
+        }
+        else if (Match(TokenType.RANGE))
+        {
+            frame.FrameType = WindowFrameType.Range;
+        }
+        else
+        {
+            throw Error($"Expected ROWS or RANGE, got: {_currentToken.Value}");
+        }
+
+        // Frame bounds
+        if (Match(TokenType.BETWEEN))
+        {
+            frame.Start = ParseWindowFrameBound();
+            Expect(TokenType.AND);
+            frame.End = ParseWindowFrameBound();
+        }
+        else
+        {
+            frame.Start = ParseWindowFrameBound();
+            // Default end is CURRENT ROW when not using BETWEEN
+            frame.End = new WindowFrameBound { BoundType = WindowFrameBoundType.CurrentRow };
+        }
+
+        return frame;
+    }
+
+    /// <summary>
+    /// Parses a window frame bound.
+    /// </summary>
+    private WindowFrameBound ParseWindowFrameBound()
+    {
+        var bound = new WindowFrameBound();
+
+        if (Match(TokenType.UNBOUNDED))
+        {
+            if (Match(TokenType.PRECEDING))
+            {
+                bound.BoundType = WindowFrameBoundType.UnboundedPreceding;
+            }
+            else if (Match(TokenType.FOLLOWING))
+            {
+                bound.BoundType = WindowFrameBoundType.UnboundedFollowing;
+            }
+            else
+            {
+                throw Error($"Expected PRECEDING or FOLLOWING after UNBOUNDED, got: {_currentToken.Value}");
+            }
+        }
+        else if (Check(TokenType.CURRENT))
+        {
+            Advance();
+            Expect(TokenType.ROW);
+            bound.BoundType = WindowFrameBoundType.CurrentRow;
+        }
+        else if (Check(TokenType.IntegerLiteral))
+        {
+            bound.Offset = ParseInteger();
+            if (Match(TokenType.PRECEDING))
+            {
+                bound.BoundType = WindowFrameBoundType.Preceding;
+            }
+            else if (Match(TokenType.FOLLOWING))
+            {
+                bound.BoundType = WindowFrameBoundType.Following;
+            }
+            else
+            {
+                throw Error($"Expected PRECEDING or FOLLOWING after offset, got: {_currentToken.Value}");
+            }
+        }
+        else
+        {
+            throw Error($"Invalid window frame bound: {_currentToken.Value}");
+        }
+
+        return bound;
     }
 
     /// <summary>

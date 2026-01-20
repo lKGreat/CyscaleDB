@@ -341,3 +341,129 @@ public class CaseExpression : Expression
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitCaseExpression(this);
 }
+
+/// <summary>
+/// Window function call expression (e.g., ROW_NUMBER() OVER (PARTITION BY col ORDER BY col)).
+/// </summary>
+public class WindowFunctionCall : Expression
+{
+    /// <summary>
+    /// The function name (ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, etc.).
+    /// </summary>
+    public string FunctionName { get; set; } = null!;
+
+    /// <summary>
+    /// The function arguments (for LAG, LEAD, FIRST_VALUE, etc.).
+    /// </summary>
+    public List<Expression> Arguments { get; set; } = [];
+
+    /// <summary>
+    /// The window specification.
+    /// </summary>
+    public WindowSpec WindowSpec { get; set; } = null!;
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitWindowFunctionCall(this);
+}
+
+/// <summary>
+/// Window specification (OVER clause).
+/// </summary>
+public class WindowSpec
+{
+    /// <summary>
+    /// Optional name of a pre-defined window.
+    /// </summary>
+    public string? WindowName { get; set; }
+
+    /// <summary>
+    /// PARTITION BY expressions.
+    /// </summary>
+    public List<Expression> PartitionBy { get; set; } = [];
+
+    /// <summary>
+    /// ORDER BY clauses within the window.
+    /// </summary>
+    public List<OrderByClause> OrderBy { get; set; } = [];
+
+    /// <summary>
+    /// Frame clause specification (ROWS or RANGE).
+    /// </summary>
+    public WindowFrame? Frame { get; set; }
+}
+
+/// <summary>
+/// Window frame specification (ROWS/RANGE BETWEEN ... AND ...).
+/// </summary>
+public class WindowFrame
+{
+    /// <summary>
+    /// Frame type (ROWS or RANGE).
+    /// </summary>
+    public WindowFrameType FrameType { get; set; }
+
+    /// <summary>
+    /// The start of the frame.
+    /// </summary>
+    public WindowFrameBound Start { get; set; } = null!;
+
+    /// <summary>
+    /// The end of the frame (optional, defaults to CURRENT ROW if not specified).
+    /// </summary>
+    public WindowFrameBound? End { get; set; }
+}
+
+/// <summary>
+/// Window frame type.
+/// </summary>
+public enum WindowFrameType
+{
+    Rows,
+    Range
+}
+
+/// <summary>
+/// Window frame bound (UNBOUNDED PRECEDING, CURRENT ROW, N PRECEDING, etc.).
+/// </summary>
+public class WindowFrameBound
+{
+    /// <summary>
+    /// The type of bound.
+    /// </summary>
+    public WindowFrameBoundType BoundType { get; set; }
+
+    /// <summary>
+    /// The offset value (for N PRECEDING/FOLLOWING).
+    /// </summary>
+    public int? Offset { get; set; }
+}
+
+/// <summary>
+/// Window frame bound types.
+/// </summary>
+public enum WindowFrameBoundType
+{
+    /// <summary>
+    /// UNBOUNDED PRECEDING
+    /// </summary>
+    UnboundedPreceding,
+
+    /// <summary>
+    /// UNBOUNDED FOLLOWING
+    /// </summary>
+    UnboundedFollowing,
+
+    /// <summary>
+    /// CURRENT ROW
+    /// </summary>
+    CurrentRow,
+
+    /// <summary>
+    /// N PRECEDING
+    /// </summary>
+    Preceding,
+
+    /// <summary>
+    /// N FOLLOWING
+    /// </summary>
+    Following
+}

@@ -251,10 +251,27 @@ public class DeadlockException : TransactionException
 /// </summary>
 public class LockTimeoutException : TransactionException
 {
+    /// <summary>
+    /// The database name where the lock was requested.
+    /// </summary>
+    public string? DatabaseName { get; }
+
+    /// <summary>
+    /// The table name where the lock was requested.
+    /// </summary>
+    public string? TableName { get; }
+
     public LockTimeoutException(long transactionId, string resourceName)
         : base($"Lock timeout on resource '{resourceName}' for transaction {transactionId}",
             transactionId, ErrorCode.LockTimeout)
     {
+    }
+
+    public LockTimeoutException(string message, string databaseName, string tableName)
+        : base(message, 0, ErrorCode.LockTimeout)
+    {
+        DatabaseName = databaseName;
+        TableName = tableName;
     }
 }
 

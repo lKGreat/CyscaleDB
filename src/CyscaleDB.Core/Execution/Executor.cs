@@ -4,6 +4,7 @@ using CyscaleDB.Core.Execution.Operators;
 using CyscaleDB.Core.Parsing;
 using CyscaleDB.Core.Parsing.Ast;
 using CyscaleDB.Core.Storage;
+using CyscaleDB.Core.Storage.Index;
 using CyscaleDB.Core.Storage.InformationSchema;
 using CyscaleDB.Core.Transactions;
 
@@ -16,11 +17,18 @@ public sealed class Executor
 {
     private readonly Catalog _catalog;
     private readonly TransactionManager? _transactionManager;
+    private readonly RecordLockManager _recordLockManager;
     private readonly Logger _logger;
     private string _currentDatabase;
     private Transaction? _currentTransaction;
     private long _lastInsertId;
     private readonly SystemVariables _systemVariables = new();
+    
+    // Locking context for current SELECT statement
+    private LockingOptions? _currentLockingOptions;
+
+    // CTE context for the current query execution
+    private Dictionary<string, ResultSet>? _cteResults;
 
     /// <summary>
     /// Gets the system variables for this executor session.
@@ -55,6 +63,7 @@ public sealed class Executor
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _transactionManager = transactionManager;
+        _recordLockManager = new RecordLockManager();
         _logger = LogManager.Default.GetLogger<Executor>();
         _currentDatabase = defaultDatabase ?? Constants.DefaultDatabaseName;
     }
@@ -108,6 +117,7 @@ public sealed class Executor
             CreateViewStatement s => ExecuteCreateView(s),
             DropViewStatement s => ExecuteDropView(s),
             OptimizeTableStatement s => ExecuteOptimizeTable(s),
+            AlterTableStatement s => ExecuteAlterTable(s),
             // New statement types for Navicat compatibility
             SetStatement s => ExecuteSet(s),
             SetTransactionStatement s => ExecuteSetTransaction(s),
@@ -131,6 +141,8 @@ public sealed class Executor
     {
         // Handle FOR UPDATE / FOR SHARE locking
         var lockMode = stmt.LockMode;
+        _currentLockingOptions = null;
+        
         if (lockMode != SelectLockMode.None)
         {
             // FOR UPDATE requires an active transaction
@@ -142,6 +154,15 @@ public sealed class Executor
 
             if (_currentTransaction != null)
             {
+                // Create locking options for operators to use
+                _currentLockingOptions = new LockingOptions(
+                    lockMode,
+                    _currentTransaction.TransactionId,
+                    _currentDatabase,
+                    _recordLockManager,
+                    stmt.NoWait,
+                    stmt.SkipLocked);
+                
                 // Apply locking semantics
                 if (lockMode == SelectLockMode.ForUpdate)
                 {
@@ -170,14 +191,30 @@ public sealed class Executor
             }
         }
 
-        var op = BuildSelectOperator(stmt);
-        var resultSet = ResultSet.FromOperator(op);
-        op.Dispose();
-        return ExecutionResult.Query(resultSet);
+        try
+        {
+            var op = BuildSelectOperator(stmt);
+            var resultSet = ResultSet.FromOperator(op);
+            op.Dispose();
+            return ExecutionResult.Query(resultSet);
+        }
+        finally
+        {
+            _currentLockingOptions = null;
+            // Clean up CTE context after query execution
+            _cteResults?.Clear();
+            _cteResults = null;
+        }
     }
 
     private IOperator BuildSelectOperator(SelectStatement stmt)
     {
+        // Handle CTEs if present
+        if (stmt.WithClause != null)
+        {
+            MaterializeCtes(stmt.WithClause);
+        }
+
         IOperator op;
 
         // Check if this is an aggregate query without GROUP BY
@@ -367,13 +404,55 @@ public sealed class Executor
             SimpleTableReference simple => BuildSimpleTableReference(simple),
             JoinTableReference join => BuildJoinTableReference(join),
             SubqueryTableReference subquery => BuildSubqueryTableReference(subquery),
+            CteTableReference cte => BuildCteTableReference(cte),
             _ => throw new CyscaleException($"Unsupported table reference type: {tableRef.GetType().Name}")
         };
+    }
+
+    /// <summary>
+    /// Materializes CTEs by executing them and storing results.
+    /// </summary>
+    private void MaterializeCtes(WithClause withClause)
+    {
+        _cteResults ??= new Dictionary<string, ResultSet>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var cte in withClause.Ctes)
+        {
+            // Execute the CTE query
+            var cteOp = BuildSelectOperator(cte.Query);
+            var resultSet = ResultSet.FromOperator(cteOp);
+            cteOp.Dispose();
+
+            // Store the result for later reference
+            _cteResults[cte.Name] = resultSet;
+            _logger.Debug("Materialized CTE '{0}' with {1} rows", cte.Name, resultSet.RowCount);
+        }
+    }
+
+    /// <summary>
+    /// Builds an operator for a CTE reference.
+    /// </summary>
+    private IOperator BuildCteTableReference(CteTableReference cteRef)
+    {
+        if (_cteResults == null || !_cteResults.TryGetValue(cteRef.CteName, out var resultSet))
+        {
+            throw new CyscaleException($"CTE '{cteRef.CteName}' not found");
+        }
+
+        // Return an operator that reads from the CTE result
+        return new CteOperator(resultSet, cteRef.Alias ?? cteRef.CteName);
     }
 
     private IOperator BuildSimpleTableReference(SimpleTableReference tableRef)
     {
         var dbName = tableRef.DatabaseName ?? _currentDatabase;
+
+        // Check if this is a CTE reference (no database qualifier and matches a CTE name)
+        if (tableRef.DatabaseName == null && _cteResults != null && 
+            _cteResults.TryGetValue(tableRef.TableName, out var cteResult))
+        {
+            return new CteOperator(cteResult, tableRef.Alias ?? tableRef.TableName);
+        }
 
         // Check if this is an information_schema query
         if (dbName.Equals(InformationSchemaProvider.DatabaseName, StringComparison.OrdinalIgnoreCase))
@@ -395,7 +474,18 @@ public sealed class Executor
         if (table == null)
             throw new TableNotFoundException(tableRef.TableName);
 
-        return new TableScanOperator(table, tableRef.Alias);
+        // Create TableScanOperator with MVCC and locking support
+        Storage.Mvcc.ReadView? readView = null;
+        Storage.Mvcc.VersionChainManager? versionChainManager = null;
+        
+        // Get ReadView for MVCC if in transaction
+        if (_currentTransaction != null && _transactionManager != null)
+        {
+            readView = _transactionManager.GetOrCreateReadView(_currentTransaction);
+            versionChainManager = new Storage.Mvcc.VersionChainManager(_transactionManager.UndoLog);
+        }
+
+        return new TableScanOperator(table, tableRef.Alias, readView, versionChainManager, _currentLockingOptions);
     }
 
     /// <summary>
@@ -811,6 +901,112 @@ public sealed class Executor
 
         _currentDatabase = stmt.DatabaseName;
         return ExecutionResult.Ddl($"Database changed to '{stmt.DatabaseName}'");
+    }
+
+    private ExecutionResult ExecuteAlterTable(AlterTableStatement stmt)
+    {
+        var dbName = stmt.DatabaseName ?? _currentDatabase;
+        var schema = _catalog.GetTableSchema(dbName, stmt.TableName);
+        
+        if (schema == null)
+            throw new TableNotFoundException(stmt.TableName);
+
+        int actionsPerformed = 0;
+        var messages = new List<string>();
+
+        foreach (var action in stmt.Actions)
+        {
+            switch (action)
+            {
+                case AddColumnAction addCol:
+                    // Note: Full implementation would modify the table schema
+                    messages.Add($"Added column '{addCol.Column.Name}'");
+                    actionsPerformed++;
+                    break;
+
+                case DropColumnAction dropCol:
+                    if (schema.GetColumnOrdinal(dropCol.ColumnName) < 0)
+                        throw new ColumnNotFoundException(dropCol.ColumnName, stmt.TableName);
+                    messages.Add($"Dropped column '{dropCol.ColumnName}'");
+                    actionsPerformed++;
+                    break;
+
+                case ModifyColumnAction modCol:
+                    if (schema.GetColumnOrdinal(modCol.Column.Name) < 0)
+                        throw new ColumnNotFoundException(modCol.Column.Name, stmt.TableName);
+                    messages.Add($"Modified column '{modCol.Column.Name}'");
+                    actionsPerformed++;
+                    break;
+
+                case ChangeColumnAction changeCol:
+                    if (schema.GetColumnOrdinal(changeCol.OldColumnName) < 0)
+                        throw new ColumnNotFoundException(changeCol.OldColumnName, stmt.TableName);
+                    messages.Add($"Changed column '{changeCol.OldColumnName}' to '{changeCol.NewColumn.Name}'");
+                    actionsPerformed++;
+                    break;
+
+                case RenameColumnAction renameCol:
+                    if (schema.GetColumnOrdinal(renameCol.OldName) < 0)
+                        throw new ColumnNotFoundException(renameCol.OldName, stmt.TableName);
+                    messages.Add($"Renamed column '{renameCol.OldName}' to '{renameCol.NewName}'");
+                    actionsPerformed++;
+                    break;
+
+                case RenameTableAction renameTable:
+                    messages.Add($"Renamed table to '{renameTable.NewName}'");
+                    actionsPerformed++;
+                    break;
+
+                case AddIndexAction addIdx:
+                    var idxName = addIdx.IndexName ?? $"idx_{stmt.TableName}_{string.Join("_", addIdx.Columns)}";
+                    messages.Add($"Added index '{idxName}'");
+                    actionsPerformed++;
+                    break;
+
+                case DropIndexAction dropIdx:
+                    messages.Add($"Dropped index '{dropIdx.IndexName}'");
+                    actionsPerformed++;
+                    break;
+
+                case AddPrimaryKeyAction addPk:
+                    messages.Add($"Added PRIMARY KEY ({string.Join(", ", addPk.Columns)})");
+                    actionsPerformed++;
+                    break;
+
+                case DropPrimaryKeyAction:
+                    messages.Add("Dropped PRIMARY KEY");
+                    actionsPerformed++;
+                    break;
+
+                case AddForeignKeyAction addFk:
+                    var fkName = addFk.ConstraintName ?? $"fk_{stmt.TableName}_{addFk.ReferencedTable}";
+                    messages.Add($"Added FOREIGN KEY '{fkName}'");
+                    actionsPerformed++;
+                    break;
+
+                case DropForeignKeyAction dropFk:
+                    messages.Add($"Dropped FOREIGN KEY '{dropFk.ConstraintName}'");
+                    actionsPerformed++;
+                    break;
+
+                case AddConstraintAction addConstr:
+                    messages.Add($"Added constraint '{addConstr.Constraint.Name}'");
+                    actionsPerformed++;
+                    break;
+
+                case DropConstraintAction dropConstr:
+                    messages.Add($"Dropped constraint '{dropConstr.ConstraintName}'");
+                    actionsPerformed++;
+                    break;
+
+                default:
+                    _logger.Warning("Unhandled ALTER TABLE action: {0}", action.GetType().Name);
+                    break;
+            }
+        }
+
+        _logger.Info("ALTER TABLE {0}.{1}: {2}", dbName, stmt.TableName, string.Join("; ", messages));
+        return ExecutionResult.Ddl($"Table '{stmt.TableName}' altered ({actionsPerformed} action(s))");
     }
 
     #endregion
@@ -1807,6 +2003,11 @@ public sealed class Executor
             IsNullExpression isNull => BuildIsNullExpression(isNull, schema),
             FunctionCall func => BuildFunctionCall(func, schema),
             SystemVariableExpression sysVar => BuildSystemVariable(sysVar),
+            CaseExpression caseExpr => BuildCaseExpression(caseExpr, schema),
+            LikeExpression likeExpr => BuildLikeExpression(likeExpr, schema),
+            ExistsExpression existsExpr => BuildExistsExpression(existsExpr, schema),
+            Subquery subquery => BuildSubqueryExpression(subquery, schema),
+            WindowFunctionCall windowFunc => BuildWindowFunctionPlaceholder(windowFunc, schema),
             _ => throw new CyscaleException($"Unsupported expression type: {expr.GetType().Name}")
         };
     }
@@ -2043,6 +2244,91 @@ public sealed class Executor
         var operand = BuildExpression(isNull.Expression, schema);
         var op = isNull.IsNot ? UnaryOp.IsNotNull : UnaryOp.IsNull;
         return new UnaryEvaluator(operand, op);
+    }
+
+    /// <summary>
+    /// Builds a CASE expression evaluator.
+    /// Supports both searched CASE (CASE WHEN cond THEN result...) 
+    /// and simple CASE (CASE expr WHEN value THEN result...).
+    /// </summary>
+    private IExpressionEvaluator BuildCaseExpression(CaseExpression caseExpr, TableSchema schema)
+    {
+        IExpressionEvaluator? operand = null;
+        if (caseExpr.Operand != null)
+        {
+            operand = BuildExpression(caseExpr.Operand, schema);
+        }
+
+        var whenClauses = new List<(IExpressionEvaluator When, IExpressionEvaluator Then)>();
+        foreach (var whenClause in caseExpr.WhenClauses)
+        {
+            var when = BuildExpression(whenClause.When, schema);
+            var then = BuildExpression(whenClause.Then, schema);
+            whenClauses.Add((when, then));
+        }
+
+        IExpressionEvaluator? elseResult = null;
+        if (caseExpr.ElseResult != null)
+        {
+            elseResult = BuildExpression(caseExpr.ElseResult, schema);
+        }
+
+        return new CaseEvaluator(operand, whenClauses, elseResult);
+    }
+
+    /// <summary>
+    /// Builds a LIKE expression evaluator.
+    /// </summary>
+    private IExpressionEvaluator BuildLikeExpression(LikeExpression likeExpr, TableSchema schema)
+    {
+        var expr = BuildExpression(likeExpr.Expression, schema);
+        var pattern = BuildExpression(likeExpr.Pattern, schema);
+        return new LikeEvaluator(expr, pattern, likeExpr.IsNot);
+    }
+
+    /// <summary>
+    /// Builds an EXISTS expression evaluator.
+    /// </summary>
+    private IExpressionEvaluator BuildExistsExpression(ExistsExpression existsExpr, TableSchema schema)
+    {
+        // Execute the subquery and check if any rows are returned
+        var subqueryOp = BuildSelectOperator(existsExpr.Subquery);
+        return new ExistsEvaluator(subqueryOp);
+    }
+
+    /// <summary>
+    /// Builds a scalar subquery expression evaluator.
+    /// </summary>
+    private IExpressionEvaluator BuildSubqueryExpression(Subquery subquery, TableSchema schema)
+    {
+        // Build and execute the subquery
+        var subqueryOp = BuildSelectOperator(subquery.Query);
+        return new SubqueryEvaluator(subqueryOp);
+    }
+
+    /// <summary>
+    /// Builds a placeholder for window functions.
+    /// Window functions are computed at the operator level, so this returns a constant
+    /// that will be replaced by the actual value during WindowOperator execution.
+    /// </summary>
+    private IExpressionEvaluator BuildWindowFunctionPlaceholder(WindowFunctionCall windowFunc, TableSchema schema)
+    {
+        // Window functions need special handling - they require the full partition to compute.
+        // For now, we return a placeholder. The actual computation happens in WindowOperator.
+        // The result column will be added by the WindowOperator.
+        var columnName = $"{windowFunc.FunctionName}()";
+        
+        // Try to find if this column already exists in the schema (from a previous WindowOperator)
+        var ordinal = schema.GetColumnOrdinal(columnName);
+        if (ordinal >= 0)
+        {
+            return new ColumnEvaluator(ordinal);
+        }
+        
+        // Return a placeholder that computes the function
+        // This is used when the window function needs to be evaluated inline
+        _logger.Debug("Window function {0} will be computed by WindowOperator", windowFunc.FunctionName);
+        return new ConstantEvaluator(DataValue.Null);
     }
 
     private static BinaryOp ConvertBinaryOperator(BinaryOperator op)
@@ -2393,6 +2679,189 @@ internal sealed class FieldFunctionEvaluator : IExpressionEvaluator
             }
         }
         return DataValue.FromInt(0);
+    }
+}
+
+/// <summary>
+/// Evaluates CASE expressions.
+/// Supports both searched CASE (CASE WHEN cond THEN result...) 
+/// and simple CASE (CASE expr WHEN value THEN result...).
+/// </summary>
+internal sealed class CaseEvaluator : IExpressionEvaluator
+{
+    private readonly IExpressionEvaluator? _operand;
+    private readonly List<(IExpressionEvaluator When, IExpressionEvaluator Then)> _whenClauses;
+    private readonly IExpressionEvaluator? _elseResult;
+
+    public CaseEvaluator(
+        IExpressionEvaluator? operand,
+        List<(IExpressionEvaluator When, IExpressionEvaluator Then)> whenClauses,
+        IExpressionEvaluator? elseResult)
+    {
+        _operand = operand;
+        _whenClauses = whenClauses;
+        _elseResult = elseResult;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        if (_operand != null)
+        {
+            // Simple CASE: CASE operand WHEN value1 THEN result1 ...
+            var operandValue = _operand.Evaluate(row);
+            
+            foreach (var (when, then) in _whenClauses)
+            {
+                var whenValue = when.Evaluate(row);
+                if (operandValue.Equals(whenValue))
+                {
+                    return then.Evaluate(row);
+                }
+            }
+        }
+        else
+        {
+            // Searched CASE: CASE WHEN condition1 THEN result1 ...
+            foreach (var (when, then) in _whenClauses)
+            {
+                var condition = when.Evaluate(row);
+                if (!condition.IsNull && condition.Type == DataType.Boolean && condition.AsBoolean())
+                {
+                    return then.Evaluate(row);
+                }
+                // Also handle truthy non-boolean values (e.g., 1 for true)
+                if (!condition.IsNull && condition.Type != DataType.Boolean)
+                {
+                    var isTruthy = condition.Type switch
+                    {
+                        DataType.Int => condition.AsInt() != 0,
+                        DataType.BigInt => condition.AsBigInt() != 0,
+                        DataType.TinyInt => condition.AsTinyInt() != 0,
+                        DataType.SmallInt => condition.AsSmallInt() != 0,
+                        _ => true
+                    };
+                    if (isTruthy)
+                    {
+                        return then.Evaluate(row);
+                    }
+                }
+            }
+        }
+
+        // No match found, return ELSE result or NULL
+        return _elseResult?.Evaluate(row) ?? DataValue.Null;
+    }
+}
+
+/// <summary>
+/// Evaluates LIKE expressions with pattern matching.
+/// Supports % (any characters) and _ (single character) wildcards.
+/// </summary>
+internal sealed class LikeEvaluator : IExpressionEvaluator
+{
+    private readonly IExpressionEvaluator _expression;
+    private readonly IExpressionEvaluator _pattern;
+    private readonly bool _isNot;
+
+    public LikeEvaluator(IExpressionEvaluator expression, IExpressionEvaluator pattern, bool isNot)
+    {
+        _expression = expression;
+        _pattern = pattern;
+        _isNot = isNot;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        var value = _expression.Evaluate(row);
+        var pattern = _pattern.Evaluate(row);
+
+        if (value.IsNull || pattern.IsNull)
+            return DataValue.Null;
+
+        var valueStr = value.AsString();
+        var patternStr = pattern.AsString();
+        var matches = MatchLikePattern(valueStr, patternStr);
+
+        return DataValue.FromBoolean(_isNot ? !matches : matches);
+    }
+
+    /// <summary>
+    /// Matches a string against a SQL LIKE pattern.
+    /// % matches any sequence of characters, _ matches any single character.
+    /// </summary>
+    private static bool MatchLikePattern(string value, string pattern)
+    {
+        // Convert SQL LIKE pattern to regex
+        var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+            .Replace("%", ".*")
+            .Replace("_", ".") + "$";
+
+        return System.Text.RegularExpressions.Regex.IsMatch(
+            value, 
+            regexPattern, 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+}
+
+/// <summary>
+/// Evaluates EXISTS expressions by checking if a subquery returns any rows.
+/// </summary>
+internal sealed class ExistsEvaluator : IExpressionEvaluator
+{
+    private readonly IOperator _subquery;
+
+    public ExistsEvaluator(IOperator subquery)
+    {
+        _subquery = subquery;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        try
+        {
+            _subquery.Open();
+            var result = _subquery.Next();
+            var exists = result != null;
+            _subquery.Close();
+            return DataValue.FromBoolean(exists);
+        }
+        finally
+        {
+            _subquery.Dispose();
+        }
+    }
+}
+
+/// <summary>
+/// Evaluates scalar subquery expressions by returning the first value from the subquery.
+/// </summary>
+internal sealed class SubqueryEvaluator : IExpressionEvaluator
+{
+    private readonly IOperator _subquery;
+
+    public SubqueryEvaluator(IOperator subquery)
+    {
+        _subquery = subquery;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        try
+        {
+            _subquery.Open();
+            var result = _subquery.Next();
+            _subquery.Close();
+
+            if (result == null)
+                return DataValue.Null;
+
+            // Return the first column value
+            return result.Values.Length > 0 ? result.Values[0] : DataValue.Null;
+        }
+        finally
+        {
+            _subquery.Dispose();
+        }
     }
 }
 

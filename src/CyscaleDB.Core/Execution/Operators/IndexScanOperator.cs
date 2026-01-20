@@ -8,7 +8,7 @@ namespace CyscaleDB.Core.Execution.Operators;
 
 /// <summary>
 /// Operator that uses an index to efficiently scan rows matching a condition.
-/// Supports MVCC for consistent reads.
+/// Supports MVCC for consistent reads and row-level locking.
 /// </summary>
 public sealed class IndexScanOperator : IOperator
 {
@@ -19,6 +19,9 @@ public sealed class IndexScanOperator : IOperator
     private readonly IExpressionEvaluator? _additionalFilter;
     private readonly ReadView? _readView;
     private readonly VersionChainManager? _versionChainManager;
+    private readonly LockingOptions? _lockingOptions;
+    private readonly Logger _logger;
+    private readonly List<RecordLock> _acquiredLocks = [];
 
     private IEnumerator<RowId>? _indexEnumerator;
     private bool _isOpen;
@@ -42,6 +45,11 @@ public sealed class IndexScanOperator : IOperator
     public ReadView? ReadView => _readView;
 
     /// <summary>
+    /// Gets the locking options for this scan.
+    /// </summary>
+    public LockingOptions? LockingOptions => _lockingOptions;
+
+    /// <summary>
     /// Creates a new index scan operator.
     /// </summary>
     /// <param name="table">The table to scan.</param>
@@ -55,7 +63,7 @@ public sealed class IndexScanOperator : IOperator
         IndexScanRange scanRange,
         string? alias = null,
         IExpressionEvaluator? additionalFilter = null)
-        : this(table, index, scanRange, alias, additionalFilter, null, null)
+        : this(table, index, scanRange, alias, additionalFilter, null, null, null)
     {
     }
 
@@ -77,6 +85,30 @@ public sealed class IndexScanOperator : IOperator
         IExpressionEvaluator? additionalFilter,
         ReadView? readView,
         VersionChainManager? versionChainManager)
+        : this(table, index, scanRange, alias, additionalFilter, readView, versionChainManager, null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a new index scan operator with MVCC support and row locking.
+    /// </summary>
+    /// <param name="table">The table to scan.</param>
+    /// <param name="index">The index to use for scanning.</param>
+    /// <param name="scanRange">The range of keys to scan.</param>
+    /// <param name="alias">Optional table alias.</param>
+    /// <param name="additionalFilter">Optional additional filter to apply after index lookup.</param>
+    /// <param name="readView">ReadView for MVCC visibility checks.</param>
+    /// <param name="versionChainManager">Optional version chain manager for history traversal.</param>
+    /// <param name="lockingOptions">Options for row-level locking.</param>
+    public IndexScanOperator(
+        Table table,
+        BTreeIndex index,
+        IndexScanRange scanRange,
+        string? alias,
+        IExpressionEvaluator? additionalFilter,
+        ReadView? readView,
+        VersionChainManager? versionChainManager,
+        LockingOptions? lockingOptions)
     {
         _table = table ?? throw new ArgumentNullException(nameof(table));
         _index = index ?? throw new ArgumentNullException(nameof(index));
@@ -85,6 +117,8 @@ public sealed class IndexScanOperator : IOperator
         _additionalFilter = additionalFilter;
         _readView = readView;
         _versionChainManager = versionChainManager ?? (readView != null ? new VersionChainManager() : null);
+        _lockingOptions = lockingOptions;
+        _logger = LogManager.Default.GetLogger<IndexScanOperator>();
     }
 
     /// <inheritdoc/>
@@ -92,6 +126,8 @@ public sealed class IndexScanOperator : IOperator
     {
         if (_isOpen)
             throw new InvalidOperationException("Operator is already open");
+
+        _acquiredLocks.Clear();
 
         IEnumerable<RowId> rowIds;
 
@@ -139,6 +175,31 @@ public sealed class IndexScanOperator : IOperator
                 row = visibleRow;
             }
 
+            // Apply row locking if enabled
+            if (_lockingOptions != null && _lockingOptions.IsLockingEnabled)
+            {
+                var lockResult = TryAcquireRowLock(row);
+                if (!lockResult)
+                {
+                    if (_lockingOptions.SkipLocked)
+                    {
+                        _logger.Debug("Skipping locked row: {0}", row.RowId);
+                        continue;
+                    }
+                    if (_lockingOptions.NoWait)
+                    {
+                        throw new LockTimeoutException(
+                            $"Could not obtain lock on row {row.RowId} with NOWAIT option",
+                            _lockingOptions.DatabaseName,
+                            _table.Schema.TableName);
+                    }
+                    throw new LockTimeoutException(
+                        $"Could not obtain lock on row {row.RowId}",
+                        _lockingOptions.DatabaseName,
+                        _table.Schema.TableName);
+                }
+            }
+
             // Apply additional filter if present
             if (_additionalFilter != null)
             {
@@ -153,11 +214,72 @@ public sealed class IndexScanOperator : IOperator
         return null;
     }
 
+    /// <summary>
+    /// Attempts to acquire a row lock.
+    /// </summary>
+    private bool TryAcquireRowLock(Row row)
+    {
+        if (_lockingOptions?.RecordLockManager == null)
+            return true;
+
+        var pkValues = GetPrimaryKeyValues(row);
+        var compositeKey = IndexInfo.CreateCompositeKey(pkValues);
+
+        if (_lockingOptions.RecordLockManager.WouldConflict(
+            _lockingOptions.DatabaseName,
+            _table.Schema.TableName,
+            "PRIMARY",
+            compositeKey,
+            _lockingOptions.TransactionId,
+            _lockingOptions.GetRecordLockType()))
+        {
+            return false;
+        }
+
+        var recordLock = _lockingOptions.RecordLockManager.AcquireLock(
+            _lockingOptions.DatabaseName,
+            _table.Schema.TableName,
+            "PRIMARY",
+            compositeKey,
+            _lockingOptions.TransactionId,
+            _lockingOptions.GetRecordLockType());
+
+        if (recordLock != null && !recordLock.IsWaiting)
+        {
+            _acquiredLocks.Add(recordLock);
+            _logger.Debug("Acquired {0} lock on row {1} for transaction {2}",
+                _lockingOptions.LockMode, row.RowId, _lockingOptions.TransactionId);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Gets the primary key values from a row.
+    /// </summary>
+    private DataValue[] GetPrimaryKeyValues(Row row)
+    {
+        var pkColumns = _table.Schema.PrimaryKeyColumns;
+        if (pkColumns.Count == 0)
+        {
+            return [DataValue.FromInt(row.RowId.PageId), DataValue.FromInt(row.RowId.SlotNumber)];
+        }
+
+        var values = new DataValue[pkColumns.Count];
+        for (int i = 0; i < pkColumns.Count; i++)
+        {
+            values[i] = row.GetValue(pkColumns[i].Name);
+        }
+        return values;
+    }
+
     /// <inheritdoc/>
     public void Close()
     {
         _indexEnumerator?.Dispose();
         _indexEnumerator = null;
+        _acquiredLocks.Clear();
         _isOpen = false;
     }
 

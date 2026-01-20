@@ -78,12 +78,9 @@ CyscaleDB 是一个使用纯 C# 实现的 MySQL 兼容关系型数据库系统�
 
 ## 常用命令
 
-```bash
-# 构建项目
-dotnet build
-
-# 运行测试
-dotnet test
+```powershell
+# 构建项目（PowerShell）- 编译所有项目包括测试项目，但不运行测试
+dotnet build CyscaleDB.sln --verbosity minimal
 
 # 启动服务器
 dotnet run --project src/CyscaleDB.Server
