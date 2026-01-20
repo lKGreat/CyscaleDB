@@ -1280,7 +1280,7 @@ public sealed class Parser
         else if (Check(TokenType.TABLE))
         {
             Advance();
-            if (MatchIdentifier("STATUS"))
+            if (Match(TokenType.STATUS))
             {
                 var stmt = new ShowTableStatusStatement();
                 if (Match(TokenType.FROM) || Match(TokenType.IN))

@@ -443,6 +443,13 @@ public sealed class Executor
     {
         // Execute subquery and materialize results
         var innerOp = BuildSelectOperator(subquery.Subquery);
+        
+        // Wrap with alias operator if alias is specified
+        if (!string.IsNullOrEmpty(subquery.Alias))
+        {
+            return new Operators.AliasOperator(innerOp, subquery.Alias);
+        }
+        
         return innerOp;
     }
 
