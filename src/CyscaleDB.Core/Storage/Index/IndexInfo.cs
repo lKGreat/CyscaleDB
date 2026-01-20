@@ -300,5 +300,35 @@ public readonly struct CompositeKey : IComparable<CompositeKey>, IEquatable<Comp
     {
         return _values == null ? "(null)" : $"({string.Join(", ", _values.Select(v => v.ToString()))})";
     }
+
+    /// <summary>
+    /// Serializes this composite key to a binary writer.
+    /// </summary>
+    public void Serialize(BinaryWriter writer)
+    {
+        writer.Write(Length);
+        foreach (var value in _values)
+        {
+            var bytes = value.Serialize();
+            writer.Write(bytes.Length);
+            writer.Write(bytes);
+        }
+    }
+
+    /// <summary>
+    /// Deserializes a composite key from a binary reader.
+    /// </summary>
+    public static CompositeKey Deserialize(BinaryReader reader)
+    {
+        var count = reader.ReadInt32();
+        var values = new DataValue[count];
+        for (int i = 0; i < count; i++)
+        {
+            var length = reader.ReadInt32();
+            var bytes = reader.ReadBytes(length);
+            values[i] = DataValue.Deserialize(bytes);
+        }
+        return new CompositeKey(values);
+    }
 }
 

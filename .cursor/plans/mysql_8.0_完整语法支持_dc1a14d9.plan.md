@@ -16,61 +16,61 @@ todos:
     status: completed
   - id: 0.1.5
     content: TableScan 集成 MVCC - 修改 TableScanOperator 使用 ReadView 过滤，测试快照读
-    status: in_progress
+    status: completed
   - id: 0.2.1
     content: UndoRecord 数据结构 - 新建 UndoRecord.cs，定义 Insert/Update Undo 格式
-    status: pending
+    status: completed
   - id: 0.2.2
     content: UndoLog 文件管理 - 新建 UndoLog.cs，支持写入和读取 Undo 记录
-    status: pending
+    status: completed
   - id: 0.2.3
     content: Insert Undo 写入 - INSERT 时写入 Undo，测试 Undo 记录生成
-    status: pending
+    status: completed
   - id: 0.2.4
     content: Update Undo 写入 - UPDATE/DELETE 时写入 Undo，测试旧值保存
-    status: pending
+    status: completed
   - id: 0.2.5
     content: Rollback 使用 Undo - ROLLBACK 时应用 Undo 记录，测试事务回滚
-    status: pending
+    status: completed
   - id: 0.2.6
     content: MVCC 使用 Undo - 版本链通过 Undo 获取历史版本，测试历史数据读取
-    status: pending
+    status: completed
   - id: 0.4.1
     content: Transaction 添加隔离级别属性 - 修改 Transaction.cs，测试隔离级别设置
-    status: pending
+    status: completed
   - id: 0.4.2
     content: SET TRANSACTION ISOLATION LEVEL 解析 - Parser 支持语法，测试解析
-    status: pending
+    status: completed
   - id: 0.4.3
     content: READ COMMITTED 实现 - 每次读创建新 ReadView，测试 RC 隔离
-    status: pending
+    status: completed
   - id: 0.4.4
     content: REPEATABLE READ 实现 - 事务首次读创建 ReadView，测试 RR 隔离
-    status: pending
+    status: completed
   - id: 0.4.5
     content: READ UNCOMMITTED 实现 - 不使用 ReadView，测试脏读
-    status: pending
+    status: completed
   - id: 0.4.6
     content: SERIALIZABLE 实现 - 读加锁，测试串行化隔离
-    status: pending
+    status: completed
   - id: 0.5.1
     content: ClusteredIndex 基础结构 - 新建 ClusteredIndex.cs，叶子节点存储完整行
-    status: pending
+    status: completed
   - id: 0.5.2
     content: 主键索引创建 - CREATE TABLE 时自动创建聚簇索引，测试索引创建
-    status: pending
+    status: completed
   - id: 0.5.3
     content: 聚簇索引查询 - 通过主键查询直接返回行数据，测试主键查询
-    status: pending
+    status: completed
   - id: 0.5.4
     content: SecondaryIndex 结构 - 新建 SecondaryIndex.cs，叶子存储主键值
-    status: pending
+    status: completed
   - id: 0.5.5
     content: 二级索引回表 - 二级索引查询后回表，测试回表查询
-    status: pending
+    status: completed
   - id: 0.7.1
     content: RecordLock 结构 - 新建 RecordLock.cs，锁定索引记录
-    status: pending
+    status: in_progress
   - id: 0.7.2
     content: GapLock 结构 - 新建 GapLock.cs，锁定索引间隙
     status: pending

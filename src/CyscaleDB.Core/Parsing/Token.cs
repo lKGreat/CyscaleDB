@@ -205,6 +205,16 @@ public enum TokenType
     CHARSET,
     COLLATION,
 
+    // Isolation level keywords
+    ISOLATION,
+    LEVEL,
+    READ,
+    COMMITTED,
+    UNCOMMITTED,
+    REPEATABLE,
+    SERIALIZABLE,
+    WRITE,
+
     // Aggregate function keywords
     SEPARATOR,          // SEPARATOR (for GROUP_CONCAT)
 
@@ -344,6 +354,16 @@ public static class Keywords
         ["KILL"] = TokenType.KILL,
         ["CHARSET"] = TokenType.CHARSET,
         ["COLLATION"] = TokenType.COLLATION,
+
+        // Isolation level keywords
+        ["ISOLATION"] = TokenType.ISOLATION,
+        ["LEVEL"] = TokenType.LEVEL,
+        ["READ"] = TokenType.READ,
+        ["COMMITTED"] = TokenType.COMMITTED,
+        ["UNCOMMITTED"] = TokenType.UNCOMMITTED,
+        ["REPEATABLE"] = TokenType.REPEATABLE,
+        ["SERIALIZABLE"] = TokenType.SERIALIZABLE,
+        ["WRITE"] = TokenType.WRITE,
 
         // Aggregate function keywords
         ["SEPARATOR"] = TokenType.SEPARATOR,

@@ -138,6 +138,11 @@ public static class Constants
     #region WAL and Checkpoint Constants
 
     /// <summary>
+    /// The file extension for Undo Log files.
+    /// </summary>
+    public const string UndoFileExtension = ".undo";
+
+    /// <summary>
     /// The name of the checkpoint metadata file.
     /// </summary>
     public const string CheckpointFileName = "checkpoint.meta";

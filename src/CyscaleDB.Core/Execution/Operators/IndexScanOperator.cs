@@ -2,11 +2,13 @@ using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Execution.Expressions;
 using CyscaleDB.Core.Storage;
 using CyscaleDB.Core.Storage.Index;
+using CyscaleDB.Core.Storage.Mvcc;
 
 namespace CyscaleDB.Core.Execution.Operators;
 
 /// <summary>
 /// Operator that uses an index to efficiently scan rows matching a condition.
+/// Supports MVCC for consistent reads.
 /// </summary>
 public sealed class IndexScanOperator : IOperator
 {
@@ -15,6 +17,8 @@ public sealed class IndexScanOperator : IOperator
     private readonly IndexScanRange _scanRange;
     private readonly string _alias;
     private readonly IExpressionEvaluator? _additionalFilter;
+    private readonly ReadView? _readView;
+    private readonly VersionChainManager? _versionChainManager;
 
     private IEnumerator<RowId>? _indexEnumerator;
     private bool _isOpen;
@@ -33,6 +37,11 @@ public sealed class IndexScanOperator : IOperator
     public string Alias => _alias;
 
     /// <summary>
+    /// Gets the ReadView used for MVCC visibility checks (null if not using MVCC).
+    /// </summary>
+    public ReadView? ReadView => _readView;
+
+    /// <summary>
     /// Creates a new index scan operator.
     /// </summary>
     /// <param name="table">The table to scan.</param>
@@ -46,12 +55,36 @@ public sealed class IndexScanOperator : IOperator
         IndexScanRange scanRange,
         string? alias = null,
         IExpressionEvaluator? additionalFilter = null)
+        : this(table, index, scanRange, alias, additionalFilter, null, null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a new index scan operator with MVCC support.
+    /// </summary>
+    /// <param name="table">The table to scan.</param>
+    /// <param name="index">The index to use for scanning.</param>
+    /// <param name="scanRange">The range of keys to scan.</param>
+    /// <param name="alias">Optional table alias.</param>
+    /// <param name="additionalFilter">Optional additional filter to apply after index lookup.</param>
+    /// <param name="readView">ReadView for MVCC visibility checks.</param>
+    /// <param name="versionChainManager">Optional version chain manager for history traversal.</param>
+    public IndexScanOperator(
+        Table table,
+        BTreeIndex index,
+        IndexScanRange scanRange,
+        string? alias,
+        IExpressionEvaluator? additionalFilter,
+        ReadView? readView,
+        VersionChainManager? versionChainManager)
     {
         _table = table ?? throw new ArgumentNullException(nameof(table));
         _index = index ?? throw new ArgumentNullException(nameof(index));
         _scanRange = scanRange ?? throw new ArgumentNullException(nameof(scanRange));
         _alias = alias ?? table.Schema.TableName;
         _additionalFilter = additionalFilter;
+        _readView = readView;
+        _versionChainManager = versionChainManager ?? (readView != null ? new VersionChainManager() : null);
     }
 
     /// <inheritdoc/>
@@ -96,6 +129,15 @@ public sealed class IndexScanOperator : IOperator
             var row = _table.GetRowBySlot(rowId);
             if (row == null)
                 continue; // Row was deleted
+
+            // Apply MVCC visibility check if ReadView is present
+            if (_readView != null && _versionChainManager != null)
+            {
+                var visibleRow = _versionChainManager.FindVisibleVersion(row, _readView);
+                if (visibleRow == null)
+                    continue; // Row is not visible to this transaction
+                row = visibleRow;
+            }
 
             // Apply additional filter if present
             if (_additionalFilter != null)

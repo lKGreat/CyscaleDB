@@ -1383,9 +1383,31 @@ public sealed class Parser
 
     #region SET Statement
 
-    private SetStatement ParseSetStatement()
+    private Statement ParseSetStatement()
     {
         Expect(TokenType.SET);
+
+        // Check for SET [GLOBAL|SESSION] TRANSACTION
+        var scope = SetScope.Session;
+        if (Check(TokenType.GLOBAL))
+        {
+            Advance();
+            scope = SetScope.Global;
+        }
+        else if (Check(TokenType.SESSION))
+        {
+            Advance();
+            scope = SetScope.Session;
+        }
+
+        if (Check(TokenType.TRANSACTION))
+        {
+            return ParseSetTransactionStatement(scope);
+        }
+
+        // If we consumed GLOBAL or SESSION but it's not TRANSACTION, 
+        // we need to handle it as a variable setting
+
         var stmt = new SetStatement();
 
         // Check for SET NAMES
@@ -1416,15 +1438,19 @@ public sealed class Parser
         do
         {
             var setVar = new SetVariable();
+            setVar.Scope = scope;
 
-            // Check for GLOBAL or SESSION scope
-            if (Match(TokenType.GLOBAL))
+            // Check for GLOBAL or SESSION scope (if not already set)
+            if (scope == SetScope.Session)
             {
-                setVar.Scope = SetScope.Global;
-            }
-            else if (Match(TokenType.SESSION))
-            {
-                setVar.Scope = SetScope.Session;
+                if (Match(TokenType.GLOBAL))
+                {
+                    setVar.Scope = SetScope.Global;
+                }
+                else if (Match(TokenType.SESSION))
+                {
+                    setVar.Scope = SetScope.Session;
+                }
             }
 
             // Check for @@global. or @@session. prefix
@@ -1459,6 +1485,89 @@ public sealed class Parser
         } while (Match(TokenType.Comma));
 
         return stmt;
+    }
+
+    private SetTransactionStatement ParseSetTransactionStatement(SetScope scope)
+    {
+        Expect(TokenType.TRANSACTION);
+        var stmt = new SetTransactionStatement { Scope = scope };
+
+        // Parse characteristics
+        while (true)
+        {
+            if (Check(TokenType.ISOLATION))
+            {
+                Advance();
+                Expect(TokenType.LEVEL);
+                stmt.IsolationLevel = ParseIsolationLevel();
+            }
+            else if (Check(TokenType.READ))
+            {
+                Advance();
+                if (Check(TokenType.WRITE))
+                {
+                    Advance();
+                    stmt.AccessMode = TransactionAccessMode.ReadWrite;
+                }
+                else if (MatchIdentifier("ONLY"))
+                {
+                    stmt.AccessMode = TransactionAccessMode.ReadOnly;
+                }
+                else
+                {
+                    throw Error("Expected WRITE or ONLY after READ");
+                }
+            }
+            else
+            {
+                break;
+            }
+
+            // Check for comma to continue parsing more characteristics
+            if (!Match(TokenType.Comma))
+            {
+                break;
+            }
+        }
+
+        return stmt;
+    }
+
+    private TransactionIsolationLevel ParseIsolationLevel()
+    {
+        if (Check(TokenType.READ))
+        {
+            Advance();
+            if (Check(TokenType.UNCOMMITTED))
+            {
+                Advance();
+                return TransactionIsolationLevel.ReadUncommitted;
+            }
+            else if (Check(TokenType.COMMITTED))
+            {
+                Advance();
+                return TransactionIsolationLevel.ReadCommitted;
+            }
+            else
+            {
+                throw Error("Expected UNCOMMITTED or COMMITTED after READ");
+            }
+        }
+        else if (Check(TokenType.REPEATABLE))
+        {
+            Advance();
+            Expect(TokenType.READ);
+            return TransactionIsolationLevel.RepeatableRead;
+        }
+        else if (Check(TokenType.SERIALIZABLE))
+        {
+            Advance();
+            return TransactionIsolationLevel.Serializable;
+        }
+        else
+        {
+            throw Error("Expected isolation level (READ UNCOMMITTED, READ COMMITTED, REPEATABLE READ, or SERIALIZABLE)");
+        }
     }
 
     private Statement ParseKillStatement()

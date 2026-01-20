@@ -1,17 +1,23 @@
 using CyscaleDB.Core.Common;
+using CyscaleDB.Core.Storage.Mvcc;
 
 namespace CyscaleDB.Core.Transactions;
 
 /// <summary>
 /// Manages transactions, including begin, commit, rollback, and recovery.
+/// Implements IReadViewFactory for MVCC support.
 /// </summary>
-public sealed class TransactionManager : IDisposable
+public sealed class TransactionManager : IDisposable, IReadViewFactory
 {
     private readonly LockManager _lockManager;
     private readonly WalLog _walLog;
+    private readonly UndoLog? _undoLog;
     private readonly Dictionary<long, Transaction> _activeTransactions;
+    private readonly Dictionary<long, long> _transactionLastUndoPointer;
     private readonly ReaderWriterLockSlim _lock;
     private readonly Logger _logger;
+    private readonly string _dataDirectory;
+    private long _nextTransactionId = 1;
     private bool _disposed;
 
     /// <summary>
@@ -23,6 +29,11 @@ public sealed class TransactionManager : IDisposable
     /// Gets the WAL log.
     /// </summary>
     public WalLog WalLog => _walLog;
+
+    /// <summary>
+    /// Gets the Undo log (null if undo logging is disabled).
+    /// </summary>
+    public UndoLog? UndoLog => _undoLog;
 
     /// <summary>
     /// Gets the number of active transactions.
@@ -44,13 +55,38 @@ public sealed class TransactionManager : IDisposable
     }
 
     /// <summary>
+    /// Gets the next transaction ID that will be assigned.
+    /// </summary>
+    public long NextTransactionId
+    {
+        get
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                return _nextTransactionId;
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+        }
+    }
+
+    /// <summary>
     /// Creates a new transaction manager.
     /// </summary>
-    public TransactionManager(string dataDirectory, TimeSpan? lockTimeout = null)
+    /// <param name="dataDirectory">The data directory for log files</param>
+    /// <param name="lockTimeout">Lock timeout duration</param>
+    /// <param name="enableUndoLog">Whether to enable undo logging</param>
+    public TransactionManager(string dataDirectory, TimeSpan? lockTimeout = null, bool enableUndoLog = true)
     {
+        _dataDirectory = dataDirectory;
         _lockManager = new LockManager(lockTimeout);
         _walLog = new WalLog(dataDirectory);
+        _undoLog = enableUndoLog ? new UndoLog(dataDirectory) : null;
         _activeTransactions = new Dictionary<long, Transaction>();
+        _transactionLastUndoPointer = new Dictionary<long, long>();
         _lock = new ReaderWriterLockSlim();
         _logger = LogManager.Default.GetLogger<TransactionManager>();
     }
@@ -61,6 +97,7 @@ public sealed class TransactionManager : IDisposable
     public void Initialize()
     {
         _walLog.Open();
+        _undoLog?.Open();
         
         // Perform recovery
         Recover();
@@ -79,6 +116,13 @@ public sealed class TransactionManager : IDisposable
         try
         {
             _activeTransactions[transaction.TransactionId] = transaction;
+            _transactionLastUndoPointer[transaction.TransactionId] = 0;
+            
+            // Update next transaction ID
+            if (transaction.TransactionId >= _nextTransactionId)
+            {
+                _nextTransactionId = transaction.TransactionId + 1;
+            }
         }
         finally
         {
@@ -87,7 +131,7 @@ public sealed class TransactionManager : IDisposable
 
         _walLog.WriteBegin(transaction.TransactionId);
 
-        _logger.Debug("Started transaction {0}", transaction.TransactionId);
+        _logger.Debug("Started transaction {0} with isolation level {1}", transaction.TransactionId, isolationLevel);
         return transaction;
     }
 
@@ -126,7 +170,7 @@ public sealed class TransactionManager : IDisposable
     }
 
     /// <summary>
-    /// Rolls back a transaction.
+    /// Rolls back a transaction using undo records.
     /// </summary>
     public void Rollback(Transaction transaction)
     {
@@ -141,12 +185,14 @@ public sealed class TransactionManager : IDisposable
         {
             transaction.State = TransactionState.Aborting;
 
+            // Apply undo records if undo log is enabled
+            if (_undoLog != null && _transactionLastUndoPointer.TryGetValue(transaction.TransactionId, out var lastUndoPtr) && lastUndoPtr > 0)
+            {
+                ApplyUndoRecords(transaction.TransactionId, lastUndoPtr);
+            }
+
             // Write abort record
             _walLog.WriteAbort(transaction.TransactionId);
-
-            // TODO: Undo all changes made by this transaction
-            // This would involve reading the WAL entries for this transaction
-            // and applying the undo operations
 
             // Release all locks
             _lockManager.ReleaseAllLocks(transaction);
@@ -154,12 +200,123 @@ public sealed class TransactionManager : IDisposable
             // Update state
             transaction.State = TransactionState.Aborted;
             _activeTransactions.Remove(transaction.TransactionId);
+            _transactionLastUndoPointer.Remove(transaction.TransactionId);
 
             _logger.Debug("Rolled back transaction {0}", transaction.TransactionId);
         }
         finally
         {
             _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Applies undo records to rollback a transaction.
+    /// </summary>
+    private void ApplyUndoRecords(long transactionId, long startPointer)
+    {
+        if (_undoLog == null)
+            return;
+
+        var undoRecords = _undoLog.ReadTransactionUndos(transactionId, startPointer);
+        
+        foreach (var record in undoRecords)
+        {
+            _logger.Debug("Applying undo record: {0} for transaction {1}", record.Type, transactionId);
+            
+            // The actual undo application would be done by the StorageEngine
+            // Here we just track that it needs to be done
+            OnUndoApplied?.Invoke(this, new UndoAppliedEventArgs(record));
+        }
+    }
+
+    /// <summary>
+    /// Event raised when an undo record is applied during rollback.
+    /// The StorageEngine subscribes to this to perform the actual data modifications.
+    /// </summary>
+    public event EventHandler<UndoAppliedEventArgs>? OnUndoApplied;
+
+    /// <summary>
+    /// Records an undo entry for a transaction.
+    /// </summary>
+    /// <param name="transactionId">The transaction ID</param>
+    /// <param name="undoPointer">The undo pointer returned from UndoLog.Write</param>
+    public void RecordUndoEntry(long transactionId, long undoPointer)
+    {
+        _lock.EnterWriteLock();
+        try
+        {
+            _transactionLastUndoPointer[transactionId] = undoPointer;
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Gets the last undo pointer for a transaction.
+    /// </summary>
+    public long GetLastUndoPointer(long transactionId)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            return _transactionLastUndoPointer.TryGetValue(transactionId, out var ptr) ? ptr : 0;
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Creates a ReadView for MVCC snapshot isolation.
+    /// </summary>
+    /// <param name="transactionId">The transaction ID requesting the ReadView</param>
+    /// <returns>A new ReadView capturing the current transaction state</returns>
+    public ReadView CreateReadView(long transactionId)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            var activeIds = _activeTransactions.Keys.ToList();
+            return ReadView.Create(activeIds, _nextTransactionId, transactionId);
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Gets or creates a ReadView for a transaction based on its isolation level.
+    /// </summary>
+    /// <param name="transaction">The transaction</param>
+    /// <returns>A ReadView appropriate for the transaction's isolation level</returns>
+    public ReadView GetOrCreateReadView(Transaction transaction)
+    {
+        switch (transaction.IsolationLevel)
+        {
+            case IsolationLevel.ReadUncommitted:
+                // No ReadView needed - always read current data
+                return CreateReadView(transaction.TransactionId);
+                
+            case IsolationLevel.ReadCommitted:
+                // Create a new ReadView for each statement
+                return CreateReadView(transaction.TransactionId);
+                
+            case IsolationLevel.RepeatableRead:
+            case IsolationLevel.Serializable:
+                // Use the same ReadView for the entire transaction
+                if (transaction.ReadView == null)
+                {
+                    transaction.ReadView = CreateReadView(transaction.TransactionId);
+                }
+                return transaction.ReadView;
+                
+            default:
+                return CreateReadView(transaction.TransactionId);
         }
     }
 
@@ -349,9 +506,26 @@ public sealed class TransactionManager : IDisposable
         }
 
         _walLog.Dispose();
+        _undoLog?.Dispose();
         _lockManager.Dispose();
         _lock.Dispose();
 
         _logger.Info("Transaction manager disposed");
+    }
+}
+
+/// <summary>
+/// Event args for undo record application.
+/// </summary>
+public class UndoAppliedEventArgs : EventArgs
+{
+    /// <summary>
+    /// The undo record being applied.
+    /// </summary>
+    public UndoRecord UndoRecord { get; }
+
+    public UndoAppliedEventArgs(UndoRecord undoRecord)
+    {
+        UndoRecord = undoRecord ?? throw new ArgumentNullException(nameof(undoRecord));
     }
 }

@@ -1,3 +1,5 @@
+using CyscaleDB.Core.Storage.Mvcc;
+
 namespace CyscaleDB.Core.Transactions;
 
 /// <summary>
@@ -25,12 +27,24 @@ public sealed class Transaction
     /// <summary>
     /// The isolation level of this transaction.
     /// </summary>
-    public IsolationLevel IsolationLevel { get; }
+    public IsolationLevel IsolationLevel { get; private set; }
 
     /// <summary>
     /// Whether this transaction is read-only.
     /// </summary>
     public bool IsReadOnly { get; set; }
+
+    /// <summary>
+    /// The ReadView for this transaction (used for REPEATABLE READ and SERIALIZABLE).
+    /// For READ COMMITTED, a new ReadView is created for each statement.
+    /// </summary>
+    public ReadView? ReadView { get; internal set; }
+
+    /// <summary>
+    /// The last undo pointer for this transaction.
+    /// Points to the most recent undo record created by this transaction.
+    /// </summary>
+    public long LastUndoPointer { get; internal set; }
 
     /// <summary>
     /// The locks held by this transaction.
@@ -51,6 +65,17 @@ public sealed class Transaction
         State = TransactionState.Active;
         StartTime = DateTime.UtcNow;
         IsolationLevel = isolationLevel;
+    }
+
+    /// <summary>
+    /// Sets the isolation level for this transaction.
+    /// Can only be set before any reads have been performed.
+    /// </summary>
+    public void SetIsolationLevel(IsolationLevel level)
+    {
+        if (ReadView != null)
+            throw new InvalidOperationException("Cannot change isolation level after reads have been performed");
+        IsolationLevel = level;
     }
 
     /// <summary>

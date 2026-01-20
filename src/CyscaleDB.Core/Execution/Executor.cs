@@ -110,6 +110,7 @@ public sealed class Executor
             OptimizeTableStatement s => ExecuteOptimizeTable(s),
             // New statement types for Navicat compatibility
             SetStatement s => ExecuteSet(s),
+            SetTransactionStatement s => ExecuteSetTransaction(s),
             ShowVariablesStatement s => ExecuteShowVariables(s),
             ShowStatusStatement s => ExecuteShowStatus(s),
             ShowCreateTableStatement s => ExecuteShowCreateTable(s),
@@ -1041,6 +1042,43 @@ public sealed class Executor
         {
             object? value = EvaluateSetValue(setVar.Value);
             _systemVariables.Set(setVar.Name, value, setVar.Scope == SetScope.Global);
+        }
+
+        return ExecutionResult.Empty();
+    }
+
+    private ExecutionResult ExecuteSetTransaction(SetTransactionStatement stmt)
+    {
+        // Set isolation level for the current transaction if active
+        if (stmt.IsolationLevel.HasValue)
+        {
+            var level = stmt.IsolationLevel.Value switch
+            {
+                TransactionIsolationLevel.ReadUncommitted => Transactions.IsolationLevel.ReadUncommitted,
+                TransactionIsolationLevel.ReadCommitted => Transactions.IsolationLevel.ReadCommitted,
+                TransactionIsolationLevel.RepeatableRead => Transactions.IsolationLevel.RepeatableRead,
+                TransactionIsolationLevel.Serializable => Transactions.IsolationLevel.Serializable,
+                _ => Transactions.IsolationLevel.ReadCommitted
+            };
+
+            // If there's an active transaction, update its isolation level
+            if (_currentTransaction != null && _currentTransaction.IsActive)
+            {
+                _currentTransaction.SetIsolationLevel(level);
+            }
+
+            // Also set the session default
+            _systemVariables.SetSession("transaction_isolation", stmt.IsolationLevel.Value.ToString().ToUpperInvariant().Replace("READ", "READ-").Replace("REPEATABLE", "REPEATABLE-"));
+        }
+
+        // Set access mode
+        if (stmt.AccessMode.HasValue)
+        {
+            if (_currentTransaction != null)
+            {
+                _currentTransaction.IsReadOnly = stmt.AccessMode.Value == TransactionAccessMode.ReadOnly;
+            }
+            _systemVariables.SetSession("transaction_read_only", stmt.AccessMode.Value == TransactionAccessMode.ReadOnly ? "ON" : "OFF");
         }
 
         return ExecutionResult.Empty();

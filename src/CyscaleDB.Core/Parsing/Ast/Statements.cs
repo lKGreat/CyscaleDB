@@ -891,6 +891,50 @@ public class SetStatement : Statement
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitSetStatement(this);
 }
 
+/// <summary>
+/// Transaction isolation level.
+/// </summary>
+public enum TransactionIsolationLevel
+{
+    ReadUncommitted,
+    ReadCommitted,
+    RepeatableRead,
+    Serializable
+}
+
+/// <summary>
+/// Transaction access mode.
+/// </summary>
+public enum TransactionAccessMode
+{
+    ReadWrite,
+    ReadOnly
+}
+
+/// <summary>
+/// Represents a SET TRANSACTION statement.
+/// SET TRANSACTION ISOLATION LEVEL level [, READ ONLY | READ WRITE]
+/// </summary>
+public class SetTransactionStatement : Statement
+{
+    /// <summary>
+    /// The isolation level (null if not specified).
+    /// </summary>
+    public TransactionIsolationLevel? IsolationLevel { get; set; }
+
+    /// <summary>
+    /// The access mode (null if not specified).
+    /// </summary>
+    public TransactionAccessMode? AccessMode { get; set; }
+
+    /// <summary>
+    /// Whether this applies to the next transaction only (SESSION) or all future transactions (GLOBAL).
+    /// </summary>
+    public SetScope Scope { get; set; } = SetScope.Session;
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitSetTransactionStatement(this);
+}
+
 #endregion
 
 #region Extended SHOW Statements

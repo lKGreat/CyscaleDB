@@ -37,8 +37,9 @@ public interface IAstVisitor<T>
     T VisitDropViewStatement(DropViewStatement node);
     T VisitOptimizeTableStatement(OptimizeTableStatement node);
     
-    // SET statement
+    // SET statements
     T VisitSetStatement(SetStatement node);
+    T VisitSetTransactionStatement(SetTransactionStatement node);
     
     // Extended SHOW statements
     T VisitShowVariablesStatement(ShowVariablesStatement node);

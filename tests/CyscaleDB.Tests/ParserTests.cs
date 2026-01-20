@@ -2,6 +2,8 @@ using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Parsing;
 using CyscaleDB.Core.Parsing.Ast;
 
+using CyscaleDB.Core.Transactions;
+
 namespace CyscaleDB.Tests;
 
 public class ParserTests
@@ -964,6 +966,106 @@ public class ParserTests
         Assert.NotNull(stmt);
         Assert.Equal("mydb", stmt.DatabaseName);
         Assert.Equal("users", stmt.TableName);
+    }
+
+    #endregion
+
+    #region SET TRANSACTION Tests
+
+    [Fact]
+    public void Parse_SetTransactionIsolationLevel_ReadCommitted()
+    {
+        var parser = new Parser("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+        var stmt = parser.Parse() as SetTransactionStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal(TransactionIsolationLevel.ReadCommitted, stmt.IsolationLevel);
+        Assert.Null(stmt.AccessMode);
+    }
+
+    [Fact]
+    public void Parse_SetTransactionIsolationLevel_ReadUncommitted()
+    {
+        var parser = new Parser("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED");
+        var stmt = parser.Parse() as SetTransactionStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal(TransactionIsolationLevel.ReadUncommitted, stmt.IsolationLevel);
+    }
+
+    [Fact]
+    public void Parse_SetTransactionIsolationLevel_RepeatableRead()
+    {
+        var parser = new Parser("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+        var stmt = parser.Parse() as SetTransactionStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal(TransactionIsolationLevel.RepeatableRead, stmt.IsolationLevel);
+    }
+
+    [Fact]
+    public void Parse_SetTransactionIsolationLevel_Serializable()
+    {
+        var parser = new Parser("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
+        var stmt = parser.Parse() as SetTransactionStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal(TransactionIsolationLevel.Serializable, stmt.IsolationLevel);
+    }
+
+    [Fact]
+    public void Parse_SetTransactionReadOnly()
+    {
+        var parser = new Parser("SET TRANSACTION READ ONLY");
+        var stmt = parser.Parse() as SetTransactionStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Null(stmt.IsolationLevel);
+        Assert.Equal(TransactionAccessMode.ReadOnly, stmt.AccessMode);
+    }
+
+    [Fact]
+    public void Parse_SetTransactionReadWrite()
+    {
+        var parser = new Parser("SET TRANSACTION READ WRITE");
+        var stmt = parser.Parse() as SetTransactionStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Null(stmt.IsolationLevel);
+        Assert.Equal(TransactionAccessMode.ReadWrite, stmt.AccessMode);
+    }
+
+    [Fact]
+    public void Parse_SetTransactionIsolationAndAccess()
+    {
+        var parser = new Parser("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY");
+        var stmt = parser.Parse() as SetTransactionStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal(TransactionIsolationLevel.ReadCommitted, stmt.IsolationLevel);
+        Assert.Equal(TransactionAccessMode.ReadOnly, stmt.AccessMode);
+    }
+
+    [Fact]
+    public void Parse_SetGlobalTransaction()
+    {
+        var parser = new Parser("SET GLOBAL TRANSACTION ISOLATION LEVEL SERIALIZABLE");
+        var stmt = parser.Parse() as SetTransactionStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal(SetScope.Global, stmt.Scope);
+        Assert.Equal(TransactionIsolationLevel.Serializable, stmt.IsolationLevel);
+    }
+
+    [Fact]
+    public void Parse_SetSessionTransaction()
+    {
+        var parser = new Parser("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+        var stmt = parser.Parse() as SetTransactionStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal(SetScope.Session, stmt.Scope);
+        Assert.Equal(TransactionIsolationLevel.RepeatableRead, stmt.IsolationLevel);
     }
 
     #endregion
