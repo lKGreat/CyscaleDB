@@ -19,6 +19,11 @@ public class ExecutionResult
     public long AffectedRows { get; }
 
     /// <summary>
+    /// The last inserted auto-increment ID.
+    /// </summary>
+    public long LastInsertId { get; }
+
+    /// <summary>
     /// The result set (for SELECT queries).
     /// </summary>
     public ResultSet? ResultSet { get; }
@@ -33,15 +38,15 @@ public class ExecutionResult
     /// </summary>
     public static ExecutionResult Query(ResultSet resultSet)
     {
-        return new ExecutionResult(ResultType.Query, 0, resultSet, null);
+        return new ExecutionResult(ResultType.Query, 0, 0, resultSet, null);
     }
 
     /// <summary>
     /// Creates a result for a modification statement.
     /// </summary>
-    public static ExecutionResult Modification(long affectedRows)
+    public static ExecutionResult Modification(long affectedRows, long lastInsertId = 0)
     {
-        return new ExecutionResult(ResultType.Modification, affectedRows, null, null);
+        return new ExecutionResult(ResultType.Modification, affectedRows, lastInsertId, null, null);
     }
 
     /// <summary>
@@ -49,7 +54,7 @@ public class ExecutionResult
     /// </summary>
     public static ExecutionResult Ddl(string message)
     {
-        return new ExecutionResult(ResultType.Ddl, 0, null, message);
+        return new ExecutionResult(ResultType.Ddl, 0, 0, null, message);
     }
 
     /// <summary>
@@ -57,13 +62,14 @@ public class ExecutionResult
     /// </summary>
     public static ExecutionResult Empty()
     {
-        return new ExecutionResult(ResultType.Empty, 0, null, null);
+        return new ExecutionResult(ResultType.Empty, 0, 0, null, null);
     }
 
-    private ExecutionResult(ResultType type, long affectedRows, ResultSet? resultSet, string? message)
+    private ExecutionResult(ResultType type, long affectedRows, long lastInsertId, ResultSet? resultSet, string? message)
     {
         Type = type;
         AffectedRows = affectedRows;
+        LastInsertId = lastInsertId;
         ResultSet = resultSet;
         Message = message;
     }

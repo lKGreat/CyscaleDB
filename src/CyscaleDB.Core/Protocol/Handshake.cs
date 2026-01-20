@@ -15,7 +15,7 @@ public static class Handshake
     /// <summary>
     /// Creates a handshake packet (Initial Handshake Packet).
     /// </summary>
-    public static byte[] CreateHandshakePacket(string serverVersion, byte[] salt, int capabilities)
+    public static byte[] CreateHandshakePacket(string serverVersion, byte[] salt, uint capabilities)
     {
         using var buffer = new MemoryStream();
 

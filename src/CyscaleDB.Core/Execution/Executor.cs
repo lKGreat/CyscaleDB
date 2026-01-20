@@ -4,6 +4,7 @@ using CyscaleDB.Core.Execution.Operators;
 using CyscaleDB.Core.Parsing;
 using CyscaleDB.Core.Parsing.Ast;
 using CyscaleDB.Core.Storage;
+using CyscaleDB.Core.Transactions;
 
 namespace CyscaleDB.Core.Execution;
 
@@ -13,8 +14,11 @@ namespace CyscaleDB.Core.Execution;
 public sealed class Executor
 {
     private readonly Catalog _catalog;
+    private readonly TransactionManager? _transactionManager;
     private readonly Logger _logger;
     private string _currentDatabase;
+    private Transaction? _currentTransaction;
+    private long _lastInsertId;
 
     /// <summary>
     /// Gets or sets the current database name.
@@ -30,9 +34,20 @@ public sealed class Executor
         }
     }
 
+    /// <summary>
+    /// Gets whether there is an active transaction.
+    /// </summary>
+    public bool InTransaction => _currentTransaction != null;
+
     public Executor(Catalog catalog, string? defaultDatabase = null)
+        : this(catalog, null, defaultDatabase)
+    {
+    }
+
+    public Executor(Catalog catalog, TransactionManager? transactionManager, string? defaultDatabase = null)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
+        _transactionManager = transactionManager;
         _logger = LogManager.Default.GetLogger<Executor>();
         _currentDatabase = defaultDatabase ?? Constants.DefaultDatabaseName;
     }
@@ -87,6 +102,10 @@ public sealed class Executor
     {
         IOperator op;
 
+        // Check if this is an aggregate query without GROUP BY
+        bool hasAggregates = HasAggregateFunctions(stmt);
+        bool hasGroupBy = stmt.GroupBy.Count > 0;
+
         // FROM clause
         if (stmt.From != null)
         {
@@ -94,8 +113,8 @@ public sealed class Executor
         }
         else
         {
-            // SELECT without FROM (e.g., SELECT 1)
-            throw new CyscaleException("SELECT without FROM is not yet supported");
+            // SELECT without FROM (e.g., SELECT 1, SELECT NOW())
+            op = new DualOperator(_currentDatabase);
         }
 
         // WHERE clause
@@ -105,11 +124,39 @@ public sealed class Executor
             op = new FilterOperator(op, predicate);
         }
 
-        // Projection (SELECT columns)
-        if (!IsSelectAll(stmt))
+        // GROUP BY clause with aggregates
+        if (hasGroupBy || hasAggregates)
         {
-            var projections = BuildProjections(stmt.Columns, op.Schema);
-            op = new ProjectOperator(op, projections, _currentDatabase, "result");
+            op = BuildGroupByOperator(stmt, op);
+        }
+        else
+        {
+            // Projection (SELECT columns) - only if no GROUP BY
+            if (!IsSelectAll(stmt))
+            {
+                var projections = BuildProjections(stmt.Columns, op.Schema);
+                op = new ProjectOperator(op, projections, _currentDatabase, "result");
+            }
+        }
+
+        // HAVING clause (applied after GROUP BY)
+        if (stmt.Having != null)
+        {
+            var havingPredicate = BuildExpression(stmt.Having, op.Schema);
+            op = new FilterOperator(op, havingPredicate);
+        }
+
+        // DISTINCT
+        if (stmt.IsDistinct)
+        {
+            op = new DistinctOperator(op);
+        }
+
+        // ORDER BY clause
+        if (stmt.OrderBy.Count > 0)
+        {
+            var sortKeys = BuildSortKeys(stmt.OrderBy, op.Schema);
+            op = new OrderByOperator(op, sortKeys);
         }
 
         // LIMIT/OFFSET
@@ -119,6 +166,98 @@ public sealed class Executor
         }
 
         return op;
+    }
+
+    private bool HasAggregateFunctions(SelectStatement stmt)
+    {
+        foreach (var col in stmt.Columns)
+        {
+            if (col.Expression is FunctionCall func && IsAggregateFunction(func.FunctionName))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsAggregateFunction(string name)
+    {
+        return name.ToUpperInvariant() switch
+        {
+            "COUNT" or "SUM" or "AVG" or "MIN" or "MAX" => true,
+            _ => false
+        };
+    }
+
+    private IOperator BuildGroupByOperator(SelectStatement stmt, IOperator input)
+    {
+        // Build group by key evaluators
+        var groupByKeys = new List<IExpressionEvaluator>();
+        foreach (var expr in stmt.GroupBy)
+        {
+            groupByKeys.Add(BuildExpression(expr, input.Schema));
+        }
+
+        // Build aggregate specifications from SELECT columns
+        var aggregates = new List<AggregateSpec>();
+        int groupKeyIdx = 0;
+
+        foreach (var col in stmt.Columns)
+        {
+            if (col.Expression is FunctionCall func && IsAggregateFunction(func.FunctionName))
+            {
+                var aggType = func.FunctionName.ToUpperInvariant() switch
+                {
+                    "COUNT" when func.IsStarArgument => AggregateType.CountAll,
+                    "COUNT" => AggregateType.Count,
+                    "SUM" => AggregateType.Sum,
+                    "AVG" => AggregateType.Avg,
+                    "MIN" => AggregateType.Min,
+                    "MAX" => AggregateType.Max,
+                    _ => throw new CyscaleException($"Unknown aggregate function: {func.FunctionName}")
+                };
+
+                IExpressionEvaluator? argExpr = null;
+                if (!func.IsStarArgument && func.Arguments.Count > 0)
+                {
+                    argExpr = BuildExpression(func.Arguments[0], input.Schema);
+                }
+
+                var outputType = aggType switch
+                {
+                    AggregateType.CountAll or AggregateType.Count => DataType.BigInt,
+                    AggregateType.Avg => DataType.Double,
+                    _ => func.Arguments.Count > 0 ? InferDataType(func.Arguments[0], input.Schema) : DataType.BigInt
+                };
+
+                var name = col.Alias ?? $"{func.FunctionName}(*)";
+                aggregates.Add(new AggregateSpec(aggType, argExpr, name, outputType));
+            }
+            else if (stmt.GroupBy.Count > 0)
+            {
+                // Non-aggregate column in GROUP BY query - should be in GROUP BY list
+                // For now, treat it as a group key output
+                if (groupKeyIdx < groupByKeys.Count)
+                {
+                    var name = col.Alias ?? GetExpressionName(col.Expression);
+                    var dataType = InferDataType(col.Expression, input.Schema);
+                    // Group keys will be in the output already
+                    groupKeyIdx++;
+                }
+            }
+        }
+
+        return new GroupByOperator(input, groupByKeys, aggregates, _currentDatabase, "result");
+    }
+
+    private List<SortKey> BuildSortKeys(List<OrderByClause> orderBy, TableSchema schema)
+    {
+        var sortKeys = new List<SortKey>();
+        foreach (var clause in orderBy)
+        {
+            var expr = BuildExpression(clause.Expression, schema);
+            var direction = clause.Descending ? SortDirection.Descending : SortDirection.Ascending;
+            sortKeys.Add(new SortKey(expr, direction));
+        }
+        return sortKeys;
     }
 
     private IOperator BuildTableReference(TableReference tableRef)
@@ -136,7 +275,7 @@ public sealed class Executor
     {
         var dbName = tableRef.DatabaseName ?? _currentDatabase;
         var table = _catalog.GetTable(dbName, tableRef.TableName);
-        
+
         if (table == null)
             throw new TableNotFoundException(tableRef.TableName);
 
@@ -227,10 +366,10 @@ public sealed class Executor
         {
             if (col.IsWildcard)
             {
-                // Handle table.* 
+                // Handle table.*
                 foreach (var schemaCol in schema.Columns)
                 {
-                    if (col.TableQualifier == null || 
+                    if (col.TableQualifier == null ||
                         schemaCol.Name.StartsWith($"{col.TableQualifier}_", StringComparison.OrdinalIgnoreCase))
                     {
                         var eval = new ColumnEvaluator(schemaCol.OrdinalPosition);
@@ -254,12 +393,13 @@ public sealed class Executor
     {
         var dbName = stmt.DatabaseName ?? _currentDatabase;
         var table = _catalog.GetTable(dbName, stmt.TableName);
-        
+
         if (table == null)
             throw new TableNotFoundException(stmt.TableName);
 
         var schema = table.Schema;
         long insertedCount = 0;
+        long lastId = 0;
 
         foreach (var valueList in stmt.ValuesList)
         {
@@ -306,6 +446,7 @@ public sealed class Executor
                 {
                     var nextVal = schema.GetNextAutoIncrementValue();
                     values[col.OrdinalPosition] = DataValue.FromBigInt(nextVal);
+                    lastId = nextVal;
                 }
             }
 
@@ -316,16 +457,17 @@ public sealed class Executor
 
         table.Flush();
         _catalog.UpdateTableSchema(schema);
+        _lastInsertId = lastId;
 
         _logger.Debug("Inserted {0} rows into {1}", insertedCount, stmt.TableName);
-        return ExecutionResult.Modification(insertedCount);
+        return ExecutionResult.Modification(insertedCount, lastId);
     }
 
     private ExecutionResult ExecuteUpdate(UpdateStatement stmt)
     {
         var dbName = stmt.DatabaseName ?? _currentDatabase;
         var table = _catalog.GetTable(dbName, stmt.TableName);
-        
+
         if (table == null)
             throw new TableNotFoundException(stmt.TableName);
 
@@ -378,7 +520,7 @@ public sealed class Executor
     {
         var dbName = stmt.DatabaseName ?? _currentDatabase;
         var table = _catalog.GetTable(dbName, stmt.TableName);
-        
+
         if (table == null)
             throw new TableNotFoundException(stmt.TableName);
 
@@ -581,23 +723,49 @@ public sealed class Executor
 
     private ExecutionResult ExecuteBegin()
     {
-        // TODO: Implement transaction support
-        _logger.Debug("BEGIN transaction (not yet implemented)");
+        if (_transactionManager == null)
+        {
+            _logger.Debug("BEGIN transaction (no transaction manager)");
+            return ExecutionResult.Ddl("Transaction started");
+        }
+
+        if (_currentTransaction != null)
+        {
+            throw new CyscaleException("Transaction already active");
+        }
+
+        _currentTransaction = _transactionManager.Begin();
+        _logger.Debug("BEGIN transaction {0}", _currentTransaction.TransactionId);
         return ExecutionResult.Ddl("Transaction started");
     }
 
     private ExecutionResult ExecuteCommit()
     {
-        // TODO: Implement transaction support
+        if (_transactionManager == null || _currentTransaction == null)
+        {
+            _catalog.Flush();
+            _logger.Debug("COMMIT (no active transaction)");
+            return ExecutionResult.Ddl("Transaction committed");
+        }
+
+        _transactionManager.Commit(_currentTransaction);
+        _logger.Debug("COMMIT transaction {0}", _currentTransaction.TransactionId);
+        _currentTransaction = null;
         _catalog.Flush();
-        _logger.Debug("COMMIT transaction (not yet implemented)");
         return ExecutionResult.Ddl("Transaction committed");
     }
 
     private ExecutionResult ExecuteRollback()
     {
-        // TODO: Implement transaction support
-        _logger.Debug("ROLLBACK transaction (not yet implemented)");
+        if (_transactionManager == null || _currentTransaction == null)
+        {
+            _logger.Debug("ROLLBACK (no active transaction)");
+            return ExecutionResult.Ddl("Transaction rolled back");
+        }
+
+        _transactionManager.Rollback(_currentTransaction);
+        _logger.Debug("ROLLBACK transaction {0}", _currentTransaction.TransactionId);
+        _currentTransaction = null;
         return ExecutionResult.Ddl("Transaction rolled back");
     }
 
@@ -616,8 +784,84 @@ public sealed class Executor
             InExpression inExpr => BuildInExpression(inExpr, schema),
             BetweenExpression between => BuildBetweenExpression(between, schema),
             IsNullExpression isNull => BuildIsNullExpression(isNull, schema),
+            FunctionCall func => BuildFunctionCall(func, schema),
             _ => throw new CyscaleException($"Unsupported expression type: {expr.GetType().Name}")
         };
+    }
+
+    private IExpressionEvaluator BuildFunctionCall(FunctionCall func, TableSchema schema)
+    {
+        var funcName = func.FunctionName.ToUpperInvariant();
+
+        // Handle built-in functions
+        return funcName switch
+        {
+            "NOW" or "CURRENT_TIMESTAMP" => new ConstantEvaluator(DataValue.FromDateTime(DateTime.Now)),
+            "CURDATE" or "CURRENT_DATE" => new ConstantEvaluator(DataValue.FromDate(DateOnly.FromDateTime(DateTime.Now))),
+            "CURTIME" or "CURRENT_TIME" => new ConstantEvaluator(DataValue.FromTime(TimeOnly.FromDateTime(DateTime.Now))),
+            "DATABASE" or "SCHEMA" => new ConstantEvaluator(DataValue.FromVarChar(_currentDatabase)),
+            "VERSION" => new ConstantEvaluator(DataValue.FromVarChar(Constants.ServerVersion)),
+            "USER" or "CURRENT_USER" => new ConstantEvaluator(DataValue.FromVarChar("root@localhost")),
+            "CONNECTION_ID" => new ConstantEvaluator(DataValue.FromBigInt(1)),
+            "LAST_INSERT_ID" => new ConstantEvaluator(DataValue.FromBigInt(_lastInsertId)),
+            "ROW_COUNT" => new ConstantEvaluator(DataValue.FromBigInt(0)),
+            "FOUND_ROWS" => new ConstantEvaluator(DataValue.FromBigInt(0)),
+            "UPPER" or "UCASE" => BuildStringFunction(func, schema, s => s.ToUpperInvariant()),
+            "LOWER" or "LCASE" => BuildStringFunction(func, schema, s => s.ToLowerInvariant()),
+            "LENGTH" or "CHAR_LENGTH" or "CHARACTER_LENGTH" => BuildLengthFunction(func, schema),
+            "CONCAT" => BuildConcatFunction(func, schema),
+            "IFNULL" or "COALESCE" => BuildIfNullFunction(func, schema),
+            "IF" => BuildIfFunction(func, schema),
+            _ when IsAggregateFunction(funcName) => 
+                // Aggregates in non-GROUP BY context - return constant for now
+                new ConstantEvaluator(DataValue.Null),
+            _ => throw new CyscaleException($"Unknown function: {func.FunctionName}")
+        };
+    }
+
+    private IExpressionEvaluator BuildStringFunction(FunctionCall func, TableSchema schema, Func<string, string> transform)
+    {
+        if (func.Arguments.Count < 1)
+            throw new CyscaleException($"{func.FunctionName} requires 1 argument");
+
+        var argEval = BuildExpression(func.Arguments[0], schema);
+        return new StringFunctionEvaluator(argEval, transform);
+    }
+
+    private IExpressionEvaluator BuildLengthFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 1)
+            throw new CyscaleException($"{func.FunctionName} requires 1 argument");
+
+        var argEval = BuildExpression(func.Arguments[0], schema);
+        return new LengthFunctionEvaluator(argEval);
+    }
+
+    private IExpressionEvaluator BuildConcatFunction(FunctionCall func, TableSchema schema)
+    {
+        var args = func.Arguments.Select(a => BuildExpression(a, schema)).ToList();
+        return new ConcatFunctionEvaluator(args);
+    }
+
+    private IExpressionEvaluator BuildIfNullFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException($"{func.FunctionName} requires 2 arguments");
+
+        var expr = BuildExpression(func.Arguments[0], schema);
+        var defaultVal = BuildExpression(func.Arguments[1], schema);
+        return new IfNullEvaluator(expr, defaultVal);
+    }
+
+    private IExpressionEvaluator BuildIfFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 3)
+            throw new CyscaleException("IF requires 3 arguments");
+
+        var condition = BuildExpression(func.Arguments[0], schema);
+        var trueVal = BuildExpression(func.Arguments[1], schema);
+        var falseVal = BuildExpression(func.Arguments[2], schema);
+        return new IfEvaluator(condition, trueVal, falseVal);
     }
 
     private IExpressionEvaluator BuildExpressionWithJoin(Expression expr, TableSchema leftSchema, TableSchema rightSchema, TableSchema combinedSchema)
@@ -778,7 +1022,20 @@ public sealed class Executor
         {
             LiteralExpression lit => lit.Value,
             UnaryExpression un when un.Operator == Parsing.Ast.UnaryOperator.Negate && un.Operand is LiteralExpression lit => NegateValue(lit.Value),
+            FunctionCall func => EvaluateConstantFunction(func),
             _ => throw new CyscaleException($"Expected literal expression, got: {expr.GetType().Name}")
+        };
+    }
+
+    private DataValue EvaluateConstantFunction(FunctionCall func)
+    {
+        var funcName = func.FunctionName.ToUpperInvariant();
+        return funcName switch
+        {
+            "NOW" or "CURRENT_TIMESTAMP" => DataValue.FromDateTime(DateTime.Now),
+            "CURDATE" or "CURRENT_DATE" => DataValue.FromDate(DateOnly.FromDateTime(DateTime.Now)),
+            "CURTIME" or "CURRENT_TIME" => DataValue.FromTime(TimeOnly.FromDateTime(DateTime.Now)),
+            _ => DataValue.Null
         };
     }
 
@@ -800,7 +1057,8 @@ public sealed class Executor
         return expr switch
         {
             ColumnReference col => col.TableName != null ? $"{col.TableName}.{col.ColumnName}" : col.ColumnName,
-            FunctionCall func => $"{func.FunctionName}(...)",
+            FunctionCall func => func.IsStarArgument ? $"{func.FunctionName}(*)" : $"{func.FunctionName}(...)",
+            LiteralExpression lit => lit.Value.IsNull ? "NULL" : lit.Value.GetRawValue()?.ToString() ?? "expr",
             _ => "expr"
         };
     }
@@ -812,6 +1070,22 @@ public sealed class Executor
             LiteralExpression lit => lit.Value.Type,
             ColumnReference col => schema.GetColumn(col.ColumnName)?.DataType ?? DataType.VarChar,
             BinaryExpression bin => InferBinaryResultType(bin.Operator, InferDataType(bin.Left, schema), InferDataType(bin.Right, schema)),
+            FunctionCall func => InferFunctionResultType(func),
+            _ => DataType.VarChar
+        };
+    }
+
+    private static DataType InferFunctionResultType(FunctionCall func)
+    {
+        return func.FunctionName.ToUpperInvariant() switch
+        {
+            "COUNT" => DataType.BigInt,
+            "SUM" or "AVG" => DataType.Double,
+            "MIN" or "MAX" => DataType.VarChar, // Depends on argument
+            "NOW" or "CURRENT_TIMESTAMP" => DataType.DateTime,
+            "CURDATE" or "CURRENT_DATE" => DataType.Date,
+            "CURTIME" or "CURRENT_TIME" => DataType.Time,
+            "LENGTH" or "CHAR_LENGTH" => DataType.Int,
             _ => DataType.VarChar
         };
     }
@@ -839,3 +1113,119 @@ public sealed class Executor
 
     #endregion
 }
+
+#region Additional Expression Evaluators
+
+/// <summary>
+/// Evaluates string functions like UPPER, LOWER.
+/// </summary>
+internal sealed class StringFunctionEvaluator : IExpressionEvaluator
+{
+    private readonly IExpressionEvaluator _argument;
+    private readonly Func<string, string> _transform;
+
+    public StringFunctionEvaluator(IExpressionEvaluator argument, Func<string, string> transform)
+    {
+        _argument = argument;
+        _transform = transform;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        var val = _argument.Evaluate(row);
+        if (val.IsNull) return DataValue.Null;
+        return DataValue.FromVarChar(_transform(val.AsString()));
+    }
+}
+
+/// <summary>
+/// Evaluates LENGTH function.
+/// </summary>
+internal sealed class LengthFunctionEvaluator : IExpressionEvaluator
+{
+    private readonly IExpressionEvaluator _argument;
+
+    public LengthFunctionEvaluator(IExpressionEvaluator argument)
+    {
+        _argument = argument;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        var val = _argument.Evaluate(row);
+        if (val.IsNull) return DataValue.Null;
+        return DataValue.FromInt(val.AsString().Length);
+    }
+}
+
+/// <summary>
+/// Evaluates CONCAT function.
+/// </summary>
+internal sealed class ConcatFunctionEvaluator : IExpressionEvaluator
+{
+    private readonly List<IExpressionEvaluator> _arguments;
+
+    public ConcatFunctionEvaluator(List<IExpressionEvaluator> arguments)
+    {
+        _arguments = arguments;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var arg in _arguments)
+        {
+            var val = arg.Evaluate(row);
+            if (val.IsNull) return DataValue.Null; // MySQL behavior: CONCAT with NULL returns NULL
+            sb.Append(val.AsString());
+        }
+        return DataValue.FromVarChar(sb.ToString());
+    }
+}
+
+/// <summary>
+/// Evaluates IFNULL/COALESCE function.
+/// </summary>
+internal sealed class IfNullEvaluator : IExpressionEvaluator
+{
+    private readonly IExpressionEvaluator _expression;
+    private readonly IExpressionEvaluator _defaultValue;
+
+    public IfNullEvaluator(IExpressionEvaluator expression, IExpressionEvaluator defaultValue)
+    {
+        _expression = expression;
+        _defaultValue = defaultValue;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        var val = _expression.Evaluate(row);
+        return val.IsNull ? _defaultValue.Evaluate(row) : val;
+    }
+}
+
+/// <summary>
+/// Evaluates IF function.
+/// </summary>
+internal sealed class IfEvaluator : IExpressionEvaluator
+{
+    private readonly IExpressionEvaluator _condition;
+    private readonly IExpressionEvaluator _trueValue;
+    private readonly IExpressionEvaluator _falseValue;
+
+    public IfEvaluator(IExpressionEvaluator condition, IExpressionEvaluator trueValue, IExpressionEvaluator falseValue)
+    {
+        _condition = condition;
+        _trueValue = trueValue;
+        _falseValue = falseValue;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        var cond = _condition.Evaluate(row);
+        var isTrue = !cond.IsNull && cond.Type == DataType.Boolean && cond.AsBoolean();
+        return isTrue ? _trueValue.Evaluate(row) : _falseValue.Evaluate(row);
+    }
+}
+
+#endregion

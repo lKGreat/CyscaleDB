@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -9,7 +10,69 @@ using CyscaleDB.Core.Transactions;
 namespace CyscaleDB.Core.Protocol;
 
 /// <summary>
+/// MySQL protocol capability flags.
+/// </summary>
+[Flags]
+public enum MySqlCapabilities : uint
+{
+    None = 0,
+    LongPassword = 1,
+    FoundRows = 2,
+    LongFlag = 4,
+    ConnectWithDb = 8,
+    NoSchema = 16,
+    Compress = 32,
+    Odbc = 64,
+    LocalFiles = 128,
+    IgnoreSpace = 256,
+    Protocol41 = 512,
+    Interactive = 1024,
+    Ssl = 2048,
+    IgnoreSigpipe = 4096,
+    Transactions = 8192,
+    Reserved = 16384,
+    SecureConnection = 32768,
+    MultiStatements = 65536,
+    MultiResults = 131072,
+    PsMultiResults = 262144,
+    PluginAuth = 524288,
+    ConnectAttrs = 1048576,
+    PluginAuthLenencClientData = 2097152,
+    CanHandleExpiredPasswords = 4194304,
+    SessionTrack = 8388608,
+    DeprecateEof = 16777216,
+    OptionalResultsetMetadata = 33554432,
+    ZstdCompressionAlgorithm = 67108864,
+    QueryAttributes = 134217728,
+    MultiFactor = 268435456,
+    CapabilityExtension = 536870912,
+}
+
+/// <summary>
+/// MySQL server status flags.
+/// </summary>
+[Flags]
+public enum MySqlServerStatus : ushort
+{
+    InTransaction = 1,
+    AutoCommit = 2,
+    MoreResultsExist = 8,
+    NoGoodIndexUsed = 16,
+    NoIndexUsed = 32,
+    CursorExists = 64,
+    LastRowSent = 128,
+    DbDropped = 256,
+    NoBackslashEscapes = 512,
+    MetadataChanged = 1024,
+    QueryWasSlow = 2048,
+    PsOutParams = 4096,
+    InTransactionReadonly = 8192,
+    SessionStateChanged = 16384,
+}
+
+/// <summary>
 /// MySQL protocol server that handles client connections.
+/// Implements MySQL 8.0+ protocol with CLIENT_DEPRECATE_EOF support.
 /// </summary>
 public sealed class MySqlServer : IDisposable
 {
@@ -28,13 +91,31 @@ public sealed class MySqlServer : IDisposable
     public int Port { get; }
 
     /// <summary>
+    /// Server capabilities advertised to clients.
+    /// </summary>
+    public static MySqlCapabilities ServerCapabilities =>
+        MySqlCapabilities.Protocol41 |
+        MySqlCapabilities.ConnectWithDb |
+        MySqlCapabilities.SecureConnection |
+        MySqlCapabilities.PluginAuth |
+        MySqlCapabilities.PluginAuthLenencClientData |
+        MySqlCapabilities.Transactions |
+        MySqlCapabilities.MultiStatements |
+        MySqlCapabilities.MultiResults |
+        MySqlCapabilities.DeprecateEof |
+        MySqlCapabilities.SessionTrack |
+        MySqlCapabilities.FoundRows |
+        MySqlCapabilities.IgnoreSpace |
+        MySqlCapabilities.Interactive;
+
+    /// <summary>
     /// Creates a new MySQL protocol server.
     /// </summary>
     public MySqlServer(StorageEngine storageEngine, TransactionManager transactionManager, int port = Constants.DefaultPort)
     {
         _storageEngine = storageEngine ?? throw new ArgumentNullException(nameof(storageEngine));
         _transactionManager = transactionManager ?? throw new ArgumentNullException(nameof(transactionManager));
-        _executor = new Executor(storageEngine.Catalog);
+        _executor = new Executor(storageEngine.Catalog, transactionManager);
         _listener = new TcpListener(IPAddress.Any, port);
         _logger = LogManager.Default.GetLogger<MySqlServer>();
         _cancellationTokenSource = new CancellationTokenSource();
@@ -113,11 +194,10 @@ public sealed class MySqlServer : IDisposable
 
                 // Send handshake packet
                 var salt = Handshake.GenerateSalt();
-                var capabilities = GetServerCapabilities();
                 var handshakePacket = Handshake.CreateHandshakePacket(
                     Constants.ServerVersion,
                     salt,
-                    capabilities);
+                    (uint)ServerCapabilities);
 
                 await writer.WritePacketAsync(handshakePacket, cancellationToken);
                 writer.ResetSequence();
@@ -127,17 +207,22 @@ public sealed class MySqlServer : IDisposable
                 var responsePacket = await reader.ReadPacketAsync(cancellationToken);
                 var response = Handshake.ParseHandshakeResponse(responsePacket);
 
-                _logger.Debug("Client authenticated: username={0}, database={1}", response.Username, response.Database ?? "(none)");
+                _logger.Debug("Client authenticated: username={0}, database={1}, capabilities=0x{2:X8}",
+                    response.Username, response.Database ?? "(none)", response.Capabilities);
+
+                // Create client session with negotiated capabilities
+                var clientCapabilities = (MySqlCapabilities)(response.Capabilities & (int)ServerCapabilities);
+                var session = new ClientSession(clientCapabilities, _executor);
 
                 // Send OK packet (authentication success)
-                await SendOkPacketAsync(writer, cancellationToken);
+                await SendOkPacketAsync(writer, session, cancellationToken);
 
                 // Set database if requested
                 if (!string.IsNullOrEmpty(response.Database))
                 {
                     try
                     {
-                        _executor.CurrentDatabase = response.Database;
+                        session.CurrentDatabase = response.Database;
                     }
                     catch (DatabaseNotFoundException)
                     {
@@ -147,7 +232,7 @@ public sealed class MySqlServer : IDisposable
                 }
 
                 // Command loop
-                await ProcessCommandsAsync(reader, writer, cancellationToken);
+                await ProcessCommandsAsync(reader, writer, session, cancellationToken);
             }
         }
         catch (Exception ex)
@@ -160,7 +245,7 @@ public sealed class MySqlServer : IDisposable
         }
     }
 
-    private async Task ProcessCommandsAsync(PacketReader reader, PacketWriter writer, CancellationToken cancellationToken)
+    private async Task ProcessCommandsAsync(PacketReader reader, PacketWriter writer, ClientSession session, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -178,14 +263,40 @@ public sealed class MySqlServer : IDisposable
                     case 0x01: // COM_QUIT
                         return; // Close connection
 
-                    case 0x0E: // COM_PING
-                        await SendOkPacketAsync(writer, cancellationToken);
+                    case 0x02: // COM_INIT_DB
+                        await HandleInitDbAsync(writer, session, payload, cancellationToken);
                         break;
 
                     case 0x03: // COM_QUERY
                         var sql = Encoding.UTF8.GetString(payload);
                         _logger.Debug("Executing SQL: {0}", sql);
-                        await ExecuteQueryAsync(writer, sql, cancellationToken);
+                        await ExecuteQueryAsync(writer, session, sql, cancellationToken);
+                        break;
+
+                    case 0x04: // COM_FIELD_LIST
+                        await HandleFieldListAsync(writer, session, payload, cancellationToken);
+                        break;
+
+                    case 0x09: // COM_STATISTICS
+                        await HandleStatisticsAsync(writer, cancellationToken);
+                        break;
+
+                    case 0x0E: // COM_PING
+                        await SendOkPacketAsync(writer, session, cancellationToken);
+                        break;
+
+                    case 0x11: // COM_CHANGE_USER
+                        // For now, just accept the change
+                        await SendOkPacketAsync(writer, session, cancellationToken);
+                        break;
+
+                    case 0x19: // COM_RESET_CONNECTION
+                        session.Reset();
+                        await SendOkPacketAsync(writer, session, cancellationToken);
+                        break;
+
+                    case 0x1B: // COM_SET_OPTION
+                        await HandleSetOptionAsync(writer, session, payload, cancellationToken);
                         break;
 
                     default:
@@ -202,37 +313,121 @@ public sealed class MySqlServer : IDisposable
             catch (Exception ex)
             {
                 _logger.Error("Error processing command", ex);
-                await SendErrorPacketAsync(writer, 1064, "42000", $"Error executing query: {ex.Message}", cancellationToken);
+                try
+                {
+                    await SendErrorPacketAsync(writer, 1064, "42000", $"Error executing query: {ex.Message}", cancellationToken);
+                }
+                catch
+                {
+                    // Ignore errors when sending error response
+                }
             }
         }
     }
 
-    private async Task ExecuteQueryAsync(PacketWriter writer, string sql, CancellationToken cancellationToken)
+    private async Task HandleInitDbAsync(PacketWriter writer, ClientSession session, byte[] payload, CancellationToken cancellationToken)
+    {
+        var dbName = Encoding.UTF8.GetString(payload);
+        try
+        {
+            session.CurrentDatabase = dbName;
+            await SendOkPacketAsync(writer, session, cancellationToken);
+        }
+        catch (DatabaseNotFoundException)
+        {
+            await SendErrorPacketAsync(writer, 1049, "42000", $"Unknown database '{dbName}'", cancellationToken);
+        }
+    }
+
+    private async Task HandleFieldListAsync(PacketWriter writer, ClientSession session, byte[] payload, CancellationToken cancellationToken)
+    {
+        // Parse table name (null-terminated)
+        var offset = 0;
+        var tableName = PacketReader.ReadNullTerminatedString(payload, ref offset, Encoding.UTF8);
+
+        try
+        {
+            var schema = _storageEngine.Catalog.GetTableSchema(session.CurrentDatabase, tableName);
+            if (schema == null)
+            {
+                await SendErrorPacketAsync(writer, 1146, "42S02", $"Table '{tableName}' doesn't exist", cancellationToken);
+                return;
+            }
+
+            // Send column definitions
+            foreach (var column in schema.Columns)
+            {
+                var resultColumn = new ResultColumn
+                {
+                    Name = column.Name,
+                    DataType = column.DataType,
+                    TableName = tableName,
+                    DatabaseName = session.CurrentDatabase
+                };
+                await SendColumnDefinitionAsync(writer, session, resultColumn, cancellationToken);
+            }
+
+            // Send EOF or OK based on capabilities
+            await SendEofOrOkPacketAsync(writer, session, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            await SendErrorPacketAsync(writer, 1064, "42000", ex.Message, cancellationToken);
+        }
+    }
+
+    private async Task HandleStatisticsAsync(PacketWriter writer, CancellationToken cancellationToken)
+    {
+        var stats = _storageEngine.GetBufferPoolStats();
+        var uptime = (long)(DateTime.UtcNow - Process.GetCurrentProcess().StartTime.ToUniversalTime()).TotalSeconds;
+        var message = $"Uptime: {uptime}  Threads: 1  Questions: 0  Slow queries: 0  " +
+                      $"Opens: 0  Flush tables: 0  Open tables: {stats.cachedPages}  " +
+                      $"Queries per second avg: 0.000";
+
+        var messageBytes = Encoding.UTF8.GetBytes(message);
+        await writer.WritePacketAsync(messageBytes, cancellationToken);
+    }
+
+    private async Task HandleSetOptionAsync(PacketWriter writer, ClientSession session, byte[] payload, CancellationToken cancellationToken)
+    {
+        if (payload.Length >= 2)
+        {
+            var option = payload[0] | (payload[1] << 8);
+            // 0 = MYSQL_OPTION_MULTI_STATEMENTS_ON
+            // 1 = MYSQL_OPTION_MULTI_STATEMENTS_OFF
+            session.MultiStatements = option == 0;
+        }
+        await SendEofOrOkPacketAsync(writer, session, cancellationToken);
+    }
+
+    private async Task ExecuteQueryAsync(PacketWriter writer, ClientSession session, string sql, CancellationToken cancellationToken)
     {
         try
         {
-            var result = _executor.Execute(sql);
+            var result = session.Executor.Execute(sql);
 
             switch (result.Type)
             {
                 case ResultType.Query:
-                    await SendResultSetAsync(writer, result.ResultSet!, cancellationToken);
+                    await SendResultSetAsync(writer, session, result.ResultSet!, cancellationToken);
                     break;
 
                 case ResultType.Modification:
-                    await SendOkPacketAsync(writer, cancellationToken, affectedRows: result.AffectedRows);
+                    await SendOkPacketAsync(writer, session, cancellationToken, 
+                        affectedRows: result.AffectedRows, 
+                        lastInsertId: result.LastInsertId);
                     break;
 
                 case ResultType.Ddl:
-                    await SendOkPacketAsync(writer, cancellationToken, message: result.Message);
+                    await SendOkPacketAsync(writer, session, cancellationToken, message: result.Message);
                     break;
 
                 case ResultType.Empty:
-                    await SendOkPacketAsync(writer, cancellationToken);
+                    await SendOkPacketAsync(writer, session, cancellationToken);
                     break;
 
                 default:
-                    await SendOkPacketAsync(writer, cancellationToken);
+                    await SendOkPacketAsync(writer, session, cancellationToken);
                     break;
             }
         }
@@ -243,7 +438,7 @@ public sealed class MySqlServer : IDisposable
         }
     }
 
-    private async Task SendResultSetAsync(PacketWriter writer, ResultSet resultSet, CancellationToken cancellationToken)
+    private async Task SendResultSetAsync(PacketWriter writer, ClientSession session, ResultSet resultSet, CancellationToken cancellationToken)
     {
         // Send column count packet
         var columnCountPacket = new MemoryStream();
@@ -253,11 +448,14 @@ public sealed class MySqlServer : IDisposable
         // Send column definition packets
         foreach (var column in resultSet.Columns)
         {
-            await SendColumnDefinitionAsync(writer, column, cancellationToken);
+            await SendColumnDefinitionAsync(writer, session, column, cancellationToken);
         }
 
-        // Send EOF packet (before rows)
-        await SendEofPacketAsync(writer, cancellationToken);
+        // Send EOF packet (before rows) - only if not using DEPRECATE_EOF
+        if (!session.UseDeprecateEof)
+        {
+            await SendEofPacketAsync(writer, session, cancellationToken);
+        }
 
         // Send row data packets
         foreach (var row in resultSet.Rows)
@@ -265,11 +463,11 @@ public sealed class MySqlServer : IDisposable
             await SendRowPacketAsync(writer, row, cancellationToken);
         }
 
-        // Send EOF packet (after rows)
-        await SendEofPacketAsync(writer, cancellationToken);
+        // Send EOF or OK packet (after rows)
+        await SendEofOrOkPacketAsync(writer, session, cancellationToken);
     }
 
-    private async Task SendColumnDefinitionAsync(PacketWriter writer, ResultColumn column, CancellationToken cancellationToken)
+    private async Task SendColumnDefinitionAsync(PacketWriter writer, ClientSession session, ResultColumn column, CancellationToken cancellationToken)
     {
         using var buffer = new MemoryStream();
 
@@ -277,7 +475,7 @@ public sealed class MySqlServer : IDisposable
         PacketWriter.WriteLengthEncodedString(buffer, "def", Encoding.UTF8);
 
         // Schema (database name)
-        PacketWriter.WriteLengthEncodedString(buffer, column.DatabaseName ?? _executor.CurrentDatabase, Encoding.UTF8);
+        PacketWriter.WriteLengthEncodedString(buffer, column.DatabaseName ?? session.CurrentDatabase, Encoding.UTF8);
 
         // Table (table name, empty for expressions)
         PacketWriter.WriteLengthEncodedString(buffer, column.TableName ?? "", Encoding.UTF8);
@@ -295,26 +493,22 @@ public sealed class MySqlServer : IDisposable
         buffer.WriteByte(0x0C);
 
         // Character set (UTF8MB4 = 255)
-        var charsetBytes = new byte[2];
-        charsetBytes[0] = 255;
-        charsetBytes[1] = 0;
-        buffer.Write(charsetBytes);
+        buffer.WriteByte(255);
+        buffer.WriteByte(0);
 
-        // Column length
+        // Column length (4 bytes, little-endian)
         var columnLength = GetColumnLength(column.DataType);
-        var lengthBytes = BitConverter.GetBytes(columnLength);
-        if (!BitConverter.IsLittleEndian)
-            Array.Reverse(lengthBytes);
-        buffer.Write(lengthBytes);
+        buffer.WriteByte((byte)(columnLength & 0xFF));
+        buffer.WriteByte((byte)((columnLength >> 8) & 0xFF));
+        buffer.WriteByte((byte)((columnLength >> 16) & 0xFF));
+        buffer.WriteByte((byte)((columnLength >> 24) & 0xFF));
 
         // Column type
         buffer.WriteByte(GetMySqlColumnType(column.DataType));
 
-        // Flags
-        var flagsBytes = new byte[2];
-        flagsBytes[0] = 0;
-        flagsBytes[1] = 0;
-        buffer.Write(flagsBytes);
+        // Flags (2 bytes)
+        buffer.WriteByte(0);
+        buffer.WriteByte(0);
 
         // Decimals
         buffer.WriteByte(0);
@@ -345,77 +539,31 @@ public sealed class MySqlServer : IDisposable
         await writer.WritePacketAsync(buffer.ToArray(), cancellationToken);
     }
 
-    private void WriteValue(MemoryStream buffer, DataValue value)
+    private static void WriteValue(MemoryStream buffer, DataValue value)
     {
-        switch (value.Type)
+        // MySQL text protocol: all values are sent as length-encoded strings
+        string strValue = value.Type switch
         {
-            case DataType.Int:
-                var intVal = value.AsInt();
-                // Convert to string for proper encoding (handles negatives)
-                var intStr = intVal.ToString();
-                PacketWriter.WriteLengthEncodedString(buffer, intStr, Encoding.UTF8);
-                break;
+            DataType.Int => value.AsInt().ToString(),
+            DataType.BigInt => value.AsBigInt().ToString(),
+            DataType.SmallInt => value.AsSmallInt().ToString(),
+            DataType.TinyInt => value.AsTinyInt().ToString(),
+            DataType.Boolean => value.AsBoolean() ? "1" : "0",  // Fixed: Boolean as string
+            DataType.VarChar or DataType.Char or DataType.Text => value.AsString(),
+            DataType.DateTime => value.AsDateTime().ToString("yyyy-MM-dd HH:mm:ss"),
+            DataType.Date => value.AsDate().ToString("yyyy-MM-dd"),
+            DataType.Time => value.AsTime().ToString(@"hh\:mm\:ss"),
+            DataType.Float => value.AsFloat().ToString("G9"),
+            DataType.Double => value.AsDouble().ToString("G17"),
+            DataType.Decimal => value.AsDecimal().ToString("G"),
+            _ => value.GetRawValue()?.ToString() ?? ""
+        };
 
-            case DataType.BigInt:
-                var bigIntVal = value.AsBigInt();
-                var bigIntStr = bigIntVal.ToString();
-                PacketWriter.WriteLengthEncodedString(buffer, bigIntStr, Encoding.UTF8);
-                break;
-
-            case DataType.SmallInt:
-            case DataType.TinyInt:
-                var smallIntVal = value.Type == DataType.SmallInt ? (long)value.AsSmallInt() : value.AsTinyInt();
-                var smallStr = smallIntVal.ToString();
-                PacketWriter.WriteLengthEncodedString(buffer, smallStr, Encoding.UTF8);
-                break;
-
-            case DataType.Boolean:
-                buffer.WriteByte((byte)(value.AsBoolean() ? 1 : 0));
-                break;
-
-            case DataType.VarChar:
-            case DataType.Char:
-            case DataType.Text:
-                PacketWriter.WriteLengthEncodedString(buffer, value.AsString(), Encoding.UTF8);
-                break;
-
-            case DataType.DateTime:
-                var dt = value.AsDateTime();
-                PacketWriter.WriteLengthEncodedString(buffer, dt.ToString("yyyy-MM-dd HH:mm:ss"), Encoding.UTF8);
-                break;
-
-            case DataType.Date:
-                var date = value.AsDate();
-                PacketWriter.WriteLengthEncodedString(buffer, date.ToString("yyyy-MM-dd"), Encoding.UTF8);
-                break;
-
-            case DataType.Time:
-                var time = value.AsTime();
-                PacketWriter.WriteLengthEncodedString(buffer, time.ToString("HH:mm:ss"), Encoding.UTF8);
-                break;
-
-            case DataType.Float:
-                var floatVal = value.AsFloat();
-                PacketWriter.WriteLengthEncodedString(buffer, floatVal.ToString("G"), Encoding.UTF8);
-                break;
-
-            case DataType.Double:
-                var doubleVal = value.AsDouble();
-                PacketWriter.WriteLengthEncodedString(buffer, doubleVal.ToString("G"), Encoding.UTF8);
-                break;
-
-            case DataType.Decimal:
-                var decimalVal = value.AsDecimal();
-                PacketWriter.WriteLengthEncodedString(buffer, decimalVal.ToString("G"), Encoding.UTF8);
-                break;
-
-            default:
-                PacketWriter.WriteLengthEncodedString(buffer, value.GetRawValue()?.ToString() ?? "", Encoding.UTF8);
-                break;
-        }
+        PacketWriter.WriteLengthEncodedString(buffer, strValue, Encoding.UTF8);
     }
 
-    private async Task SendOkPacketAsync(PacketWriter writer, CancellationToken cancellationToken, long affectedRows = 0, string? message = null)
+    private async Task SendOkPacketAsync(PacketWriter writer, ClientSession session, CancellationToken cancellationToken,
+        long affectedRows = 0, long lastInsertId = 0, string? message = null)
     {
         using var buffer = new MemoryStream();
 
@@ -425,12 +573,13 @@ public sealed class MySqlServer : IDisposable
         // Affected rows (length-encoded integer)
         PacketWriter.WriteLengthEncodedInteger(buffer, (ulong)affectedRows);
 
-        // Last insert ID (length-encoded integer, 0 for now)
-        PacketWriter.WriteLengthEncodedInteger(buffer, 0);
+        // Last insert ID (length-encoded integer)
+        PacketWriter.WriteLengthEncodedInteger(buffer, (ulong)lastInsertId);
 
         // Status flags (2 bytes, little-endian)
-        buffer.WriteByte(0);
-        buffer.WriteByte(0);
+        var status = session.GetServerStatus();
+        buffer.WriteByte((byte)(status & 0xFF));
+        buffer.WriteByte((byte)((status >> 8) & 0xFF));
 
         // Warnings (2 bytes, little-endian)
         buffer.WriteByte(0);
@@ -445,11 +594,50 @@ public sealed class MySqlServer : IDisposable
         await writer.WritePacketAsync(buffer.ToArray(), cancellationToken);
     }
 
-    private async Task SendEofPacketAsync(PacketWriter writer, CancellationToken cancellationToken)
+    private async Task SendEofPacketAsync(PacketWriter writer, ClientSession session, CancellationToken cancellationToken)
     {
-        // EOF packet: 0xFE + warnings (2 bytes) + status flags (2 bytes)
-        var eofPacket = new byte[] { 0xFE, 0x00, 0x00, 0x00, 0x00 };
+        // Legacy EOF packet: 0xFE + warnings (2 bytes) + status flags (2 bytes)
+        var status = session.GetServerStatus();
+        var eofPacket = new byte[]
+        {
+            0xFE,
+            0x00, 0x00, // warnings
+            (byte)(status & 0xFF), (byte)((status >> 8) & 0xFF) // status flags
+        };
         await writer.WritePacketAsync(eofPacket, cancellationToken);
+    }
+
+    private async Task SendEofOrOkPacketAsync(PacketWriter writer, ClientSession session, CancellationToken cancellationToken)
+    {
+        if (session.UseDeprecateEof)
+        {
+            // Send OK packet with 0xFE header (EOF replacement)
+            using var buffer = new MemoryStream();
+
+            // OK packet header (0xFE when replacing EOF)
+            buffer.WriteByte(0xFE);
+
+            // Affected rows = 0
+            PacketWriter.WriteLengthEncodedInteger(buffer, 0);
+
+            // Last insert ID = 0
+            PacketWriter.WriteLengthEncodedInteger(buffer, 0);
+
+            // Status flags (2 bytes, little-endian)
+            var status = session.GetServerStatus();
+            buffer.WriteByte((byte)(status & 0xFF));
+            buffer.WriteByte((byte)((status >> 8) & 0xFF));
+
+            // Warnings (2 bytes, little-endian)
+            buffer.WriteByte(0);
+            buffer.WriteByte(0);
+
+            await writer.WritePacketAsync(buffer.ToArray(), cancellationToken);
+        }
+        else
+        {
+            await SendEofPacketAsync(writer, session, cancellationToken);
+        }
     }
 
     private async Task SendErrorPacketAsync(PacketWriter writer, int errorCode, string sqlState, string message, CancellationToken cancellationToken)
@@ -467,26 +655,17 @@ public sealed class MySqlServer : IDisposable
         buffer.WriteByte(0x23);
 
         // SQL state (5 bytes)
-        var sqlStateBytes = Encoding.UTF8.GetBytes(sqlState.PadRight(5).Substring(0, 5));
+        var sqlStateBytes = Encoding.UTF8.GetBytes(sqlState.PadRight(5)[..5]);
         buffer.Write(sqlStateBytes);
 
-        // Error message (null-terminated string)
-        PacketWriter.WriteNullTerminatedString(buffer, message, Encoding.UTF8);
+        // Error message (rest of packet)
+        var messageBytes = Encoding.UTF8.GetBytes(message);
+        buffer.Write(messageBytes);
 
         await writer.WritePacketAsync(buffer.ToArray(), cancellationToken);
     }
 
-    private int GetServerCapabilities()
-    {
-        // Basic capabilities for MySQL 8.0+
-        // CLIENT_PROTOCOL_41 = 512
-        // CLIENT_CONNECT_WITH_DB = 8
-        // CLIENT_PLUGIN_AUTH = 0x00080000
-        // CLIENT_SECURE_CONNECTION = 0x00008000
-        return 512 | 8 | 0x00080000 | 0x00008000;
-    }
-
-    private uint GetColumnLength(DataType dataType)
+    private static uint GetColumnLength(DataType dataType)
     {
         return dataType switch
         {
@@ -508,7 +687,7 @@ public sealed class MySqlServer : IDisposable
         };
     }
 
-    private byte GetMySqlColumnType(DataType dataType)
+    private static byte GetMySqlColumnType(DataType dataType)
     {
         return dataType switch
         {
@@ -519,14 +698,14 @@ public sealed class MySqlServer : IDisposable
             DataType.Float => 4,        // MYSQL_TYPE_FLOAT
             DataType.Double => 5,       // MYSQL_TYPE_DOUBLE
             DataType.Decimal => 246,    // MYSQL_TYPE_NEWDECIMAL
-            DataType.VarChar => 253,    // MYSQL_TYPE_VARCHAR
+            DataType.VarChar => 253,    // MYSQL_TYPE_VAR_STRING
             DataType.Char => 254,       // MYSQL_TYPE_STRING
             DataType.Text => 252,       // MYSQL_TYPE_BLOB
             DataType.DateTime => 12,    // MYSQL_TYPE_DATETIME
             DataType.Date => 10,        // MYSQL_TYPE_DATE
             DataType.Time => 11,        // MYSQL_TYPE_TIME
             DataType.Boolean => 1,      // MYSQL_TYPE_TINY (as TINYINT)
-            _ => 253                    // Default to VARCHAR
+            _ => 253                    // Default to VAR_STRING
         };
     }
 
@@ -544,5 +723,49 @@ public sealed class MySqlServer : IDisposable
             _cancellationTokenSource.Dispose();
             _disposed = true;
         }
+    }
+}
+
+/// <summary>
+/// Represents a client session with negotiated capabilities.
+/// </summary>
+internal sealed class ClientSession
+{
+    private readonly Executor _executor;
+
+    public MySqlCapabilities Capabilities { get; }
+    public Executor Executor => _executor;
+    public bool UseDeprecateEof => (Capabilities & MySqlCapabilities.DeprecateEof) != 0;
+    public bool MultiStatements { get; set; } = true;
+    public bool InTransaction { get; set; }
+    public bool AutoCommit { get; set; } = true;
+
+    public string CurrentDatabase
+    {
+        get => _executor.CurrentDatabase;
+        set => _executor.CurrentDatabase = value;
+    }
+
+    public ClientSession(MySqlCapabilities capabilities, Executor executor)
+    {
+        Capabilities = capabilities;
+        _executor = executor;
+    }
+
+    public ushort GetServerStatus()
+    {
+        ushort status = 0;
+        if (AutoCommit)
+            status |= (ushort)MySqlServerStatus.AutoCommit;
+        if (InTransaction)
+            status |= (ushort)MySqlServerStatus.InTransaction;
+        return status;
+    }
+
+    public void Reset()
+    {
+        InTransaction = false;
+        AutoCommit = true;
+        MultiStatements = true;
     }
 }
