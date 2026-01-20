@@ -7,16 +7,16 @@ todos:
     status: completed
   - id: 0.1.2
     content: ReadView 数据结构 - 新建 ReadView.cs，记录活跃事务列表，测试 ReadView 创建
-    status: in_progress
+    status: completed
   - id: 0.1.3
     content: 可见性判断 - ReadView.IsVisible() 方法，测试不同事务ID的可见性
-    status: pending
+    status: completed
   - id: 0.1.4
     content: 版本链基础 - 新建 VersionChain.cs，测试版本链存储和遍历
-    status: pending
+    status: completed
   - id: 0.1.5
     content: TableScan 集成 MVCC - 修改 TableScanOperator 使用 ReadView 过滤，测试快照读
-    status: pending
+    status: in_progress
   - id: 0.2.1
     content: UndoRecord 数据结构 - 新建 UndoRecord.cs，定义 Insert/Update Undo 格式
     status: pending

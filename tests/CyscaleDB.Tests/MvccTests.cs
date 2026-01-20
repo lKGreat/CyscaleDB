@@ -180,6 +180,228 @@ public class MvccTests
 
     #endregion
 
+    #region VersionChain Tests
+
+    [Fact]
+    public void VersionChain_CreateFromRow_SetsCurrentVersion()
+    {
+        var schema = CreateTestSchema();
+        var values = CreateTestValues();
+        var row = new Row(schema, values, transactionId: 100);
+
+        var chain = new VersionChain(row);
+
+        Assert.Equal(100L, chain.CurrentVersion.TransactionId);
+        Assert.NotNull(chain.CurrentVersion.RowData);
+    }
+
+    [Fact]
+    public void VersionChain_FindVisibleVersion_ReturnsCurrentWhenVisible()
+    {
+        var schema = CreateTestSchema();
+        var values = CreateTestValues();
+        var row = new Row(schema, values, transactionId: 50);
+
+        var readView = ReadView.Create([100], nextTransactionId: 110, creatorTransactionId: 105);
+        var chain = new VersionChain(row);
+
+        var visibleRow = chain.FindVisibleVersion(readView);
+
+        Assert.NotNull(visibleRow);
+        Assert.Equal(50L, visibleRow.TransactionId);
+    }
+
+    [Fact]
+    public void VersionChain_FindVisibleVersion_ReturnsNullWhenDeleted()
+    {
+        var schema = CreateTestSchema();
+        var values = CreateTestValues();
+        var row = new Row(schema, values, transactionId: 50, isDeleted: true);
+
+        var readView = ReadView.Create([100], nextTransactionId: 110, creatorTransactionId: 105);
+        var chain = new VersionChain(row);
+
+        var visibleRow = chain.FindVisibleVersion(readView);
+
+        Assert.Null(visibleRow);
+    }
+
+    [Fact]
+    public void VersionChain_FindVisibleVersion_ReturnsNullWhenNotVisible()
+    {
+        var schema = CreateTestSchema();
+        var values = CreateTestValues();
+        // Row created by an active transaction
+        var row = new Row(schema, values, transactionId: 100);
+
+        var readView = ReadView.Create([100], nextTransactionId: 110, creatorTransactionId: 105);
+        var chain = new VersionChain(row);
+
+        var visibleRow = chain.FindVisibleVersion(readView);
+
+        Assert.Null(visibleRow);
+    }
+
+    [Fact]
+    public void VersionChain_FindVisibleVersion_TraversesChainWithUndoLog()
+    {
+        var schema = CreateTestSchema();
+        var undoReader = new InMemoryUndoLogReader();
+
+        // Create old version (committed)
+        var oldValues = new[] { DataValue.FromInt(1), DataValue.FromVarChar("OldName") };
+        var oldRow = new Row(schema, oldValues, transactionId: 50);
+        var oldRollPointer = undoReader.StoreVersion(oldRow);
+
+        // Create current version (by active transaction 100)
+        var newValues = new[] { DataValue.FromInt(1), DataValue.FromVarChar("NewName") };
+        var currentRow = new Row(schema, newValues, transactionId: 100, rollPointer: oldRollPointer);
+
+        var readView = ReadView.Create([100], nextTransactionId: 110, creatorTransactionId: 105);
+        var chain = new VersionChain(currentRow, undoReader);
+
+        var visibleRow = chain.FindVisibleVersion(readView);
+
+        // Should return the old version since current is by active transaction
+        Assert.NotNull(visibleRow);
+        Assert.Equal(50L, visibleRow.TransactionId);
+        Assert.Equal("OldName", visibleRow.Values[1].AsString());
+    }
+
+    [Fact]
+    public void VersionChain_EnumerateVersions_ReturnsAllVersions()
+    {
+        var schema = CreateTestSchema();
+        var undoReader = new InMemoryUndoLogReader();
+
+        // Create version chain: v3 -> v2 -> v1
+        var v1 = new Row(schema, CreateTestValues(), transactionId: 10);
+        var v1Ptr = undoReader.StoreVersion(v1);
+
+        var v2 = new Row(schema, CreateTestValues(), transactionId: 20, rollPointer: v1Ptr);
+        var v2Ptr = undoReader.StoreVersion(v2);
+
+        var v3 = new Row(schema, CreateTestValues(), transactionId: 30, rollPointer: v2Ptr);
+
+        var chain = new VersionChain(v3, undoReader);
+
+        var versions = chain.EnumerateVersions().ToList();
+
+        Assert.Equal(3, versions.Count);
+        Assert.Equal(30L, versions[0].TransactionId);
+        Assert.Equal(20L, versions[1].TransactionId);
+        Assert.Equal(10L, versions[2].TransactionId);
+    }
+
+    [Fact]
+    public void VersionChain_GetVersionCount_ReturnsCorrectCount()
+    {
+        var schema = CreateTestSchema();
+        var undoReader = new InMemoryUndoLogReader();
+
+        var v1 = new Row(schema, CreateTestValues(), transactionId: 10);
+        var v1Ptr = undoReader.StoreVersion(v1);
+
+        var v2 = new Row(schema, CreateTestValues(), transactionId: 20, rollPointer: v1Ptr);
+
+        var chain = new VersionChain(v2, undoReader);
+
+        Assert.Equal(2, chain.GetVersionCount());
+    }
+
+    [Fact]
+    public void VersionChain_GetOldestVersion_ReturnsOldestInChain()
+    {
+        var schema = CreateTestSchema();
+        var undoReader = new InMemoryUndoLogReader();
+
+        var v1 = new Row(schema, CreateTestValues(), transactionId: 10);
+        var v1Ptr = undoReader.StoreVersion(v1);
+
+        var v2 = new Row(schema, CreateTestValues(), transactionId: 20, rollPointer: v1Ptr);
+
+        var chain = new VersionChain(v2, undoReader);
+
+        var oldest = chain.GetOldestVersion();
+
+        Assert.Equal(10L, oldest.TransactionId);
+    }
+
+    [Fact]
+    public void InMemoryUndoLogReader_StoreAndRead_Works()
+    {
+        var undoReader = new InMemoryUndoLogReader();
+        var schema = CreateTestSchema();
+        var row = new Row(schema, CreateTestValues(), transactionId: 100);
+
+        var rollPointer = undoReader.StoreVersion(row);
+
+        var retrieved = undoReader.ReadVersion(rollPointer);
+
+        Assert.NotNull(retrieved);
+        Assert.Equal(100L, retrieved.TransactionId);
+    }
+
+    [Fact]
+    public void InMemoryUndoLogReader_ReadNonExistent_ReturnsNull()
+    {
+        var undoReader = new InMemoryUndoLogReader();
+
+        var result = undoReader.ReadVersion(999);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void VersionChainManager_FilterVisibleRows_ReturnsOnlyVisible()
+    {
+        var schema = CreateTestSchema();
+        var undoReader = new InMemoryUndoLogReader();
+        var manager = new VersionChainManager(undoReader);
+
+        var readView = ReadView.Create([100], nextTransactionId: 110, creatorTransactionId: 105);
+
+        var rows = new List<Row>
+        {
+            new(schema, CreateTestValues(), transactionId: 50),   // Visible
+            new(schema, CreateTestValues(), transactionId: 100),  // Active, not visible
+            new(schema, CreateTestValues(), transactionId: 60),   // Visible
+            new(schema, CreateTestValues(), transactionId: 110),  // Future, not visible
+        };
+
+        var visibleRows = manager.FilterVisibleRows(rows, readView).ToList();
+
+        Assert.Equal(2, visibleRows.Count);
+        Assert.Equal(50L, visibleRows[0].TransactionId);
+        Assert.Equal(60L, visibleRows[1].TransactionId);
+    }
+
+    [Fact]
+    public void VersionChainManager_IsRowVisible_FastPathForVisibleRow()
+    {
+        var schema = CreateTestSchema();
+        var manager = new VersionChainManager();
+
+        var readView = ReadView.Create([100], nextTransactionId: 110, creatorTransactionId: 105);
+        var row = new Row(schema, CreateTestValues(), transactionId: 50);
+
+        Assert.True(manager.IsRowVisible(row, readView));
+    }
+
+    [Fact]
+    public void VersionChainManager_IsRowVisible_FastPathForDeletedRow()
+    {
+        var schema = CreateTestSchema();
+        var manager = new VersionChainManager();
+
+        var readView = ReadView.Create([100], nextTransactionId: 110, creatorTransactionId: 105);
+        var row = new Row(schema, CreateTestValues(), transactionId: 50, isDeleted: true);
+
+        Assert.False(manager.IsRowVisible(row, readView));
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private static TableSchema CreateTestSchema()
