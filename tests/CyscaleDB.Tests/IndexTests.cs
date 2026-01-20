@@ -86,7 +86,7 @@ public class IndexTests : IDisposable
     {
         var columns = new List<ColumnDefinition>
         {
-            new("id", DataType.Int, nullable: false, isPrimaryKey: true),
+            new("id", DataType.Int, isNullable: false, isPrimaryKey: true),
             new("name", DataType.VarChar, 100),
             new("age", DataType.Int)
         };
@@ -105,7 +105,7 @@ public class IndexTests : IDisposable
         var keys = info.ExtractKeyValues(row);
 
         Assert.Single(keys);
-        Assert.Equal("John", keys[0].AsVarChar());
+        Assert.Equal("John", keys[0].AsString());
     }
 
     [Fact]
@@ -183,7 +183,7 @@ public class IndexTests : IDisposable
     {
         var columns = new List<ColumnDefinition>
         {
-            new("id", DataType.Int, nullable: false, isPrimaryKey: true),
+            new("id", DataType.Int, isNullable: false, isPrimaryKey: true),
             new("name", DataType.VarChar, 100)
         };
         var schema = new TableSchema(1, "testdb", "users", columns);
@@ -193,10 +193,8 @@ public class IndexTests : IDisposable
         indexInfo.ResolveColumnOrdinals(schema);
 
         var filePath = Path.Combine(_testDir, "test.idx");
-        using var pageManager = new PageManager(filePath);
-        pageManager.Open(createIfNotExists: true);
-
-        using var index = new BTreeIndex(indexInfo, pageManager);
+        using var index = new BTreeIndex(indexInfo, filePath);
+        index.Open(createIfNotExists: true);
 
         // Insert keys
         index.Insert([DataValue.FromInt(1)], new RowId(0, 0));
@@ -215,7 +213,7 @@ public class IndexTests : IDisposable
     {
         var columns = new List<ColumnDefinition>
         {
-            new("id", DataType.Int, nullable: false),
+            new("id", DataType.Int, isNullable: false),
             new("value", DataType.Int)
         };
         var schema = new TableSchema(1, "testdb", "test", columns);
@@ -225,10 +223,8 @@ public class IndexTests : IDisposable
         indexInfo.ResolveColumnOrdinals(schema);
 
         var filePath = Path.Combine(_testDir, "range.idx");
-        using var pageManager = new PageManager(filePath);
-        pageManager.Open(createIfNotExists: true);
-
-        using var index = new BTreeIndex(indexInfo, pageManager);
+        using var index = new BTreeIndex(indexInfo, filePath);
+        index.Open(createIfNotExists: true);
 
         // Insert keys 1-10
         for (int i = 1; i <= 10; i++)
@@ -249,7 +245,7 @@ public class IndexTests : IDisposable
     {
         var columns = new List<ColumnDefinition>
         {
-            new("id", DataType.Int, nullable: false)
+            new("id", DataType.Int, isNullable: false)
         };
         var schema = new TableSchema(1, "testdb", "test", columns);
 
@@ -258,10 +254,8 @@ public class IndexTests : IDisposable
         indexInfo.ResolveColumnOrdinals(schema);
 
         var filePath = Path.Combine(_testDir, "delete.idx");
-        using var pageManager = new PageManager(filePath);
-        pageManager.Open(createIfNotExists: true);
-
-        using var index = new BTreeIndex(indexInfo, pageManager);
+        using var index = new BTreeIndex(indexInfo, filePath);
+        index.Open(createIfNotExists: true);
 
         var rowId = new RowId(0, 0);
         index.Insert([DataValue.FromInt(5)], rowId);
@@ -283,7 +277,7 @@ public class IndexTests : IDisposable
     {
         var columns = new List<ColumnDefinition>
         {
-            new("id", DataType.Int, nullable: false)
+            new("id", DataType.Int, isNullable: false)
         };
         var schema = new TableSchema(1, "testdb", "test", columns);
 
@@ -292,14 +286,12 @@ public class IndexTests : IDisposable
         indexInfo.ResolveColumnOrdinals(schema);
 
         var filePath = Path.Combine(_testDir, "unique.idx");
-        using var pageManager = new PageManager(filePath);
-        pageManager.Open(createIfNotExists: true);
-
-        using var index = new BTreeIndex(indexInfo, pageManager);
+        using var index = new BTreeIndex(indexInfo, filePath);
+        index.Open(createIfNotExists: true);
 
         index.Insert([DataValue.FromInt(1)], new RowId(0, 0));
 
-        Assert.Throws<CyscaleException>(() =>
+        Assert.Throws<ConstraintViolationException>(() =>
             index.Insert([DataValue.FromInt(1)], new RowId(0, 1)));
     }
 
@@ -312,7 +304,7 @@ public class IndexTests : IDisposable
     {
         var columns = new List<ColumnDefinition>
         {
-            new("id", DataType.Int, nullable: false)
+            new("id", DataType.Int, isNullable: false)
         };
         var schema = new TableSchema(1, "testdb", "test", columns);
 
@@ -321,10 +313,8 @@ public class IndexTests : IDisposable
         indexInfo.ResolveColumnOrdinals(schema);
 
         var filePath = Path.Combine(_testDir, "hash.hidx");
-        using var pageManager = new PageManager(filePath);
-        pageManager.Open(createIfNotExists: true);
-
-        using var index = new HashIndex(indexInfo, pageManager);
+        using var index = new HashIndex(indexInfo, filePath);
+        index.Open(createIfNotExists: true);
 
         // Insert
         index.Insert([DataValue.FromInt(42)], new RowId(0, 0));
@@ -342,7 +332,7 @@ public class IndexTests : IDisposable
     {
         var columns = new List<ColumnDefinition>
         {
-            new("id", DataType.Int, nullable: false)
+            new("id", DataType.Int, isNullable: false)
         };
         var schema = new TableSchema(1, "testdb", "test", columns);
 
@@ -351,10 +341,8 @@ public class IndexTests : IDisposable
         indexInfo.ResolveColumnOrdinals(schema);
 
         var filePath = Path.Combine(_testDir, "hash_delete.hidx");
-        using var pageManager = new PageManager(filePath);
-        pageManager.Open(createIfNotExists: true);
-
-        using var index = new HashIndex(indexInfo, pageManager);
+        using var index = new HashIndex(indexInfo, filePath);
+        index.Open(createIfNotExists: true);
 
         var rowId = new RowId(0, 5);
         index.Insert([DataValue.FromInt(99)], rowId);

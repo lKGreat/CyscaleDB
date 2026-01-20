@@ -24,21 +24,20 @@ public class WalTests : IDisposable
     [Fact]
     public void WalLog_Create_AndAppend()
     {
-        var walPath = Path.Combine(_testDir, "test.wal");
-        using var wal = new WalLog(walPath);
+        using var wal = new WalLog(_testDir);
         wal.Open();
 
-        var record = new WalRecord
+        var entry = new WalEntry
         {
             TransactionId = 1,
-            RecordType = WalRecordType.Insert,
+            Type = WalEntryType.Insert,
             TableName = "users",
             PageId = 0,
-            RowId = 0,
+            SlotNumber = 0,
             NewData = [1, 2, 3]
         };
 
-        var lsn = wal.Append(record);
+        var lsn = wal.Write(entry);
 
         Assert.True(lsn > 0);
     }
@@ -46,56 +45,53 @@ public class WalTests : IDisposable
     [Fact]
     public void WalLog_Replay_ReturnsRecords()
     {
-        var walPath = Path.Combine(_testDir, "replay.wal");
-        
         // Write some records
-        using (var wal = new WalLog(walPath))
+        using (var wal = new WalLog(_testDir))
         {
             wal.Open();
 
             for (int i = 1; i <= 5; i++)
             {
-                var record = new WalRecord
+                var entry = new WalEntry
                 {
-                    TransactionId = (uint)i,
-                    RecordType = WalRecordType.Insert,
+                    TransactionId = i,
+                    Type = WalEntryType.Insert,
                     TableName = "test",
                     PageId = i,
-                    RowId = 0,
+                    SlotNumber = 0,
                     NewData = [1]
                 };
-                wal.Append(record);
+                wal.Write(entry);
             }
         }
 
         // Replay
-        using var wal2 = new WalLog(walPath);
+        using var wal2 = new WalLog(_testDir);
         wal2.Open();
-        var records = wal2.Replay().ToList();
+        var entries = wal2.ReadAll().ToList();
 
-        Assert.Equal(5, records.Count);
+        Assert.Equal(5, entries.Count);
     }
 
     [Fact]
     public void WalLog_Rotation()
     {
-        var walPath = Path.Combine(_testDir, "rotate.wal");
-        using var wal = new WalLog(walPath);
+        using var wal = new WalLog(_testDir);
         wal.Open();
 
         // Write until rotation might trigger (or force it)
         for (int i = 0; i < 100; i++)
         {
-            var record = new WalRecord
+            var entry = new WalEntry
             {
-                TransactionId = (uint)i,
-                RecordType = WalRecordType.Insert,
+                TransactionId = i,
+                Type = WalEntryType.Insert,
                 TableName = "test",
                 PageId = i,
-                RowId = 0,
+                SlotNumber = 0,
                 NewData = new byte[100]
             };
-            wal.Append(record);
+            wal.Write(entry);
         }
 
         // Force rotation
@@ -109,50 +105,48 @@ public class WalTests : IDisposable
     [Fact]
     public void WalLog_GetRotatedLogFiles()
     {
-        var walPath = Path.Combine(_testDir, "files.wal");
-        using var wal = new WalLog(walPath);
+        using var wal = new WalLog(_testDir);
         wal.Open();
 
         // Create some log content
-        var record = new WalRecord
+        var entry = new WalEntry
         {
             TransactionId = 1,
-            RecordType = WalRecordType.Insert,
+            Type = WalEntryType.Insert,
             TableName = "test",
             NewData = [1]
         };
-        wal.Append(record);
+        wal.Write(entry);
 
         // Force rotate multiple times
         wal.ForceRotate();
-        wal.Append(record);
+        wal.Write(entry);
         wal.ForceRotate();
 
         var rotatedFiles = wal.GetRotatedLogFiles();
-        Assert.True(rotatedFiles.Count >= 1);
+        Assert.True(rotatedFiles.Count() >= 1);
     }
 
     [Fact]
     public void WalArchiver_ArchiveOldLogs()
     {
-        var walPath = Path.Combine(_testDir, "archive.wal");
-        using var wal = new WalLog(walPath);
+        using var wal = new WalLog(_testDir);
         wal.Open();
 
         // Write and rotate
-        var record = new WalRecord
+        var entry = new WalEntry
         {
             TransactionId = 1,
-            RecordType = WalRecordType.Insert,
+            Type = WalEntryType.Insert,
             TableName = "test",
             NewData = [1, 2, 3]
         };
-        wal.Append(record);
+        wal.Write(entry);
         wal.ForceRotate();
 
         // Archive
-        var archiver = new WalArchiver(walPath, _testDir);
-        archiver.ArchiveOldLogs(minAgeDays: 0); // Archive immediately
+        using var archiver = new WalArchiver(_testDir, wal);
+        archiver.ArchiveOldLogs(); // Archive immediately
 
         // Check for .gz files
         var archives = Directory.GetFiles(_testDir, "*.gz");
@@ -163,18 +157,17 @@ public class WalTests : IDisposable
     public void CheckpointManager_TakeCheckpoint()
     {
         // This is a simplified test - a real test would need full infrastructure
-        var walPath = Path.Combine(_testDir, "checkpoint.wal");
-        using var wal = new WalLog(walPath);
+        using var wal = new WalLog(_testDir);
         wal.Open();
 
-        var record = new WalRecord
+        var entry = new WalEntry
         {
             TransactionId = 1,
-            RecordType = WalRecordType.Commit,
+            Type = WalEntryType.Commit,
             TableName = "",
             NewData = []
         };
-        var lsn = wal.Append(record);
+        var lsn = wal.Write(entry);
 
         // Verify LSN is valid
         Assert.True(lsn > 0);

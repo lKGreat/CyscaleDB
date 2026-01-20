@@ -25,7 +25,7 @@ public class OptimizationTests : IDisposable
     {
         var columns = new List<ColumnDefinition>
         {
-            new("id", DataType.Int, nullable: false, isPrimaryKey: true),
+            new("id", DataType.Int, isNullable: false, isPrimaryKey: true),
             new("name", DataType.VarChar, 100),
             new("value", DataType.Int)
         };

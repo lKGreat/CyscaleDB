@@ -133,20 +133,21 @@ public class ResultSet
     {
         var result = new ResultSet();
 
-        // Add columns
-        foreach (var col in op.Schema.Columns)
-        {
-            result.Columns.Add(new ResultColumn
-            {
-                Name = col.Name,
-                DataType = col.DataType
-            });
-        }
-
-        // Add rows
+        // Open operator first - some operators (like GroupByOperator) build their schema during Open()
         op.Open();
         try
         {
+            // Add columns (schema is now available after Open)
+            foreach (var col in op.Schema.Columns)
+            {
+                result.Columns.Add(new ResultColumn
+                {
+                    Name = col.Name,
+                    DataType = col.DataType
+                });
+            }
+
+            // Add rows
             Row? row;
             while ((row = op.Next()) != null)
             {

@@ -204,7 +204,8 @@ public sealed class Parser
             return column;
         }
 
-        if (Check(TokenType.Identifier))
+        // Accept identifier or keyword (keywords can be used as column/table names)
+        if (Check(TokenType.Identifier) || IsKeyword(_currentToken.Type))
         {
             var name = _currentToken.Value;
             Advance();
@@ -1117,7 +1118,7 @@ public sealed class Parser
             return stmt;
         }
         // Handle SHOW FULL TABLES, SHOW FULL COLUMNS, etc.
-        else if (MatchIdentifier("FULL"))
+        else if (Match(TokenType.FULL))
         {
             if (Check(TokenType.TABLES))
             {
@@ -1659,8 +1660,8 @@ public sealed class Parser
             return new SystemVariableExpression { VariableName = varName, Scope = scope };
         }
 
-        // Identifier (column or function call)
-        if (Check(TokenType.Identifier) || IsAggregateFunction())
+        // Identifier (column or function call) - accept identifiers or keywords
+        if (Check(TokenType.Identifier) || IsAggregateFunction() || IsKeyword(_currentToken.Type))
         {
             var name = _currentToken.Value;
             Advance();
@@ -1712,6 +1713,13 @@ public sealed class Parser
             func.Arguments = ParseExpressionList();
         }
 
+        // Check for ORDER BY inside function (not standard SQL, but some databases allow it)
+        // For now, we'll reject it with a clearer error message
+        if (Check(TokenType.ORDER))
+        {
+            throw Error($"ORDER BY is not allowed inside function calls. Use window functions (OVER clause) instead.");
+        }
+
         Expect(TokenType.RightParen);
         return func;
     }
@@ -1758,14 +1766,23 @@ public sealed class Parser
 
     private string ExpectIdentifier()
     {
-        if (!Check(TokenType.Identifier))
+        // Accept identifier or keyword (keywords can be used as identifiers in MySQL)
+        if (Check(TokenType.Identifier))
         {
-            throw Error($"Expected identifier, got: {_currentToken.Value}");
+            var value = _currentToken.Value;
+            Advance();
+            return value;
         }
 
-        var value = _currentToken.Value;
-        Advance();
-        return value;
+        // Accept keywords as identifiers (for table names like TABLES, COLUMNS, etc.)
+        if (IsKeyword(_currentToken.Type))
+        {
+            var value = _currentToken.Value;
+            Advance();
+            return value;
+        }
+
+        throw Error($"Expected identifier, got: {_currentToken.Value}");
     }
 
     private void Expect(TokenType type)
