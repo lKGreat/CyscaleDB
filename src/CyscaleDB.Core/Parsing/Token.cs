@@ -221,6 +221,13 @@ public enum TokenType
     // Comparison/cast keywords
     BINARY,             // BINARY (for case-sensitive comparison)
 
+    // CASE expression keywords
+    CASE,
+    WHEN,
+    THEN,
+    ELSE,
+    END,
+
     // System variable prefix
     AtAt,               // @@
 }
@@ -370,6 +377,13 @@ public static class Keywords
 
         // Comparison/cast keywords
         ["BINARY"] = TokenType.BINARY,
+
+        // CASE expression keywords
+        ["CASE"] = TokenType.CASE,
+        ["WHEN"] = TokenType.WHEN,
+        ["THEN"] = TokenType.THEN,
+        ["ELSE"] = TokenType.ELSE,
+        ["END"] = TokenType.END,
     };
 
     /// <summary>

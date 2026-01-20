@@ -970,6 +970,83 @@ public class ParserTests
 
     #endregion
 
+    #region CASE Expression Tests
+
+    [Fact]
+    public void Parse_SearchedCase_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT CASE WHEN status = 1 THEN 'active' WHEN status = 2 THEN 'inactive' ELSE 'unknown' END FROM users");
+        var stmt = parser.Parse() as SelectStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Single(stmt.Columns);
+
+        var caseExpr = stmt.Columns[0].Expression as CaseExpression;
+        Assert.NotNull(caseExpr);
+        Assert.Null(caseExpr.Operand);
+        Assert.Equal(2, caseExpr.WhenClauses.Count);
+        Assert.NotNull(caseExpr.ElseResult);
+    }
+
+    [Fact]
+    public void Parse_SimpleCaseWithOperand_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT CASE status WHEN 1 THEN 'active' WHEN 2 THEN 'inactive' END FROM users");
+        var stmt = parser.Parse() as SelectStatement;
+
+        Assert.NotNull(stmt);
+        var caseExpr = stmt.Columns[0].Expression as CaseExpression;
+        Assert.NotNull(caseExpr);
+        Assert.NotNull(caseExpr.Operand);
+        Assert.True(caseExpr.IsSimpleCase);
+        Assert.Equal(2, caseExpr.WhenClauses.Count);
+        Assert.Null(caseExpr.ElseResult);
+    }
+
+    [Fact]
+    public void Parse_CaseWithoutElse_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT CASE WHEN x > 0 THEN 'positive' END FROM t");
+        var stmt = parser.Parse() as SelectStatement;
+
+        Assert.NotNull(stmt);
+        var caseExpr = stmt.Columns[0].Expression as CaseExpression;
+        Assert.NotNull(caseExpr);
+        Assert.Single(caseExpr.WhenClauses);
+        Assert.Null(caseExpr.ElseResult);
+    }
+
+    [Fact]
+    public void Parse_NestedCaseExpressions_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT CASE WHEN x = 1 THEN CASE WHEN y = 1 THEN 'a' ELSE 'b' END ELSE 'c' END FROM t");
+        var stmt = parser.Parse() as SelectStatement;
+
+        Assert.NotNull(stmt);
+        var outerCase = stmt.Columns[0].Expression as CaseExpression;
+        Assert.NotNull(outerCase);
+        Assert.Single(outerCase.WhenClauses);
+
+        var innerCase = outerCase.WhenClauses[0].Then as CaseExpression;
+        Assert.NotNull(innerCase);
+    }
+
+    [Fact]
+    public void Parse_CaseInWhereClause_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT * FROM users WHERE CASE WHEN age >= 18 THEN 1 ELSE 0 END = 1");
+        var stmt = parser.Parse() as SelectStatement;
+
+        Assert.NotNull(stmt);
+        Assert.NotNull(stmt.Where);
+
+        var binaryExpr = stmt.Where as BinaryExpression;
+        Assert.NotNull(binaryExpr);
+        Assert.IsType<CaseExpression>(binaryExpr.Left);
+    }
+
+    #endregion
+
     #region SET TRANSACTION Tests
 
     [Fact]

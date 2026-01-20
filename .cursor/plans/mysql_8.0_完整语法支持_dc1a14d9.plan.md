@@ -70,10 +70,10 @@ todos:
     status: completed
   - id: 0.7.1
     content: RecordLock 结构 - 新建 RecordLock.cs，锁定索引记录
-    status: in_progress
+    status: completed
   - id: 0.7.2
     content: GapLock 结构 - 新建 GapLock.cs，锁定索引间隙
-    status: pending
+    status: completed
   - id: 0.7.3
     content: NextKeyLock 实现 - 组合记录锁和间隙锁，测试临键锁
     status: pending
@@ -85,7 +85,7 @@ todos:
     status: pending
   - id: 0.8.1
     content: ForeignKeyManager 基础 - 新建 ForeignKeyManager.cs，管理外键定义
-    status: pending
+    status: completed
   - id: 0.8.2
     content: 外键 RESTRICT 检查 - INSERT/UPDATE/DELETE 前检查，测试约束拒绝
     status: pending
@@ -124,13 +124,13 @@ todos:
     status: pending
   - id: 1.1.1
     content: CASE/WHEN/THEN/ELSE/END 关键字 - 添加到 Token.cs，测试词法分析
-    status: pending
+    status: completed
   - id: 1.1.2
     content: CaseExpression AST - 新建 AST 节点，测试节点创建
-    status: pending
+    status: completed
   - id: 1.1.3
     content: Simple CASE 解析 - CASE expr WHEN val THEN result，测试解析
-    status: pending
+    status: completed
   - id: 1.1.4
     content: Searched CASE 解析 - CASE WHEN cond THEN result，测试解析
     status: pending

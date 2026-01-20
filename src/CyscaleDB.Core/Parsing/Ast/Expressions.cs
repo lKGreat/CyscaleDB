@@ -294,3 +294,50 @@ public class SystemVariableExpression : Expression
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitSystemVariableExpression(this);
 }
+
+/// <summary>
+/// A single WHEN...THEN branch in a CASE expression.
+/// </summary>
+public class WhenClause
+{
+    /// <summary>
+    /// The condition expression (for searched CASE) or the value to compare (for simple CASE).
+    /// </summary>
+    public Expression When { get; set; } = null!;
+
+    /// <summary>
+    /// The result expression when the condition is true.
+    /// </summary>
+    public Expression Then { get; set; } = null!;
+}
+
+/// <summary>
+/// CASE expression.
+/// Supports both searched CASE (CASE WHEN cond THEN result...)
+/// and simple CASE (CASE expr WHEN value THEN result...).
+/// </summary>
+public class CaseExpression : Expression
+{
+    /// <summary>
+    /// The operand expression for simple CASE (CASE operand WHEN value...).
+    /// Null for searched CASE (CASE WHEN condition...).
+    /// </summary>
+    public Expression? Operand { get; set; }
+
+    /// <summary>
+    /// The WHEN...THEN branches.
+    /// </summary>
+    public List<WhenClause> WhenClauses { get; set; } = [];
+
+    /// <summary>
+    /// The ELSE expression, or null if no ELSE clause.
+    /// </summary>
+    public Expression? ElseResult { get; set; }
+
+    /// <summary>
+    /// Whether this is a simple CASE (with an operand) or a searched CASE.
+    /// </summary>
+    public bool IsSimpleCase => Operand != null;
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitCaseExpression(this);
+}

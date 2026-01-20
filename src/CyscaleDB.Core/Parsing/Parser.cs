@@ -313,6 +313,29 @@ public sealed class Parser
             return column;
         }
 
+        // Check for expression-starting keywords that should be parsed as expressions
+        // (CASE, NOT, EXISTS, etc.)
+        if (Check(TokenType.CASE) || Check(TokenType.NOT) || Check(TokenType.EXISTS) ||
+            Check(TokenType.LeftParen) || Check(TokenType.Minus) || Check(TokenType.Plus) ||
+            Check(TokenType.IntegerLiteral) || Check(TokenType.FloatLiteral) ||
+            Check(TokenType.StringLiteral) || Check(TokenType.NULL) ||
+            Check(TokenType.TRUE) || Check(TokenType.FALSE) || Check(TokenType.AtAt))
+        {
+            column.Expression = ParseExpression();
+
+            // Handle alias
+            if (Match(TokenType.AS))
+            {
+                column.Alias = ExpectIdentifier();
+            }
+            else if (Check(TokenType.Identifier) && !IsKeyword(_currentToken.Type))
+            {
+                column.Alias = ExpectIdentifier();
+            }
+
+            return column;
+        }
+
         // Accept identifier or keyword (keywords can be used as column/table names)
         if (Check(TokenType.Identifier) || IsKeyword(_currentToken.Type))
         {
@@ -1866,6 +1889,12 @@ public sealed class Parser
             return new ExistsExpression { Subquery = subquery };
         }
 
+        // CASE expression
+        if (Match(TokenType.CASE))
+        {
+            return ParseCaseExpression();
+        }
+
         // NULL
         if (Match(TokenType.NULL))
         {
@@ -2011,6 +2040,53 @@ public sealed class Parser
 
         Expect(TokenType.RightParen);
         return func;
+    }
+
+    /// <summary>
+    /// Parses a CASE expression.
+    /// Supports both simple CASE (CASE expr WHEN val THEN result...)
+    /// and searched CASE (CASE WHEN condition THEN result...).
+    /// </summary>
+    private CaseExpression ParseCaseExpression()
+    {
+        var caseExpr = new CaseExpression();
+
+        // Check if this is a simple CASE (has an operand)
+        // Simple CASE: CASE expr WHEN value THEN result
+        // Searched CASE: CASE WHEN condition THEN result
+        if (!Check(TokenType.WHEN))
+        {
+            // This is a simple CASE - parse the operand
+            caseExpr.Operand = ParseExpression();
+        }
+
+        // Parse WHEN clauses (at least one required)
+        while (Match(TokenType.WHEN))
+        {
+            var whenClause = new WhenClause();
+            whenClause.When = ParseExpression();
+
+            Expect(TokenType.THEN);
+            whenClause.Then = ParseExpression();
+
+            caseExpr.WhenClauses.Add(whenClause);
+        }
+
+        if (caseExpr.WhenClauses.Count == 0)
+        {
+            throw Error("CASE expression requires at least one WHEN clause");
+        }
+
+        // Parse optional ELSE clause
+        if (Match(TokenType.ELSE))
+        {
+            caseExpr.ElseResult = ParseExpression();
+        }
+
+        // END is required
+        Expect(TokenType.END);
+
+        return caseExpr;
     }
 
     #endregion

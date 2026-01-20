@@ -66,4 +66,5 @@ public interface IAstVisitor<T>
     T VisitExistsExpression(ExistsExpression node);
     T VisitColumnDefinitionNode(ColumnDefinitionNode node);
     T VisitSystemVariableExpression(SystemVariableExpression node);
+    T VisitCaseExpression(CaseExpression node);
 }
