@@ -306,13 +306,137 @@ DROP INDEX idx_name ON users;
 
 ---
 
+## 高级查询功能
+
+### CASE WHEN 表达式
+
+| 语法 | 状态 | 示例 |
+|------|------|------|
+| 简单 CASE | ✅ | `CASE status WHEN 1 THEN 'active' ELSE 'inactive' END` |
+| 搜索 CASE | ✅ | `CASE WHEN age > 18 THEN 'adult' ELSE 'minor' END` |
+| 嵌套 CASE | ✅ | 支持嵌套 |
+
+### CTE (WITH 子句)
+
+| 功能 | 状态 | 示例 |
+|------|------|------|
+| 基本 CTE | ✅ | `WITH cte AS (SELECT ...) SELECT * FROM cte` |
+| 多个 CTE | ✅ | `WITH cte1 AS (...), cte2 AS (...) SELECT ...` |
+| 递归 CTE | ✅ | `WITH RECURSIVE cte AS (...) SELECT ...` |
+
+### 窗口函数
+
+| 函数 | 状态 | 说明 |
+|------|------|------|
+| ROW_NUMBER() | ✅ | 行号 |
+| RANK() | ✅ | 排名 (有间隙) |
+| DENSE_RANK() | ✅ | 排名 (无间隙) |
+| NTILE(n) | ✅ | 分桶 |
+| LAG(expr, offset, default) | ✅ | 前行值 |
+| LEAD(expr, offset, default) | ✅ | 后行值 |
+| FIRST_VALUE(expr) | ✅ | 窗口首值 |
+| LAST_VALUE(expr) | ✅ | 窗口末值 |
+| SUM() OVER | ✅ | 窗口求和 |
+| AVG() OVER | ✅ | 窗口平均 |
+| MIN() OVER | ✅ | 窗口最小值 |
+| MAX() OVER | ✅ | 窗口最大值 |
+| COUNT() OVER | ✅ | 窗口计数 |
+
+### 窗口规范
+
+| 语法 | 状态 |
+|------|------|
+| PARTITION BY | ✅ |
+| ORDER BY | ✅ |
+| ROWS BETWEEN | ✅ |
+
+---
+
+## InnoDB 存储引擎特性
+
+### MVCC (多版本并发控制)
+
+| 特性 | 状态 | 说明 |
+|------|------|------|
+| ReadView | ✅ | 事务快照视图 |
+| 版本链 | ✅ | 通过 Roll Pointer 链接历史版本 |
+| 快照读 | ✅ | 普通 SELECT 不加锁 |
+| 当前读 | ✅ | SELECT FOR UPDATE/FOR SHARE |
+
+### 事务隔离级别
+
+| 级别 | 状态 | 说明 |
+|------|------|------|
+| READ UNCOMMITTED | ✅ | 读未提交 |
+| READ COMMITTED | ✅ | 读已提交 (每次读创建新 ReadView) |
+| REPEATABLE READ | ✅ | 可重复读 (事务开始创建 ReadView) |
+| SERIALIZABLE | ✅ | 串行化 |
+
+### 锁机制
+
+| 锁类型 | 状态 | 说明 |
+|------|------|------|
+| 表级锁 | ✅ | S/X 锁 |
+| 行级锁 (Record Lock) | ✅ | 锁定索引记录 |
+| 间隙锁 (Gap Lock) | ✅ | 防止幻读 |
+| 临键锁 (Next-Key Lock) | ✅ | Record + Gap |
+| 意向锁 (IS/IX/SIX) | ✅ | 表级意向锁 |
+
+### 日志系统
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| Redo Log (WAL) | ✅ | 崩溃恢复 |
+| Undo Log | ✅ | 事务回滚、MVCC |
+| Mini-transaction | ✅ | 原子页面操作 |
+| Checkpoint | ✅ | 定期刷脏页 |
+| Doublewrite Buffer | ✅ | 防止部分写 |
+
+### Buffer Pool
+
+| 特性 | 状态 | 说明 |
+|------|------|------|
+| LRU 管理 | ✅ | 页面缓存淘汰 |
+| Flush List | ✅ | 脏页管理 |
+| 预读 | ✅ | 线性/随机预读 |
+
+---
+
+## 外键约束
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| 解析支持 | ✅ | CREATE TABLE 外键语法 |
+| 运行时检查 | ✅ | INSERT/UPDATE 时验证 |
+| ON DELETE CASCADE | ✅ | 级联删除 |
+| ON DELETE SET NULL | ✅ | 设为 NULL |
+| ON DELETE RESTRICT | ✅ | 拒绝操作 |
+| ON UPDATE CASCADE | ✅ | 级联更新 |
+| ON UPDATE SET NULL | ✅ | 设为 NULL |
+| ON UPDATE RESTRICT | ✅ | 拒绝操作 |
+
+---
+
+## 行级锁定读
+
+| 语法 | 状态 | 说明 |
+|------|------|------|
+| FOR UPDATE | ✅ | 排他锁 |
+| FOR SHARE | ✅ | 共享锁 |
+| FOR UPDATE NOWAIT | ✅ | 获取不到立即失败 |
+| FOR UPDATE SKIP LOCKED | ✅ | 跳过已锁定行 |
+
+---
+
 ## 已知限制
 
-1. **子查询**: 基础支持，复杂嵌套查询可能不完整
-2. **存储过程**: 不支持
-3. **触发器**: 不支持
-4. **外键约束**: 解析支持，运行时不强制
-5. **视图更新**: 暂不支持 INSERT/UPDATE/DELETE 到视图
+1. **存储过程**: 不支持
+2. **触发器**: 不支持
+3. **事件调度器**: 不支持
+4. **JSON 函数**: 不支持
+5. **空间数据类型**: 不支持
+6. **全文索引**: 不支持
+7. **视图更新**: 暂不支持 INSERT/UPDATE/DELETE 到视图
 
 ---
 
@@ -320,8 +444,8 @@ DROP INDEX idx_name ON users;
 
 | 算子 | 说明 |
 |------|------|
-| TableScanOperator | 全表扫描 |
-| IndexScanOperator | 索引扫描 (B-Tree) |
+| TableScanOperator | 全表扫描 (支持 MVCC) |
+| IndexScanOperator | 索引扫描 (支持 MVCC、回表) |
 | FilterOperator | WHERE 条件过滤 |
 | ProjectOperator | 列投影 |
 | NestedLoopJoinOperator | 嵌套循环连接 |
@@ -329,6 +453,8 @@ DROP INDEX idx_name ON users;
 | OrderByOperator | 排序 |
 | LimitOperator | 限制结果数量 |
 | DistinctOperator | 去重 |
+| WindowOperator | 窗口函数计算 |
+| CteOperator | CTE 结果读取 |
 | DualOperator | 虚拟表 (无FROM查询) |
 | AliasOperator | 表/列别名处理 |
 | InformationSchemaOperator | 系统表查询 |

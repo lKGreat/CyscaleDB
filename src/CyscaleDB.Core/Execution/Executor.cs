@@ -505,6 +505,7 @@ public sealed class Executor
         
         // Initialize with empty result set for self-reference
         var emptyResult = CreateEmptyCteResultSet(cte, query);
+        _cteResults ??= new Dictionary<string, ResultSet>(StringComparer.OrdinalIgnoreCase);
         _cteResults[cte.Name] = emptyResult;
 
         // Execute the query iteratively
