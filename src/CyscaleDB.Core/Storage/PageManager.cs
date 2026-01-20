@@ -141,10 +141,7 @@ public sealed class PageManager : IDisposable
             var data = new byte[Constants.PageSize];
 
             _fileStream!.Seek(offset, SeekOrigin.Begin);
-            var bytesRead = _fileStream.Read(data, 0, Constants.PageSize);
-
-            if (bytesRead != Constants.PageSize)
-                throw new StorageException($"Failed to read page {pageId}: only {bytesRead} bytes read");
+            _fileStream.ReadExactly(data, 0, Constants.PageSize);
 
             var page = new Page(pageId, data);
 
@@ -218,7 +215,7 @@ public sealed class PageManager : IDisposable
     {
         var header = new byte[FileHeaderSize];
         _fileStream!.Seek(0, SeekOrigin.Begin);
-        _fileStream.Read(header, 0, FileHeaderSize);
+        _fileStream.ReadExactly(header, 0, FileHeaderSize);
 
         // Magic number check
         var magic = BitConverter.ToUInt32(header, 0);

@@ -15,18 +15,18 @@ todos:
       - phase1-infrastructure
   - id: phase4-executor
     content: "Phase 4: 实现查询执行器、迭代器算子、表达式求值"
-    status: in_progress
+    status: completed
     dependencies:
       - phase2-storage
       - phase3-parser
   - id: phase5-transaction
     content: "Phase 5: 实现事务管理器、锁管理器、WAL日志"
-    status: pending
+    status: completed
     dependencies:
       - phase2-storage
   - id: phase6-protocol
     content: "Phase 6: 实现MySQL协议服务端(握手、查询、结果集)"
-    status: pending
+    status: in_progress
     dependencies:
       - phase4-executor
   - id: phase7-cli

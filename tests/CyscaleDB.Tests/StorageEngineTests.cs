@@ -39,7 +39,7 @@ public class StorageEngineTests : IDisposable
 
         Assert.NotNull(db);
         Assert.Equal("testdb", db.Name);
-        Assert.True(_engine.Catalog.HasDatabase("testdb"));
+        Assert.True(_engine.Catalog.DatabaseExists("testdb"));
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public class StorageEngineTests : IDisposable
         var result = _engine.DropDatabase("testdb");
 
         Assert.True(result);
-        Assert.False(_engine.Catalog.HasDatabase("testdb"));
+        Assert.False(_engine.Catalog.DatabaseExists("testdb"));
     }
 
     [Fact]
@@ -218,7 +218,7 @@ public class StorageEngineTests : IDisposable
         // Create new engine instance
         using var engine2 = new StorageEngine(_testDir);
         
-        Assert.True(engine2.Catalog.HasDatabase("testdb"));
+        Assert.True(engine2.Catalog.DatabaseExists("testdb"));
         
         var rows = engine2.ScanTable("testdb", "items").ToList();
         Assert.Single(rows);
