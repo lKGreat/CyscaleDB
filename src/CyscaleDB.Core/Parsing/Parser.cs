@@ -1276,6 +1276,29 @@ public sealed class Parser
             }
             return new ShowStatusStatement();
         }
+        // SHOW TABLE STATUS - returns table metadata
+        else if (Check(TokenType.TABLE))
+        {
+            Advance();
+            if (MatchIdentifier("STATUS"))
+            {
+                var stmt = new ShowTableStatusStatement();
+                if (Match(TokenType.FROM) || Match(TokenType.IN))
+                {
+                    stmt.DatabaseName = ExpectIdentifier();
+                }
+                if (Match(TokenType.LIKE))
+                {
+                    stmt.LikePattern = ExpectString();
+                }
+                else if (Match(TokenType.WHERE))
+                {
+                    stmt.Where = ParseExpression();
+                }
+                return stmt;
+            }
+            throw Error($"Expected STATUS after TABLE, got: {_currentToken.Value}");
+        }
 
         throw Error($"Unexpected token after SHOW: {_currentToken.Value}");
     }

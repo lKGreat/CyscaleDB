@@ -45,6 +45,7 @@ public interface IAstVisitor<T>
     T VisitShowStatusStatement(ShowStatusStatement node);
     T VisitShowCreateTableStatement(ShowCreateTableStatement node);
     T VisitShowColumnsStatement(ShowColumnsStatement node);
+    T VisitShowTableStatusStatement(ShowTableStatusStatement node);
     T VisitShowIndexStatement(ShowIndexStatement node);
     T VisitShowWarningsStatement(ShowWarningsStatement node);
     T VisitShowErrorsStatement(ShowErrorsStatement node);

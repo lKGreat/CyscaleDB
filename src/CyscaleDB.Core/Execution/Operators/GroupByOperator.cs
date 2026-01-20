@@ -45,13 +45,11 @@ public sealed class GroupByOperator : OperatorBase
     private readonly IOperator _input;
     private readonly List<IExpressionEvaluator> _groupByKeys;
     private readonly List<AggregateSpec> _aggregates;
-    private readonly string _databaseName;
-    private readonly string _tableName;
-    private TableSchema? _outputSchema;
+    private readonly TableSchema _outputSchema;
     private List<Row>? _resultRows;
     private int _currentIndex;
 
-    public override TableSchema Schema => _outputSchema ?? throw new InvalidOperationException("Operator not open");
+    public override TableSchema Schema => _outputSchema;
 
     public GroupByOperator(
         IOperator input,
@@ -63,16 +61,13 @@ public sealed class GroupByOperator : OperatorBase
         _input = input ?? throw new ArgumentNullException(nameof(input));
         _groupByKeys = groupByKeys;
         _aggregates = aggregates ?? throw new ArgumentNullException(nameof(aggregates));
-        _databaseName = databaseName;
-        _tableName = tableName;
+        
+        // Build output schema eagerly so it's available before Open()
+        _outputSchema = BuildOutputSchema(databaseName, tableName);
     }
-
-    public override void Open()
+    
+    private TableSchema BuildOutputSchema(string databaseName, string tableName)
     {
-        base.Open();
-        _input.Open();
-
-        // Build output schema
         var columns = new List<ColumnDefinition>();
         int ordinal = 0;
 
@@ -96,7 +91,13 @@ public sealed class GroupByOperator : OperatorBase
             columns.Add(col);
         }
 
-        _outputSchema = new TableSchema(0, _databaseName, _tableName, columns);
+        return new TableSchema(0, databaseName, tableName, columns);
+    }
+
+    public override void Open()
+    {
+        base.Open();
+        _input.Open();
 
         // Materialize all input rows and group them
         var groups = new Dictionary<string, List<Row>>();

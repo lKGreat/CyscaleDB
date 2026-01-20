@@ -973,6 +973,29 @@ public class ShowColumnsStatement : Statement
 }
 
 /// <summary>
+/// Represents a SHOW TABLE STATUS statement.
+/// </summary>
+public class ShowTableStatusStatement : Statement
+{
+    /// <summary>
+    /// The database name (optional).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// LIKE pattern for filtering.
+    /// </summary>
+    public string? LikePattern { get; set; }
+    
+    /// <summary>
+    /// WHERE clause for filtering.
+    /// </summary>
+    public Expression? Where { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowTableStatusStatement(this);
+}
+
+/// <summary>
 /// Represents a SHOW INDEX/SHOW INDEXES/SHOW KEYS statement.
 /// </summary>
 public class ShowIndexStatement : Statement

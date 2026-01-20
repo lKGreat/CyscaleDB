@@ -114,6 +114,7 @@ public sealed class Executor
             ShowStatusStatement s => ExecuteShowStatus(s),
             ShowCreateTableStatement s => ExecuteShowCreateTable(s),
             ShowColumnsStatement s => ExecuteShowColumns(s),
+            ShowTableStatusStatement s => ExecuteShowTableStatus(s),
             ShowIndexStatement s => ExecuteShowIndex(s),
             ShowWarningsStatement => ExecuteShowWarnings(),
             ShowErrorsStatement => ExecuteShowErrors(),
@@ -1209,6 +1210,83 @@ public sealed class Executor
                 col.DefaultValue.HasValue ? col.DefaultValue.Value : DataValue.Null,
                 DataValue.FromVarChar(col.IsAutoIncrement ? "auto_increment" : "")
             ]);
+        }
+
+        return ExecutionResult.Query(result);
+    }
+
+    private ExecutionResult ExecuteShowTableStatus(ShowTableStatusStatement stmt)
+    {
+        var dbName = stmt.DatabaseName ?? _currentDatabase;
+        var tables = _catalog.ListTables(dbName);
+
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "Name", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Engine", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Version", DataType = DataType.Int });
+        result.Columns.Add(new ResultColumn { Name = "Row_format", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Rows", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Avg_row_length", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Data_length", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Max_data_length", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Index_length", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Data_free", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Auto_increment", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Create_time", DataType = DataType.DateTime });
+        result.Columns.Add(new ResultColumn { Name = "Update_time", DataType = DataType.DateTime });
+        result.Columns.Add(new ResultColumn { Name = "Check_time", DataType = DataType.DateTime });
+        result.Columns.Add(new ResultColumn { Name = "Collation", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Checksum", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Create_options", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Comment", DataType = DataType.VarChar });
+
+        foreach (var tableName in tables)
+        {
+            // Apply LIKE pattern filter
+            if (!string.IsNullOrEmpty(stmt.LikePattern) && !MatchesLikePattern(tableName, stmt.LikePattern))
+                continue;
+
+            // Get table for row count
+            var table = _catalog.GetTable(dbName, tableName);
+            var rowCount = table?.Schema.RowCount ?? 0;
+
+            var row = new DataValue[]
+            {
+                DataValue.FromVarChar(tableName),
+                DataValue.FromVarChar("CyscaleDB"),
+                DataValue.FromInt(10),
+                DataValue.FromVarChar("Dynamic"),
+                DataValue.FromBigInt(rowCount),
+                DataValue.FromBigInt(0),
+                DataValue.FromBigInt(0),
+                DataValue.FromBigInt(0),
+                DataValue.FromBigInt(0),
+                DataValue.FromBigInt(0),
+                DataValue.Null, // Auto_increment
+                DataValue.Null, // Create_time
+                DataValue.Null, // Update_time
+                DataValue.Null, // Check_time
+                DataValue.FromVarChar("utf8mb4_general_ci"),
+                DataValue.Null, // Checksum
+                DataValue.FromVarChar(""),
+                DataValue.FromVarChar("")
+            };
+
+            // Apply WHERE filter if specified
+            if (stmt.Where != null)
+            {
+                var context = new Dictionary<string, DataValue>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Name"] = row[0],
+                    ["Engine"] = row[1],
+                    ["Rows"] = row[4]
+                };
+                var whereResult = EvaluateExpression(stmt.Where, context);
+                if (!IsTruthy(whereResult))
+                    continue;
+            }
+
+            result.Rows.Add(row);
         }
 
         return ExecutionResult.Query(result);

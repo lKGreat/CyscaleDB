@@ -70,10 +70,11 @@ CyscaleDB 是一个使用纯 C# 实现的 MySQL 兼容关系型数据库系统�
 
 ## 完成功能后
 
-1. 更新 `docs/PROJECT_STATUS.md` 中的进度状态
-2. 更新 `docs/CAPABILITIES.md` 添加新功能说明
-3. 如有架构变更，更新 `docs/ARCHITECTURE.md`
-4. 确保所有测试通过
+1. **编译项目** - 必须执行 `dotnet build` 确保代码能够成功编译
+2. 更新 `docs/PROJECT_STATUS.md` 中的进度状态
+3. 更新 `docs/CAPABILITIES.md` 添加新功能说明
+4. 如有架构变更，更新 `docs/ARCHITECTURE.md`
+5. 确保所有测试通过
 
 ## 常用命令
 
