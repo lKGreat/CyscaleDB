@@ -61,6 +61,16 @@ public class SelectStatement : Statement
     /// </summary>
     public int? Offset { get; set; }
 
+    /// <summary>
+    /// UNION queries (for SELECT ... UNION SELECT ...)
+    /// </summary>
+    public List<SelectStatement> UnionQueries { get; set; } = [];
+
+    /// <summary>
+    /// Whether UNION ALL is used (vs UNION which removes duplicates).
+    /// </summary>
+    public List<bool> UnionAllFlags { get; set; } = [];
+
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitSelectStatement(this);
 }
 

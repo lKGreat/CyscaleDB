@@ -51,6 +51,15 @@ public sealed class Parser
 
         while (!Check(TokenType.EOF))
         {
+            // Skip whitespace and comments before parsing next statement
+            // (Lexer already does this, but ensure we're at a valid statement start)
+            if (Check(TokenType.WHERE) || Check(TokenType.GROUP) || Check(TokenType.ORDER) || 
+                Check(TokenType.HAVING) || Check(TokenType.LIMIT) || Check(TokenType.OFFSET))
+            {
+                throw Error($"Unexpected {_currentToken.Value} clause. This clause cannot appear at the start of a statement. " +
+                           $"It may be part of a previous incomplete statement or a syntax error.");
+            }
+
             statements.Add(ParseStatement());
             
             // Consume optional semicolon
@@ -68,6 +77,7 @@ public sealed class Parser
         return _currentToken.Type switch
         {
             TokenType.SELECT => ParseSelectStatement(),
+            TokenType.UNION => throw Error("UNION cannot appear at the start of a statement. Use SELECT ... UNION SELECT ..."),
             TokenType.INSERT => ParseInsertStatement(),
             TokenType.UPDATE => ParseUpdateStatement(),
             TokenType.DELETE => ParseDeleteStatement(),
@@ -174,6 +184,84 @@ public sealed class Parser
                 Advance();
                 stmt.Offset = ParseInteger();
             }
+        }
+
+        // UNION clauses
+        while (Check(TokenType.UNION))
+        {
+            Advance();
+            bool isUnionAll = Match(TokenType.ALL);
+            stmt.UnionAllFlags.Add(isUnionAll);
+            
+            // Parse the next SELECT statement
+            Expect(TokenType.SELECT);
+            var unionStmt = new SelectStatement();
+            
+            // DISTINCT
+            if (Check(TokenType.DISTINCT))
+            {
+                Advance();
+                unionStmt.IsDistinct = true;
+            }
+            else if (Check(TokenType.ALL))
+            {
+                Advance();
+            }
+
+            // Column list
+            unionStmt.Columns = ParseSelectColumns();
+
+            // FROM clause
+            if (Check(TokenType.FROM))
+            {
+                Advance();
+                unionStmt.From = ParseTableReference();
+            }
+
+            // WHERE clause
+            if (Check(TokenType.WHERE))
+            {
+                Advance();
+                unionStmt.Where = ParseExpression();
+            }
+
+            // GROUP BY clause
+            if (Check(TokenType.GROUP))
+            {
+                Advance();
+                Expect(TokenType.BY);
+                unionStmt.GroupBy = ParseExpressionList();
+            }
+
+            // HAVING clause
+            if (Check(TokenType.HAVING))
+            {
+                Advance();
+                unionStmt.Having = ParseExpression();
+            }
+
+            // ORDER BY clause (only allowed on the last UNION query)
+            if (Check(TokenType.ORDER))
+            {
+                Advance();
+                Expect(TokenType.BY);
+                unionStmt.OrderBy = ParseOrderByList();
+            }
+
+            // LIMIT clause (only allowed on the last UNION query)
+            if (Check(TokenType.LIMIT))
+            {
+                Advance();
+                unionStmt.Limit = ParseInteger();
+
+                if (Check(TokenType.OFFSET))
+                {
+                    Advance();
+                    unionStmt.Offset = ParseInteger();
+                }
+            }
+
+            stmt.UnionQueries.Add(unionStmt);
         }
 
         return stmt;
@@ -984,6 +1072,42 @@ public sealed class Parser
             scope = SetScope.Session;
         }
 
+        // Handle SHOW FULL TABLES, SHOW FULL COLUMNS, etc. (check FULL before TABLES)
+        if (Match(TokenType.FULL))
+        {
+            if (Check(TokenType.TABLES))
+            {
+                Advance();
+                var stmt = new ShowTablesStatement();
+                if (Match(TokenType.FROM))
+                {
+                    stmt.DatabaseName = ExpectIdentifier();
+                }
+                return stmt;
+            }
+            else if (Check(TokenType.COLUMNS) || MatchIdentifier("FIELDS"))
+            {
+                if (Check(TokenType.COLUMNS)) Advance();
+                Expect(TokenType.FROM);
+                var stmt = new ShowColumnsStatement();
+                stmt.TableName = ExpectIdentifier();
+                if (Match(TokenType.Dot))
+                {
+                    stmt.DatabaseName = stmt.TableName;
+                    stmt.TableName = ExpectIdentifier();
+                }
+                if (Match(TokenType.FROM))
+                {
+                    stmt.DatabaseName = ExpectIdentifier();
+                }
+                return stmt;
+            }
+            else
+            {
+                throw Error($"Expected TABLES or COLUMNS after SHOW FULL, got: {_currentToken.Value}");
+            }
+        }
+
         if (Check(TokenType.TABLES))
         {
             Advance();
@@ -1116,37 +1240,6 @@ public sealed class Parser
                 stmt.LikePattern = ExpectString();
             }
             return stmt;
-        }
-        // Handle SHOW FULL TABLES, SHOW FULL COLUMNS, etc.
-        else if (Match(TokenType.FULL))
-        {
-            if (Check(TokenType.TABLES))
-            {
-                Advance();
-                var stmt = new ShowTablesStatement();
-                if (Match(TokenType.FROM))
-                {
-                    stmt.DatabaseName = ExpectIdentifier();
-                }
-                return stmt;
-            }
-            else if (Check(TokenType.COLUMNS) || MatchIdentifier("FIELDS"))
-            {
-                if (Check(TokenType.COLUMNS)) Advance();
-                Expect(TokenType.FROM);
-                var stmt = new ShowColumnsStatement();
-                stmt.TableName = ExpectIdentifier();
-                if (Match(TokenType.Dot))
-                {
-                    stmt.DatabaseName = stmt.TableName;
-                    stmt.TableName = ExpectIdentifier();
-                }
-                if (Match(TokenType.FROM))
-                {
-                    stmt.DatabaseName = ExpectIdentifier();
-                }
-                return stmt;
-            }
         }
         // SHOW PROCESSLIST - return empty for compatibility
         else if (MatchIdentifier("PROCESSLIST"))
@@ -1713,11 +1806,15 @@ public sealed class Parser
             func.Arguments = ParseExpressionList();
         }
 
-        // Check for ORDER BY inside function (not standard SQL, but some databases allow it)
-        // For now, we'll reject it with a clearer error message
+        // MySQL supports ORDER BY inside aggregate functions (e.g., COUNT(column ORDER BY column))
+        // This is a MySQL extension, not standard SQL
         if (Check(TokenType.ORDER))
         {
-            throw Error($"ORDER BY is not allowed inside function calls. Use window functions (OVER clause) instead.");
+            Advance();
+            Expect(TokenType.BY);
+            // Parse ORDER BY expression list (simplified - just parse expressions)
+            // Note: This is a MySQL extension and may not be fully supported in execution
+            func.OrderBy = ParseExpressionList();
         }
 
         Expect(TokenType.RightParen);
@@ -1821,7 +1918,9 @@ public sealed class Parser
 
     private static bool IsKeyword(TokenType type)
     {
-        return type >= TokenType.SELECT && type <= TokenType.MAX;
+        // Check if it's a keyword (all keywords are >= SELECT and < AtAt)
+        // AtAt is the last non-keyword token before keywords start
+        return type >= TokenType.SELECT && type < TokenType.AtAt;
     }
 
     private SqlSyntaxException Error(string message)

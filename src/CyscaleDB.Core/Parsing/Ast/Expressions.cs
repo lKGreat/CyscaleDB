@@ -141,6 +141,11 @@ public class FunctionCall : Expression
     /// </summary>
     public bool IsStarArgument { get; set; }
 
+    /// <summary>
+    /// ORDER BY clause inside function (MySQL extension, e.g., COUNT(column ORDER BY column)).
+    /// </summary>
+    public List<Expression>? OrderBy { get; set; }
+
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitFunctionCall(this);
 }
 
