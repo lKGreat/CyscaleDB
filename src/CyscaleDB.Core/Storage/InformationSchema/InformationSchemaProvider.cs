@@ -25,7 +25,11 @@ public sealed class InformationSchemaProvider
         "TABLES",
         "COLUMNS",
         "STATISTICS",
-        "ENGINES"
+        "ENGINES",
+        "ROUTINES",
+        "FILES",
+        "KEY_COLUMN_USAGE",
+        "REFERENTIAL_CONSTRAINTS"
     ];
 
     public InformationSchemaProvider(Catalog catalog)
@@ -53,6 +57,10 @@ public sealed class InformationSchemaProvider
             "COLUMNS" => GetColumns(filterSchema, filterTable),
             "STATISTICS" => GetStatistics(filterSchema, filterTable),
             "ENGINES" => GetEngines(),
+            "ROUTINES" => GetRoutines(filterSchema),
+            "FILES" => GetFiles(),
+            "KEY_COLUMN_USAGE" => GetKeyColumnUsage(filterSchema, filterTable),
+            "REFERENTIAL_CONSTRAINTS" => GetReferentialConstraints(filterSchema, filterTable),
             _ => throw new CyscaleException($"Unknown information_schema table: {tableName}")
         };
     }
@@ -69,6 +77,10 @@ public sealed class InformationSchemaProvider
             "COLUMNS" => CreateColumnsSchema(),
             "STATISTICS" => CreateStatisticsSchema(),
             "ENGINES" => CreateEnginesSchema(),
+            "ROUTINES" => CreateRoutinesSchema(),
+            "FILES" => CreateFilesSchema(),
+            "KEY_COLUMN_USAGE" => CreateKeyColumnUsageSchema(),
+            "REFERENTIAL_CONSTRAINTS" => CreateReferentialConstraintsSchema(),
             _ => throw new CyscaleException($"Unknown information_schema table: {tableName}")
         };
     }
@@ -333,6 +345,131 @@ public sealed class InformationSchemaProvider
         ]);
 
         return result;
+    }
+
+    #endregion
+
+    #region ROUTINES (Stored procedures/functions - stub)
+
+    private static TableSchema CreateRoutinesSchema()
+    {
+        return new TableSchema(0, DatabaseName, "ROUTINES",
+        [
+            new ColumnDefinition("SPECIFIC_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("ROUTINE_CATALOG", DataType.VarChar, 64),
+            new ColumnDefinition("ROUTINE_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("ROUTINE_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("ROUTINE_TYPE", DataType.VarChar, 13),
+            new ColumnDefinition("DATA_TYPE", DataType.VarChar, 64),
+            new ColumnDefinition("ROUTINE_BODY", DataType.VarChar, 8),
+            new ColumnDefinition("ROUTINE_DEFINITION", DataType.Text),
+            new ColumnDefinition("EXTERNAL_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("EXTERNAL_LANGUAGE", DataType.VarChar, 64),
+            new ColumnDefinition("PARAMETER_STYLE", DataType.VarChar, 8),
+            new ColumnDefinition("IS_DETERMINISTIC", DataType.VarChar, 3),
+            new ColumnDefinition("SQL_DATA_ACCESS", DataType.VarChar, 64),
+            new ColumnDefinition("SQL_PATH", DataType.VarChar, 64),
+            new ColumnDefinition("SECURITY_TYPE", DataType.VarChar, 7),
+            new ColumnDefinition("CREATED", DataType.DateTime),
+            new ColumnDefinition("LAST_ALTERED", DataType.DateTime),
+            new ColumnDefinition("SQL_MODE", DataType.VarChar, 8192),
+            new ColumnDefinition("ROUTINE_COMMENT", DataType.Text),
+            new ColumnDefinition("DEFINER", DataType.VarChar, 288),
+            new ColumnDefinition("CHARACTER_SET_CLIENT", DataType.VarChar, 32),
+            new ColumnDefinition("COLLATION_CONNECTION", DataType.VarChar, 32),
+            new ColumnDefinition("DATABASE_COLLATION", DataType.VarChar, 32)
+        ]);
+    }
+
+    private ResultSet GetRoutines(string? filterSchema)
+    {
+        // Return empty result - CyscaleDB doesn't support stored procedures yet
+        return ResultSet.FromSchema(CreateRoutinesSchema());
+    }
+
+    #endregion
+
+    #region FILES (Tablespace files - stub)
+
+    private static TableSchema CreateFilesSchema()
+    {
+        return new TableSchema(0, DatabaseName, "FILES",
+        [
+            new ColumnDefinition("FILE_ID", DataType.BigInt),
+            new ColumnDefinition("FILE_NAME", DataType.VarChar, 4000),
+            new ColumnDefinition("FILE_TYPE", DataType.VarChar, 20),
+            new ColumnDefinition("TABLESPACE_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("TABLE_CATALOG", DataType.VarChar, 64),
+            new ColumnDefinition("TABLE_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("TABLE_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("ENGINE", DataType.VarChar, 64),
+            new ColumnDefinition("FULLTEXT_KEYS", DataType.VarChar, 64),
+            new ColumnDefinition("STATUS", DataType.VarChar, 20),
+            new ColumnDefinition("EXTRA", DataType.VarChar, 255)
+        ]);
+    }
+
+    private ResultSet GetFiles()
+    {
+        // Return empty result - CyscaleDB doesn't support tablespace files
+        return ResultSet.FromSchema(CreateFilesSchema());
+    }
+
+    #endregion
+
+    #region KEY_COLUMN_USAGE (Foreign key information - stub)
+
+    private static TableSchema CreateKeyColumnUsageSchema()
+    {
+        return new TableSchema(0, DatabaseName, "KEY_COLUMN_USAGE",
+        [
+            new ColumnDefinition("CONSTRAINT_CATALOG", DataType.VarChar, 64),
+            new ColumnDefinition("CONSTRAINT_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("CONSTRAINT_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("TABLE_CATALOG", DataType.VarChar, 64),
+            new ColumnDefinition("TABLE_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("TABLE_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("COLUMN_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("ORDINAL_POSITION", DataType.Int),
+            new ColumnDefinition("POSITION_IN_UNIQUE_CONSTRAINT", DataType.Int),
+            new ColumnDefinition("REFERENCED_TABLE_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("REFERENCED_TABLE_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("REFERENCED_COLUMN_NAME", DataType.VarChar, 64)
+        ]);
+    }
+
+    private ResultSet GetKeyColumnUsage(string? filterSchema, string? filterTable)
+    {
+        // Return empty result - CyscaleDB doesn't track foreign keys in information_schema yet
+        return ResultSet.FromSchema(CreateKeyColumnUsageSchema());
+    }
+
+    #endregion
+
+    #region REFERENTIAL_CONSTRAINTS (Foreign key constraints - stub)
+
+    private static TableSchema CreateReferentialConstraintsSchema()
+    {
+        return new TableSchema(0, DatabaseName, "REFERENTIAL_CONSTRAINTS",
+        [
+            new ColumnDefinition("CONSTRAINT_CATALOG", DataType.VarChar, 64),
+            new ColumnDefinition("CONSTRAINT_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("CONSTRAINT_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("UNIQUE_CONSTRAINT_CATALOG", DataType.VarChar, 64),
+            new ColumnDefinition("UNIQUE_CONSTRAINT_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("UNIQUE_CONSTRAINT_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("MATCH_OPTION", DataType.VarChar, 64),
+            new ColumnDefinition("UPDATE_RULE", DataType.VarChar, 64),
+            new ColumnDefinition("DELETE_RULE", DataType.VarChar, 64),
+            new ColumnDefinition("TABLE_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("REFERENCED_TABLE_NAME", DataType.VarChar, 64)
+        ]);
+    }
+
+    private ResultSet GetReferentialConstraints(string? filterSchema, string? filterTable)
+    {
+        // Return empty result - CyscaleDB doesn't track foreign keys yet
+        return ResultSet.FromSchema(CreateReferentialConstraintsSchema());
     }
 
     #endregion

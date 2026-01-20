@@ -465,6 +465,7 @@ public sealed class MySqlServer : IDisposable
         }
         catch (Exception ex)
         {
+            _logger.Error("Query execution error for SQL: {0}", sql);
             _logger.Error("Query execution error", ex);
             await SendErrorPacketAsync(writer, 1064, "42000", ex.Message, cancellationToken);
         }
