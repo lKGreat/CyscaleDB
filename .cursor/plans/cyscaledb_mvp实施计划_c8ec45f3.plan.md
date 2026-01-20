@@ -7,15 +7,15 @@ todos:
     status: completed
   - id: phase2-storage
     content: "Phase 2: 实现分页存储、文件IO、缓冲池、Catalog元数据管理"
-    status: pending
+    status: completed
   - id: phase3-parser
     content: "Phase 3: 实现SQL词法分析器和递归下降语法分析器"
-    status: pending
+    status: completed
     dependencies:
       - phase1-infrastructure
   - id: phase4-executor
     content: "Phase 4: 实现查询执行器、迭代器算子、表达式求值"
-    status: pending
+    status: in_progress
     dependencies:
       - phase2-storage
       - phase3-parser
