@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CyscaleDB.Cli/CyscaleDB.Cli.csproj" />
+    <Project Path="src/CyscaleDB.Core/CyscaleDB.Core.csproj" />
+    <Project Path="src/CyscaleDB.Server/CyscaleDB.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CyscaleDB.Tests/CyscaleDB.Tests.csproj" />
+  </Folder>
+</Solution>
