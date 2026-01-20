@@ -246,4 +246,215 @@ public class RowTests
         Assert.False(a == c);
         Assert.True(a != c);
     }
+
+    #region MVCC Tests
+
+    [Fact]
+    public void Constructor_DefaultMvccValues_AreInitialized()
+    {
+        var schema = CreateTestSchema();
+        var values = new[]
+        {
+            DataValue.FromInt(1),
+            DataValue.FromVarChar("John"),
+            DataValue.FromInt(30),
+            DataValue.FromBoolean(true),
+            DataValue.Null
+        };
+        var row = new Row(schema, values);
+
+        Assert.Equal(0L, row.TransactionId);
+        Assert.Equal(RollPointerHelper.Invalid, row.RollPointer);
+        Assert.False(row.IsDeleted);
+    }
+
+    [Fact]
+    public void Constructor_WithMvccValues_SetsCorrectly()
+    {
+        var schema = CreateTestSchema();
+        var values = new[]
+        {
+            DataValue.FromInt(1),
+            DataValue.FromVarChar("John"),
+            DataValue.FromInt(30),
+            DataValue.FromBoolean(true),
+            DataValue.Null
+        };
+        var rollPointer = RollPointerHelper.Create(1, 100, 50);
+        var row = new Row(schema, values, transactionId: 42, rollPointer: rollPointer, isDeleted: true);
+
+        Assert.Equal(42L, row.TransactionId);
+        Assert.Equal(rollPointer, row.RollPointer);
+        Assert.True(row.IsDeleted);
+    }
+
+    [Fact]
+    public void Serialize_WithMvcc_RoundTrips()
+    {
+        var schema = CreateTestSchema();
+        var values = new[]
+        {
+            DataValue.FromInt(1),
+            DataValue.FromVarChar("John"),
+            DataValue.FromInt(30),
+            DataValue.FromBoolean(true),
+            DataValue.FromDecimal(50000.00m)
+        };
+        var rollPointer = RollPointerHelper.Create(2, 500, 100);
+        var original = new Row(schema, values, transactionId: 123, rollPointer: rollPointer, isDeleted: false);
+
+        var bytes = original.Serialize();
+        var restored = Row.Deserialize(bytes, schema);
+
+        Assert.Equal(original.TransactionId, restored.TransactionId);
+        Assert.Equal(original.RollPointer, restored.RollPointer);
+        Assert.Equal(original.IsDeleted, restored.IsDeleted);
+        Assert.Equal(original.Values.Length, restored.Values.Length);
+        Assert.Equal(1, restored.GetValue("id").AsInt());
+        Assert.Equal("John", restored.GetValue("name").AsString());
+    }
+
+    [Fact]
+    public void Serialize_WithDeletedFlag_RoundTrips()
+    {
+        var schema = CreateTestSchema();
+        var values = new[]
+        {
+            DataValue.FromInt(1),
+            DataValue.FromVarChar("Deleted"),
+            DataValue.Null,
+            DataValue.FromBoolean(false),
+            DataValue.Null
+        };
+        var original = new Row(schema, values, transactionId: 999, isDeleted: true);
+
+        var bytes = original.Serialize();
+        var restored = Row.Deserialize(bytes, schema);
+
+        Assert.True(restored.IsDeleted);
+        Assert.Equal(999L, restored.TransactionId);
+    }
+
+    [Fact]
+    public void Clone_CopiesMvccFields()
+    {
+        var schema = CreateTestSchema();
+        var values = new[]
+        {
+            DataValue.FromInt(1),
+            DataValue.FromVarChar("Original"),
+            DataValue.FromInt(30),
+            DataValue.FromBoolean(true),
+            DataValue.Null
+        };
+        var rollPointer = RollPointerHelper.Create(1, 200, 75);
+        var original = new Row(schema, values, transactionId: 555, rollPointer: rollPointer, isDeleted: true);
+        original.RowId = new RowId(1, 0);
+
+        var clone = original.Clone();
+
+        Assert.Equal(original.TransactionId, clone.TransactionId);
+        Assert.Equal(original.RollPointer, clone.RollPointer);
+        Assert.Equal(original.IsDeleted, clone.IsDeleted);
+    }
+
+    [Fact]
+    public void CloneWithNewTransaction_UpdatesMvccFields()
+    {
+        var schema = CreateTestSchema();
+        var values = new[]
+        {
+            DataValue.FromInt(1),
+            DataValue.FromVarChar("Original"),
+            DataValue.FromInt(30),
+            DataValue.FromBoolean(true),
+            DataValue.Null
+        };
+        var oldRollPointer = RollPointerHelper.Create(1, 100, 25);
+        var original = new Row(schema, values, transactionId: 100, rollPointer: oldRollPointer);
+        original.RowId = new RowId(1, 0);
+
+        var newRollPointer = RollPointerHelper.Create(1, 200, 50);
+        var updated = original.CloneWithNewTransaction(200, newRollPointer);
+
+        Assert.Equal(200L, updated.TransactionId);
+        Assert.Equal(newRollPointer, updated.RollPointer);
+        Assert.Equal(original.RowId, updated.RowId);
+        // Original should be unchanged
+        Assert.Equal(100L, original.TransactionId);
+    }
+
+    [Fact]
+    public void RollPointerHelper_Create_EncodesCorrectly()
+    {
+        var rollPointer = RollPointerHelper.Create(1, 12345, 100);
+
+        Assert.Equal(1, RollPointerHelper.GetSegmentId(rollPointer));
+        Assert.Equal(12345u, RollPointerHelper.GetPageNumber(rollPointer));
+        Assert.Equal(100, RollPointerHelper.GetOffset(rollPointer));
+    }
+
+    [Fact]
+    public void RollPointerHelper_Invalid_IsRecognized()
+    {
+        Assert.False(RollPointerHelper.IsValid(RollPointerHelper.Invalid));
+        Assert.True(RollPointerHelper.IsValid(RollPointerHelper.Create(1, 1, 1)));
+    }
+
+    [Fact]
+    public void RollPointerHelper_MaxValues_WorkCorrectly()
+    {
+        var rollPointer = RollPointerHelper.Create(ushort.MaxValue, uint.MaxValue, ushort.MaxValue);
+
+        Assert.Equal(ushort.MaxValue, RollPointerHelper.GetSegmentId(rollPointer));
+        Assert.Equal(uint.MaxValue, RollPointerHelper.GetPageNumber(rollPointer));
+        Assert.Equal(ushort.MaxValue, RollPointerHelper.GetOffset(rollPointer));
+    }
+
+    [Fact]
+    public void SerializeWithoutMvcc_DoesNotIncludeMvccHeader()
+    {
+        var schema = CreateTestSchema();
+        var values = new[]
+        {
+            DataValue.FromInt(1),
+            DataValue.FromVarChar("John"),
+            DataValue.FromInt(30),
+            DataValue.FromBoolean(true),
+            DataValue.Null
+        };
+        var row = new Row(schema, values, transactionId: 999);
+
+        var withMvcc = row.Serialize();
+        var withoutMvcc = row.SerializeWithoutMvcc();
+
+        // Without MVCC should be smaller (by 17 bytes: 8 + 8 + 1)
+        Assert.Equal(17, withMvcc.Length - withoutMvcc.Length);
+    }
+
+    [Fact]
+    public void DeserializeWithoutMvcc_ReadsCorrectly()
+    {
+        var schema = CreateTestSchema();
+        var values = new[]
+        {
+            DataValue.FromInt(1),
+            DataValue.FromVarChar("Test"),
+            DataValue.FromInt(25),
+            DataValue.FromBoolean(false),
+            DataValue.FromDecimal(1000m)
+        };
+        var original = new Row(schema, values);
+
+        var bytes = original.SerializeWithoutMvcc();
+        var restored = Row.DeserializeWithoutMvcc(bytes, schema);
+
+        Assert.Equal(0L, restored.TransactionId);
+        Assert.Equal(RollPointerHelper.Invalid, restored.RollPointer);
+        Assert.False(restored.IsDeleted);
+        Assert.Equal(1, restored.GetValue("id").AsInt());
+        Assert.Equal("Test", restored.GetValue("name").AsString());
+    }
+
+    #endregion
 }

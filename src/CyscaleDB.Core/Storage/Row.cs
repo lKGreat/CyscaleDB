@@ -4,6 +4,10 @@ namespace CyscaleDB.Core.Storage;
 
 /// <summary>
 /// Represents a row of data in a table.
+/// Row Header Format (InnoDB-style):
+/// +------------+------------+------------+
+/// | TRX_ID(8B) | ROLL_PTR(8B)| ROW_DATA  |
+/// +------------+------------+------------+
 /// </summary>
 public sealed class Row
 {
@@ -23,6 +27,25 @@ public sealed class Row
     public RowId RowId { get; internal set; }
 
     /// <summary>
+    /// The transaction ID that last modified this row (TRX_ID).
+    /// Used for MVCC visibility checks.
+    /// </summary>
+    public long TransactionId { get; set; }
+
+    /// <summary>
+    /// Pointer to the undo log record for the previous version (ROLL_PTR).
+    /// Used to construct the version chain for MVCC.
+    /// Format: combines undo log segment, page number, and offset.
+    /// </summary>
+    public long RollPointer { get; set; }
+
+    /// <summary>
+    /// Whether this row has been deleted (but not yet purged).
+    /// In MVCC, deleted rows are marked but kept for snapshot reads.
+    /// </summary>
+    public bool IsDeleted { get; set; }
+
+    /// <summary>
     /// Creates a new row with the given values.
     /// </summary>
     public Row(TableSchema schema, DataValue[] values)
@@ -35,6 +58,22 @@ public sealed class Row
             throw new ArgumentException(
                 $"Row has {values.Length} values but schema expects {schema.Columns.Count}");
         }
+        
+        // Initialize MVCC fields with default values
+        TransactionId = 0;
+        RollPointer = RollPointerHelper.Invalid;
+        IsDeleted = false;
+    }
+
+    /// <summary>
+    /// Creates a new row with MVCC metadata.
+    /// </summary>
+    public Row(TableSchema schema, DataValue[] values, long transactionId, long rollPointer = 0, bool isDeleted = false)
+        : this(schema, values)
+    {
+        TransactionId = transactionId;
+        RollPointer = rollPointer;
+        IsDeleted = isDeleted;
     }
 
     /// <summary>
@@ -85,10 +124,51 @@ public sealed class Row
 
     /// <summary>
     /// Serializes this row to bytes for storage.
-    /// Format: [null bitmap][value1][value2]...
+    /// Format: [TRX_ID(8)][ROLL_PTR(8)][FLAGS(1)][null bitmap][value1][value2]...
     /// Variable-length values include length prefixes.
     /// </summary>
     public byte[] Serialize()
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        // Write MVCC header
+        writer.Write(TransactionId);
+        writer.Write(RollPointer);
+        
+        // Write flags (currently just IsDeleted)
+        byte flags = 0;
+        if (IsDeleted) flags |= 0x01;
+        writer.Write(flags);
+
+        // Write null bitmap
+        var nullBitmap = new byte[(Values.Length + 7) / 8];
+        for (int i = 0; i < Values.Length; i++)
+        {
+            if (Values[i].IsNull)
+            {
+                nullBitmap[i / 8] |= (byte)(1 << (i % 8));
+            }
+        }
+        writer.Write(nullBitmap);
+
+        // Write values
+        for (int i = 0; i < Values.Length; i++)
+        {
+            if (!Values[i].IsNull)
+            {
+                var valueBytes = Values[i].SerializeValue();
+                writer.Write(valueBytes);
+            }
+        }
+
+        return stream.ToArray();
+    }
+
+    /// <summary>
+    /// Serializes this row without MVCC metadata (for backward compatibility).
+    /// </summary>
+    public byte[] SerializeWithoutMvcc()
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
@@ -118,9 +198,47 @@ public sealed class Row
     }
 
     /// <summary>
-    /// Deserializes a row from bytes.
+    /// Deserializes a row from bytes (with MVCC metadata).
     /// </summary>
     public static Row Deserialize(byte[] data, TableSchema schema)
+    {
+        using var stream = new MemoryStream(data);
+        using var reader = new BinaryReader(stream);
+
+        // Read MVCC header
+        var transactionId = reader.ReadInt64();
+        var rollPointer = reader.ReadInt64();
+        var flags = reader.ReadByte();
+        var isDeleted = (flags & 0x01) != 0;
+
+        var columnCount = schema.Columns.Count;
+
+        // Read null bitmap
+        var nullBitmapSize = (columnCount + 7) / 8;
+        var nullBitmap = reader.ReadBytes(nullBitmapSize);
+
+        // Read values
+        var values = new DataValue[columnCount];
+        for (int i = 0; i < columnCount; i++)
+        {
+            var isNull = (nullBitmap[i / 8] & (1 << (i % 8))) != 0;
+            if (isNull)
+            {
+                values[i] = DataValue.Null;
+            }
+            else
+            {
+                values[i] = DataValue.DeserializeValue(reader, schema.Columns[i].DataType);
+            }
+        }
+
+        return new Row(schema, values, transactionId, rollPointer, isDeleted);
+    }
+
+    /// <summary>
+    /// Deserializes a row from bytes without MVCC metadata (for backward compatibility).
+    /// </summary>
+    public static Row DeserializeWithoutMvcc(byte[] data, TableSchema schema)
     {
         using var stream = new MemoryStream(data);
         using var reader = new BinaryReader(stream);
@@ -156,7 +274,20 @@ public sealed class Row
     {
         var newValues = new DataValue[Values.Length];
         Array.Copy(Values, newValues, Values.Length);
-        return new Row(Schema, newValues)
+        return new Row(Schema, newValues, TransactionId, RollPointer, IsDeleted)
+        {
+            RowId = RowId
+        };
+    }
+
+    /// <summary>
+    /// Creates a copy of this row with a new transaction ID (for updates).
+    /// </summary>
+    public Row CloneWithNewTransaction(long newTransactionId, long newRollPointer)
+    {
+        var newValues = new DataValue[Values.Length];
+        Array.Copy(Values, newValues, Values.Length);
+        return new Row(Schema, newValues, newTransactionId, newRollPointer, IsDeleted)
         {
             RowId = RowId
         };
@@ -165,7 +296,60 @@ public sealed class Row
     public override string ToString()
     {
         var values = string.Join(", ", Values.Select(v => v.ToString()));
-        return $"Row({values})";
+        return $"Row(TrxId={TransactionId}, RollPtr={RollPointer}, Deleted={IsDeleted}, Values=[{values}])";
+    }
+}
+
+/// <summary>
+/// Helper class for encoding/decoding roll pointers.
+/// Roll pointer format (7 bytes in InnoDB, we use 8 for simplicity):
+/// [SegmentId(2)][PageNo(4)][Offset(2)]
+/// </summary>
+public static class RollPointerHelper
+{
+    /// <summary>
+    /// Invalid roll pointer value (no previous version).
+    /// </summary>
+    public const long Invalid = 0;
+
+    /// <summary>
+    /// Creates a roll pointer from its components.
+    /// </summary>
+    public static long Create(ushort segmentId, uint pageNumber, ushort offset)
+    {
+        return ((long)segmentId << 48) | ((long)pageNumber << 16) | offset;
+    }
+
+    /// <summary>
+    /// Extracts the segment ID from a roll pointer.
+    /// </summary>
+    public static ushort GetSegmentId(long rollPointer)
+    {
+        return (ushort)(rollPointer >> 48);
+    }
+
+    /// <summary>
+    /// Extracts the page number from a roll pointer.
+    /// </summary>
+    public static uint GetPageNumber(long rollPointer)
+    {
+        return (uint)((rollPointer >> 16) & 0xFFFFFFFF);
+    }
+
+    /// <summary>
+    /// Extracts the offset from a roll pointer.
+    /// </summary>
+    public static ushort GetOffset(long rollPointer)
+    {
+        return (ushort)(rollPointer & 0xFFFF);
+    }
+
+    /// <summary>
+    /// Checks if a roll pointer is valid (points to an undo record).
+    /// </summary>
+    public static bool IsValid(long rollPointer)
+    {
+        return rollPointer != Invalid;
     }
 }
 
