@@ -26,12 +26,12 @@ todos:
       - phase2-storage
   - id: phase6-protocol
     content: "Phase 6: 实现MySQL协议服务端(握手、查询、结果集)"
-    status: in_progress
+    status: completed
     dependencies:
       - phase4-executor
   - id: phase7-cli
     content: "Phase 7: 实现CLI命令行交互工具"
-    status: pending
+    status: completed
     dependencies:
       - phase4-executor
   - id: phase8-testing
