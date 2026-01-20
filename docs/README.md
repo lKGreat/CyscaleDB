@@ -9,6 +9,7 @@
 | [PROJECT_STATUS.md](./PROJECT_STATUS.md) | 项目进度状态，包含各阶段完成情况和未来规划 |
 | [CAPABILITIES.md](./CAPABILITIES.md) | 功能能力清单，详细列出所有支持的 SQL 语法和特性 |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 系统架构文档，描述各层设计和组件关系 |
+| [CONNECTION.md](./CONNECTION.md) | 连接指南，包含服务器启动和客户端连接示例 |
 
 ## 使用指南
 

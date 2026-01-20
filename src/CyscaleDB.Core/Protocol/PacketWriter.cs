@@ -161,6 +161,11 @@ public sealed class PacketWriter : IDisposable
         _sequenceNumber = 0;
     }
 
+    /// <summary>
+    /// Gets the current sequence number (next sequence to be used).
+    /// </summary>
+    public byte CurrentSequence => _sequenceNumber;
+
     private void EnsureNotDisposed()
     {
         if (_disposed)

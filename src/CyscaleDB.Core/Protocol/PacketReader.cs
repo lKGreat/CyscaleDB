@@ -199,6 +199,15 @@ public sealed class PacketReader : IDisposable
         _sequenceNumber = 0;
     }
 
+    /// <summary>
+    /// Sets the expected sequence number.
+    /// Used to synchronize with writer during handshake.
+    /// </summary>
+    public void SetSequence(byte sequence)
+    {
+        _sequenceNumber = sequence;
+    }
+
     private void EnsureNotDisposed()
     {
         if (_disposed)

@@ -201,10 +201,12 @@ public sealed class MySqlServer : IDisposable
                     (uint)ServerCapabilities);
 
                 await writer.WritePacketAsync(handshakePacket, cancellationToken);
-                writer.ResetSequence();
-                reader.ResetSequence();
+                // MySQL handshake sequence: Server(0) → Client(1) → Server(2)
+                // Synchronize reader's expected sequence with writer's current sequence
+                // After sending seq 0, writer is now at 1, so reader should expect 1
+                reader.SetSequence(writer.CurrentSequence);
 
-                // Read handshake response
+                // Read handshake response (client sends with sequence 1)
                 var responsePacket = await reader.ReadPacketAsync(cancellationToken);
                 var response = Handshake.ParseHandshakeResponse(responsePacket);
 
@@ -236,6 +238,11 @@ public sealed class MySqlServer : IDisposable
 
                 // Send OK packet (authentication success)
                 await SendOkPacketAsync(writer, session, cancellationToken);
+
+                // Reset sequence numbers for command phase
+                // Each command starts a new conversation with sequence 0
+                writer.ResetSequence();
+                reader.ResetSequence();
 
                 // Set database if requested
                 if (!string.IsNullOrEmpty(response.Database))
@@ -271,6 +278,11 @@ public sealed class MySqlServer : IDisposable
         {
             try
             {
+                // Reset sequence numbers at the start of each command
+                // MySQL protocol: each command starts with sequence 0
+                reader.ResetSequence();
+                writer.ResetSequence();
+
                 var packet = await reader.ReadPacketAsync(cancellationToken);
                 if (packet.Length == 0)
                     continue;
