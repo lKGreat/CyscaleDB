@@ -10,6 +10,12 @@
 | DROP DATABASE | ✅ | `DROP DATABASE IF EXISTS mydb` |
 | CREATE TABLE | ✅ | `CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(100))` |
 | DROP TABLE | ✅ | `DROP TABLE IF EXISTS users` |
+| CREATE INDEX | ✅ | `CREATE INDEX idx_name ON users (name)` |
+| CREATE UNIQUE INDEX | ✅ | `CREATE UNIQUE INDEX idx_email ON users (email)` |
+| DROP INDEX | ✅ | `DROP INDEX idx_name ON users` |
+| CREATE VIEW | ✅ | `CREATE VIEW active_users AS SELECT * FROM users WHERE active = 1` |
+| DROP VIEW | ✅ | `DROP VIEW IF EXISTS active_users` |
+| OPTIMIZE TABLE | ✅ | `OPTIMIZE TABLE users` |
 
 ### DML (数据操作语言)
 
@@ -224,6 +230,11 @@
 | WAL日志 | 预写日志，支持崩溃恢复 |
 | 事务隔离 | 表级锁 |
 | 文件格式 | .cdb 数据文件 |
+| 索引文件 | .idx (B-Tree), .hidx (Hash) |
+| 日志轮转 | 自动轮转超过阈值的 WAL 文件 |
+| 日志归档 | 支持 gzip 压缩旧日志 |
+| 检查点 | 定期刷新脏页，支持快速恢复 |
+| 数据收缩 | OPTIMIZE TABLE 回收删除空间 |
 
 ---
 
@@ -246,14 +257,62 @@
 
 ---
 
+## 索引支持
+
+### 索引类型
+
+| 类型 | 状态 | 说明 |
+|------|------|------|
+| B-Tree | ✅ | 支持等值和范围查询 |
+| Hash | ✅ | 仅支持等值查询，性能更优 |
+
+### 索引语法
+
+```sql
+-- 创建 B-Tree 索引 (默认)
+CREATE INDEX idx_name ON users (name);
+
+-- 创建 Hash 索引
+CREATE INDEX idx_id ON users (id) USING HASH;
+
+-- 创建唯一索引
+CREATE UNIQUE INDEX idx_email ON users (email);
+
+-- 创建复合索引
+CREATE INDEX idx_composite ON orders (customer_id, order_date);
+
+-- 删除索引
+DROP INDEX idx_name ON users;
+```
+
+### 索引选择器
+
+查询优化器会根据 WHERE 条件自动选择最优索引：
+- 等值查询优先使用 Hash 索引
+- 范围查询使用 B-Tree 索引
+- 复合索引支持最左前缀匹配
+
+---
+
+## 视图支持
+
+| 功能 | 状态 | 示例 |
+|------|------|------|
+| 创建视图 | ✅ | `CREATE VIEW v1 AS SELECT ...` |
+| 替换视图 | ✅ | `CREATE OR REPLACE VIEW v1 AS SELECT ...` |
+| 删除视图 | ✅ | `DROP VIEW v1` |
+| 查询视图 | ✅ | `SELECT * FROM v1` |
+| 视图列别名 | ✅ | `CREATE VIEW v1 (col1, col2) AS SELECT ...` |
+
+---
+
 ## 已知限制
 
-1. **索引**: 目前不支持索引，所有查询为全表扫描
-2. **子查询**: 基础支持，复杂嵌套查询可能不完整
-3. **存储过程**: 不支持
-4. **视图**: 不支持
-5. **触发器**: 不支持
-6. **外键约束**: 解析支持，运行时不强制
+1. **子查询**: 基础支持，复杂嵌套查询可能不完整
+2. **存储过程**: 不支持
+3. **触发器**: 不支持
+4. **外键约束**: 解析支持，运行时不强制
+5. **视图更新**: 暂不支持 INSERT/UPDATE/DELETE 到视图
 
 ---
 
@@ -262,6 +321,7 @@
 | 算子 | 说明 |
 |------|------|
 | TableScanOperator | 全表扫描 |
+| IndexScanOperator | 索引扫描 (B-Tree) |
 | FilterOperator | WHERE 条件过滤 |
 | ProjectOperator | 列投影 |
 | NestedLoopJoinOperator | 嵌套循环连接 |
@@ -270,6 +330,8 @@
 | LimitOperator | 限制结果数量 |
 | DistinctOperator | 去重 |
 | DualOperator | 虚拟表 (无FROM查询) |
+| AliasOperator | 表/列别名处理 |
+| InformationSchemaOperator | 系统表查询 |
 
 ---
 
