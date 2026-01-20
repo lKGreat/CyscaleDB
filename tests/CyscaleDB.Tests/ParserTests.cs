@@ -720,4 +720,251 @@ public class ParserTests
     }
 
     #endregion
+
+    #region CREATE INDEX Tests
+
+    [Fact]
+    public void Parse_SimpleCreateIndex_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE INDEX idx_name ON users (name)");
+        var stmt = parser.Parse() as CreateIndexStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("idx_name", stmt.IndexName);
+        Assert.Equal("users", stmt.TableName);
+        Assert.Null(stmt.DatabaseName);
+        Assert.Single(stmt.Columns);
+        Assert.Equal("name", stmt.Columns[0]);
+        Assert.False(stmt.IsUnique);
+        Assert.Equal(IndexTypeAst.BTree, stmt.IndexType);
+    }
+
+    [Fact]
+    public void Parse_CreateUniqueIndex_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE UNIQUE INDEX idx_email ON users (email)");
+        var stmt = parser.Parse() as CreateIndexStatement;
+
+        Assert.NotNull(stmt);
+        Assert.True(stmt.IsUnique);
+        Assert.Equal("idx_email", stmt.IndexName);
+    }
+
+    [Fact]
+    public void Parse_CreateIndexWithMultipleColumns_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE INDEX idx_composite ON orders (customer_id, order_date)");
+        var stmt = parser.Parse() as CreateIndexStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal(2, stmt.Columns.Count);
+        Assert.Equal("customer_id", stmt.Columns[0]);
+        Assert.Equal("order_date", stmt.Columns[1]);
+    }
+
+    [Fact]
+    public void Parse_CreateIndexWithQualifiedTable_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE INDEX idx_id ON mydb.users (id)");
+        var stmt = parser.Parse() as CreateIndexStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("mydb", stmt.DatabaseName);
+        Assert.Equal("users", stmt.TableName);
+    }
+
+    [Fact]
+    public void Parse_CreateHashIndex_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE INDEX idx_hash ON users (id) USING HASH");
+        var stmt = parser.Parse() as CreateIndexStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal(IndexTypeAst.Hash, stmt.IndexType);
+    }
+
+    [Fact]
+    public void Parse_CreateBTreeIndex_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE INDEX idx_btree ON users (name) USING BTREE");
+        var stmt = parser.Parse() as CreateIndexStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal(IndexTypeAst.BTree, stmt.IndexType);
+    }
+
+    [Fact]
+    public void Parse_CreateIndexIfNotExists_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE INDEX IF NOT EXISTS idx_name ON users (name)");
+        var stmt = parser.Parse() as CreateIndexStatement;
+
+        Assert.NotNull(stmt);
+        Assert.True(stmt.IfNotExists);
+    }
+
+    #endregion
+
+    #region DROP INDEX Tests
+
+    [Fact]
+    public void Parse_SimpleDropIndex_ReturnsCorrectAst()
+    {
+        var parser = new Parser("DROP INDEX idx_name ON users");
+        var stmt = parser.Parse() as DropIndexStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("idx_name", stmt.IndexName);
+        Assert.Equal("users", stmt.TableName);
+        Assert.Null(stmt.DatabaseName);
+        Assert.False(stmt.IfExists);
+    }
+
+    [Fact]
+    public void Parse_DropIndexIfExists_ReturnsCorrectAst()
+    {
+        var parser = new Parser("DROP INDEX IF EXISTS idx_name ON users");
+        var stmt = parser.Parse() as DropIndexStatement;
+
+        Assert.NotNull(stmt);
+        Assert.True(stmt.IfExists);
+    }
+
+    [Fact]
+    public void Parse_DropIndexWithQualifiedTable_ReturnsCorrectAst()
+    {
+        var parser = new Parser("DROP INDEX idx_name ON mydb.users");
+        var stmt = parser.Parse() as DropIndexStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("mydb", stmt.DatabaseName);
+        Assert.Equal("users", stmt.TableName);
+    }
+
+    #endregion
+
+    #region CREATE VIEW Tests
+
+    [Fact]
+    public void Parse_SimpleCreateView_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE VIEW active_users AS SELECT * FROM users WHERE active = 1");
+        var stmt = parser.Parse() as CreateViewStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("active_users", stmt.ViewName);
+        Assert.Null(stmt.DatabaseName);
+        Assert.Null(stmt.ColumnNames);
+        Assert.False(stmt.OrReplace);
+        Assert.NotNull(stmt.Query);
+    }
+
+    [Fact]
+    public void Parse_CreateOrReplaceView_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE OR REPLACE VIEW v1 AS SELECT id FROM t");
+        var stmt = parser.Parse() as CreateViewStatement;
+
+        Assert.NotNull(stmt);
+        Assert.True(stmt.OrReplace);
+    }
+
+    [Fact]
+    public void Parse_CreateViewWithColumns_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE VIEW user_summary (user_id, user_name) AS SELECT id, name FROM users");
+        var stmt = parser.Parse() as CreateViewStatement;
+
+        Assert.NotNull(stmt);
+        Assert.NotNull(stmt.ColumnNames);
+        Assert.Equal(2, stmt.ColumnNames!.Count);
+        Assert.Equal("user_id", stmt.ColumnNames[0]);
+        Assert.Equal("user_name", stmt.ColumnNames[1]);
+    }
+
+    [Fact]
+    public void Parse_CreateViewWithQualifiedName_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE VIEW mydb.my_view AS SELECT 1");
+        var stmt = parser.Parse() as CreateViewStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("mydb", stmt.DatabaseName);
+        Assert.Equal("my_view", stmt.ViewName);
+    }
+
+    [Fact]
+    public void Parse_CreateViewIfNotExists_ReturnsCorrectAst()
+    {
+        var parser = new Parser("CREATE VIEW IF NOT EXISTS v1 AS SELECT 1");
+        var stmt = parser.Parse() as CreateViewStatement;
+
+        Assert.NotNull(stmt);
+        Assert.True(stmt.IfNotExists);
+    }
+
+    #endregion
+
+    #region DROP VIEW Tests
+
+    [Fact]
+    public void Parse_SimpleDropView_ReturnsCorrectAst()
+    {
+        var parser = new Parser("DROP VIEW my_view");
+        var stmt = parser.Parse() as DropViewStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("my_view", stmt.ViewName);
+        Assert.Null(stmt.DatabaseName);
+        Assert.False(stmt.IfExists);
+    }
+
+    [Fact]
+    public void Parse_DropViewIfExists_ReturnsCorrectAst()
+    {
+        var parser = new Parser("DROP VIEW IF EXISTS my_view");
+        var stmt = parser.Parse() as DropViewStatement;
+
+        Assert.NotNull(stmt);
+        Assert.True(stmt.IfExists);
+    }
+
+    [Fact]
+    public void Parse_DropViewWithQualifiedName_ReturnsCorrectAst()
+    {
+        var parser = new Parser("DROP VIEW mydb.my_view");
+        var stmt = parser.Parse() as DropViewStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("mydb", stmt.DatabaseName);
+        Assert.Equal("my_view", stmt.ViewName);
+    }
+
+    #endregion
+
+    #region OPTIMIZE TABLE Tests
+
+    [Fact]
+    public void Parse_SimpleOptimizeTable_ReturnsCorrectAst()
+    {
+        var parser = new Parser("OPTIMIZE TABLE users");
+        var stmt = parser.Parse() as OptimizeTableStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("users", stmt.TableName);
+        Assert.Null(stmt.DatabaseName);
+    }
+
+    [Fact]
+    public void Parse_OptimizeTableWithQualifiedName_ReturnsCorrectAst()
+    {
+        var parser = new Parser("OPTIMIZE TABLE mydb.users");
+        var stmt = parser.Parse() as OptimizeTableStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("mydb", stmt.DatabaseName);
+        Assert.Equal("users", stmt.TableName);
+    }
+
+    #endregion
 }

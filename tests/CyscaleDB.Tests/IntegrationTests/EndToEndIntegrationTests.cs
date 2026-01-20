@@ -202,6 +202,262 @@ public class EndToEndIntegrationTests : IDisposable
         Assert.Equal("Charlie", result.ResultSet.Rows[1][0].ToString());
     }
 
+    #region Index Tests
+
+    [Fact]
+    public void CreateIndex_ShouldSucceed()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100))");
+        
+        var result = _executor.Execute("CREATE INDEX idx_id ON users (id)");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+        Assert.True(result.Message?.Contains("Index") ?? false);
+    }
+
+    [Fact]
+    public void CreateUniqueIndex_ShouldSucceed()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, email VARCHAR(100))");
+        
+        var result = _executor.Execute("CREATE UNIQUE INDEX idx_email ON users (email)");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+    }
+
+    [Fact]
+    public void CreateIndex_MultiColumn_ShouldSucceed()
+    {
+        _executor.Execute("CREATE TABLE orders (id INT, customer_id INT, order_date VARCHAR(20))");
+        
+        var result = _executor.Execute("CREATE INDEX idx_composite ON orders (customer_id, order_date)");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+    }
+
+    [Fact]
+    public void CreateIndex_WithHashType_ShouldSucceed()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100))");
+        
+        var result = _executor.Execute("CREATE INDEX idx_id_hash ON users (id) USING HASH");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+    }
+
+    [Fact]
+    public void DropIndex_ShouldSucceed()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100))");
+        _executor.Execute("CREATE INDEX idx_id ON users (id)");
+        
+        var result = _executor.Execute("DROP INDEX idx_id ON users");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+    }
+
+    [Fact]
+    public void DropIndexIfExists_ShouldNotFail_WhenNotExists()
+    {
+        _executor.Execute("CREATE TABLE users (id INT)");
+        
+        var result = _executor.Execute("DROP INDEX IF EXISTS nonexistent_idx ON users");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+    }
+
+    [Fact]
+    public void ShowIndex_ShouldListIndexes()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100))");
+        _executor.Execute("CREATE INDEX idx_id ON users (id)");
+        _executor.Execute("CREATE INDEX idx_name ON users (name)");
+        
+        var result = _executor.Execute("SHOW INDEX FROM users");
+        
+        Assert.Equal(ResultType.Query, result.Type);
+        Assert.True(result.ResultSet!.RowCount >= 2);
+    }
+
+    #endregion
+
+    #region View Tests
+
+    [Fact]
+    public void CreateView_ShouldSucceed()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100), active INT)");
+        _executor.Execute("INSERT INTO users VALUES (1, 'Alice', 1)");
+        _executor.Execute("INSERT INTO users VALUES (2, 'Bob', 0)");
+        
+        var result = _executor.Execute("CREATE VIEW active_users AS SELECT * FROM users WHERE active = 1");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+    }
+
+    [Fact]
+    public void SelectFromView_ShouldWork()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100), active INT)");
+        _executor.Execute("INSERT INTO users VALUES (1, 'Alice', 1)");
+        _executor.Execute("INSERT INTO users VALUES (2, 'Bob', 0)");
+        _executor.Execute("INSERT INTO users VALUES (3, 'Charlie', 1)");
+        _executor.Execute("CREATE VIEW active_users AS SELECT id, name FROM users WHERE active = 1");
+        
+        var result = _executor.Execute("SELECT * FROM active_users ORDER BY id");
+        
+        Assert.Equal(ResultType.Query, result.Type);
+        Assert.Equal(2, result.ResultSet!.RowCount);
+        Assert.Equal("Alice", result.ResultSet.Rows[0][1].ToString());
+        Assert.Equal("Charlie", result.ResultSet.Rows[1][1].ToString());
+    }
+
+    [Fact]
+    public void CreateOrReplaceView_ShouldReplace()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100))");
+        _executor.Execute("INSERT INTO users VALUES (1, 'Alice')");
+        _executor.Execute("CREATE VIEW v1 AS SELECT id FROM users");
+        
+        // Replace with a different definition
+        _executor.Execute("CREATE OR REPLACE VIEW v1 AS SELECT name FROM users");
+        
+        var result = _executor.Execute("SELECT * FROM v1");
+        
+        Assert.Equal(ResultType.Query, result.Type);
+        // Should have 'name' column now, not 'id'
+        Assert.Equal("Alice", result.ResultSet!.Rows[0][0].ToString());
+    }
+
+    [Fact]
+    public void DropView_ShouldSucceed()
+    {
+        _executor.Execute("CREATE TABLE users (id INT)");
+        _executor.Execute("CREATE VIEW v1 AS SELECT * FROM users");
+        
+        var result = _executor.Execute("DROP VIEW v1");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+    }
+
+    [Fact]
+    public void DropViewIfExists_ShouldNotFail_WhenNotExists()
+    {
+        var result = _executor.Execute("DROP VIEW IF EXISTS nonexistent_view");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+    }
+
+    [Fact]
+    public void CreateView_WithColumnNames_ShouldWork()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100))");
+        _executor.Execute("INSERT INTO users VALUES (1, 'Alice')");
+        _executor.Execute("CREATE VIEW user_summary (user_id, user_name) AS SELECT id, name FROM users");
+        
+        var result = _executor.Execute("SELECT user_id, user_name FROM user_summary");
+        
+        Assert.Equal(ResultType.Query, result.Type);
+        Assert.Equal(1, result.ResultSet!.RowCount);
+    }
+
+    #endregion
+
+    #region Optimize Table Tests
+
+    [Fact]
+    public void OptimizeTable_ShouldSucceed()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100))");
+        _executor.Execute("INSERT INTO users VALUES (1, 'Alice')");
+        _executor.Execute("INSERT INTO users VALUES (2, 'Bob')");
+        _executor.Execute("DELETE FROM users WHERE id = 1");
+        
+        var result = _executor.Execute("OPTIMIZE TABLE users");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+        Assert.True(result.Message?.Contains("Optimiz") ?? false);
+    }
+
+    [Fact]
+    public void OptimizeTable_WithFragmentedData_ShouldCompact()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100))");
+        
+        // Insert many rows
+        for (int i = 1; i <= 100; i++)
+        {
+            _executor.Execute($"INSERT INTO users VALUES ({i}, 'User{i}')");
+        }
+        
+        // Delete every other row to create fragmentation
+        for (int i = 1; i <= 100; i += 2)
+        {
+            _executor.Execute($"DELETE FROM users WHERE id = {i}");
+        }
+        
+        var result = _executor.Execute("OPTIMIZE TABLE users");
+        
+        Assert.Equal(ResultType.Ddl, result.Type);
+        
+        // Verify remaining data is still accessible
+        var selectResult = _executor.Execute("SELECT COUNT(*) FROM users");
+        Assert.Equal(50, int.Parse(selectResult.ResultSet!.Rows[0][0].ToString()!));
+    }
+
+    #endregion
+
+    #region Combined Feature Tests
+
+    [Fact]
+    public void IndexAndView_ShouldWorkTogether()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100), status VARCHAR(20))");
+        _executor.Execute("INSERT INTO users VALUES (1, 'Alice', 'active')");
+        _executor.Execute("INSERT INTO users VALUES (2, 'Bob', 'inactive')");
+        _executor.Execute("INSERT INTO users VALUES (3, 'Charlie', 'active')");
+        
+        // Create index
+        _executor.Execute("CREATE INDEX idx_status ON users (status)");
+        
+        // Create view
+        _executor.Execute("CREATE VIEW active_users AS SELECT id, name FROM users WHERE status = 'active'");
+        
+        // Query view
+        var result = _executor.Execute("SELECT * FROM active_users ORDER BY name");
+        
+        Assert.Equal(ResultType.Query, result.Type);
+        Assert.Equal(2, result.ResultSet!.RowCount);
+        Assert.Equal("Alice", result.ResultSet.Rows[0][1].ToString());
+        Assert.Equal("Charlie", result.ResultSet.Rows[1][1].ToString());
+    }
+
+    [Fact]
+    public void DataIntegrityAfterOptimize_ShouldBePreserved()
+    {
+        _executor.Execute("CREATE TABLE users (id INT, name VARCHAR(100))");
+        
+        // Insert data
+        _executor.Execute("INSERT INTO users VALUES (1, 'Alice')");
+        _executor.Execute("INSERT INTO users VALUES (2, 'Bob')");
+        _executor.Execute("INSERT INTO users VALUES (3, 'Charlie')");
+        
+        // Delete middle row
+        _executor.Execute("DELETE FROM users WHERE id = 2");
+        
+        // Optimize
+        _executor.Execute("OPTIMIZE TABLE users");
+        
+        // Verify data integrity
+        var result = _executor.Execute("SELECT name FROM users ORDER BY id");
+        
+        Assert.Equal(2, result.ResultSet!.RowCount);
+        Assert.Equal("Alice", result.ResultSet.Rows[0][0].ToString());
+        Assert.Equal("Charlie", result.ResultSet.Rows[1][0].ToString());
+    }
+
+    #endregion
+
     public void Dispose()
     {
         if (_disposed)

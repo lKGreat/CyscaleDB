@@ -42,11 +42,14 @@
 │   ┌──────────────────────────┴──────────────────────────┐       │
 │   │                    Operators (算子)                   │       │
 │   │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ │       │
-│   │  │TableScan │ │ Filter   │ │ Project  │ │  Join   │ │       │
+│   │  │TableScan │ │IndexScan │ │ Filter   │ │ Project │ │       │
 │   │  └──────────┘ └──────────┘ └──────────┘ └─────────┘ │       │
 │   │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ │       │
-│   │  │ GroupBy  │ │ OrderBy  │ │  Limit   │ │Distinct │ │       │
+│   │  │  Join    │ │ GroupBy  │ │ OrderBy  │ │  Limit  │ │       │
 │   │  └──────────┘ └──────────┘ └──────────┘ └─────────┘ │       │
+│   │  ┌──────────┐ ┌──────────┐                          │       │
+│   │  │ Distinct │ │  Alias   │                          │       │
+│   │  └──────────┘ └──────────┘                          │       │
 │   └─────────────────────────────────────────────────────┘       │
 │                              │                                   │
 │   ┌──────────────────────────┴──────────────────────────┐       │
@@ -98,8 +101,10 @@
 │   ┌──────────────────────────┴──────────────────────────┐       │
 │   │                   File I/O                           │       │
 │   │   - .cdb 数据文件                                    │       │
+│   │   - .idx / .hidx 索引文件                            │       │
 │   │   - catalog.meta 元数据文件                          │       │
 │   │   - .wal 日志文件                                    │       │
+│   │   - checkpoint.meta 检查点文件                       │       │
 │   └─────────────────────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -133,6 +138,7 @@ CyscaleDB/
 │   │   │   ├── IOperator.cs         # 算子接口
 │   │   │   ├── Operators/           # 算子实现
 │   │   │   │   ├── TableScanOperator.cs
+│   │   │   │   ├── IndexScanOperator.cs
 │   │   │   │   ├── FilterOperator.cs
 │   │   │   │   ├── ProjectOperator.cs
 │   │   │   │   ├── NestedLoopJoinOperator.cs
@@ -140,7 +146,10 @@ CyscaleDB/
 │   │   │   │   ├── OrderByOperator.cs
 │   │   │   │   ├── LimitOperator.cs
 │   │   │   │   ├── DistinctOperator.cs
+│   │   │   │   ├── AliasOperator.cs
 │   │   │   │   └── DualOperator.cs
+│   │   │   ├── Optimizer/           # 查询优化器
+│   │   │   │   └── IndexSelector.cs
 │   │   │   └── Expressions/         # 表达式求值
 │   │   │       └── IExpressionEvaluator.cs
 │   │   │
@@ -154,13 +163,22 @@ CyscaleDB/
 │   │   │   ├── DatabaseInfo.cs      # 数据库信息
 │   │   │   ├── TableSchema.cs       # 表结构
 │   │   │   ├── ColumnDefinition.cs  # 列定义
-│   │   │   └── StorageEngine.cs     # 存储引擎
+│   │   │   ├── ViewInfo.cs          # 视图元数据
+│   │   │   ├── StorageEngine.cs     # 存储引擎
+│   │   │   └── Index/               # 索引
+│   │   │       ├── IndexInfo.cs     # 索引元数据
+│   │   │       ├── BTreeIndex.cs    # B-Tree 索引
+│   │   │       ├── BTreePage.cs     # B-Tree 页面
+│   │   │       ├── HashIndex.cs     # Hash 索引
+│   │   │       └── IndexManager.cs  # 索引管理器
 │   │   │
 │   │   ├── Transactions/            # 事务管理
 │   │   │   ├── Transaction.cs       # 事务对象
 │   │   │   ├── TransactionManager.cs # 事务管理器
 │   │   │   ├── LockManager.cs       # 锁管理器
-│   │   │   └── WalLog.cs            # WAL日志
+│   │   │   ├── WalLog.cs            # WAL日志
+│   │   │   ├── WalArchiver.cs       # 日志归档
+│   │   │   └── CheckpointManager.cs # 检查点管理
 │   │   │
 │   │   └── Protocol/                # MySQL协议
 │   │       ├── MySqlServer.cs       # 协议服务器
@@ -211,6 +229,26 @@ CyscaleDB/
 ### 7. MySQL协议 (MySQL Protocol)
 - 实现 MySQL 客户端协议
 - 支持标准 MySQL 客户端连接
+
+### 8. 索引系统 (Index System)
+- B-Tree 索引：支持等值和范围查询
+- Hash 索引：高效等值查询
+- 索引管理器：创建、删除、维护索引
+
+### 9. 视图支持 (View Support)
+- 视图定义存储在 DatabaseInfo 中
+- 查询时展开视图为底层 SELECT 语句
+- 支持 CREATE OR REPLACE 语法
+
+### 10. 查询优化器 (Query Optimizer)
+- IndexSelector：根据 WHERE 条件选择最优索引
+- 评估索引匹配度和查询成本
+- 支持复合索引的最左前缀匹配
+
+### 11. 日志管理增强 (Log Management)
+- WalLog：支持自动轮转
+- WalArchiver：压缩归档旧日志
+- CheckpointManager：定期检查点，快速恢复
 
 ## 数据流
 

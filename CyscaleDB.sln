@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{D26C733A-30A9-4CD8-ADD9-AA7307E6F39E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CyscaleDB.Core", "src\CyscaleDB.Core\CyscaleDB.Core.csproj", "{C1EB3A6A-3C29-47D4-BCFA-22B227AD7F1E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CyscaleDB.Cli", "src\CyscaleDB.Cli\CyscaleDB.Cli.csproj", "{F7CD18A3-BA22-4E8F-8028-568B343853F8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CyscaleDB.Server", "src\CyscaleDB.Server\CyscaleDB.Server.csproj", "{63EEF2D7-C8F8-4E28-95F5-0D7EBEBE06BB}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{87CB8EDF-DE9D-49E8-8F90-DDB842BF880F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CyscaleDB.Tests", "tests\CyscaleDB.Tests\CyscaleDB.Tests.csproj", "{B57F70FE-1C5B-4F56-846E-2EEAC2F4ECA0}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C1EB3A6A-3C29-47D4-BCFA-22B227AD7F1E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C1EB3A6A-3C29-47D4-BCFA-22B227AD7F1E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C1EB3A6A-3C29-47D4-BCFA-22B227AD7F1E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C1EB3A6A-3C29-47D4-BCFA-22B227AD7F1E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F7CD18A3-BA22-4E8F-8028-568B343853F8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F7CD18A3-BA22-4E8F-8028-568B343853F8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F7CD18A3-BA22-4E8F-8028-568B343853F8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F7CD18A3-BA22-4E8F-8028-568B343853F8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{63EEF2D7-C8F8-4E28-95F5-0D7EBEBE06BB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{63EEF2D7-C8F8-4E28-95F5-0D7EBEBE06BB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{63EEF2D7-C8F8-4E28-95F5-0D7EBEBE06BB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{63EEF2D7-C8F8-4E28-95F5-0D7EBEBE06BB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B57F70FE-1C5B-4F56-846E-2EEAC2F4ECA0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B57F70FE-1C5B-4F56-846E-2EEAC2F4ECA0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B57F70FE-1C5B-4F56-846E-2EEAC2F4ECA0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B57F70FE-1C5B-4F56-846E-2EEAC2F4ECA0}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{C1EB3A6A-3C29-47D4-BCFA-22B227AD7F1E} = {D26C733A-30A9-4CD8-ADD9-AA7307E6F39E}
+		{F7CD18A3-BA22-4E8F-8028-568B343853F8} = {D26C733A-30A9-4CD8-ADD9-AA7307E6F39E}
+		{63EEF2D7-C8F8-4E28-95F5-0D7EBEBE06BB} = {D26C733A-30A9-4CD8-ADD9-AA7307E6F39E}
+		{B57F70FE-1C5B-4F56-846E-2EEAC2F4ECA0} = {87CB8EDF-DE9D-49E8-8F90-DDB842BF880F}
+	EndGlobalSection
+EndGlobal
