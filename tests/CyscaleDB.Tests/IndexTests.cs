@@ -1,24 +1,20 @@
-using NUnit.Framework;
 using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Storage;
 using CyscaleDB.Core.Storage.Index;
 
 namespace CyscaleDB.Tests;
 
-[TestFixture]
-public class IndexTests
+public class IndexTests : IDisposable
 {
-    private string _testDir = null!;
+    private readonly string _testDir;
 
-    [SetUp]
-    public void SetUp()
+    public IndexTests()
     {
         _testDir = Path.Combine(Path.GetTempPath(), $"CyscaleDB_IndexTests_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_testDir);
     }
 
-    [TearDown]
-    public void TearDown()
+    public void Dispose()
     {
         if (Directory.Exists(_testDir))
         {
@@ -28,55 +24,46 @@ public class IndexTests
 
     #region IndexInfo Tests
 
-    [Test]
+    [Fact]
     public void IndexInfo_Create_WithValidParameters()
     {
         var info = new IndexInfo(1, "idx_users_name", "users", "testdb",
             IndexType.BTree, ["name"], isUnique: false);
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(info.IndexId, Is.EqualTo(1));
-            Assert.That(info.IndexName, Is.EqualTo("idx_users_name"));
-            Assert.That(info.TableName, Is.EqualTo("users"));
-            Assert.That(info.DatabaseName, Is.EqualTo("testdb"));
-            Assert.That(info.Type, Is.EqualTo(IndexType.BTree));
-            Assert.That(info.Columns, Has.Count.EqualTo(1));
-            Assert.That(info.Columns[0], Is.EqualTo("name"));
-            Assert.That(info.IsUnique, Is.False);
-            Assert.That(info.IsPrimaryKey, Is.False);
-        });
+        Assert.Equal(1, info.IndexId);
+        Assert.Equal("idx_users_name", info.IndexName);
+        Assert.Equal("users", info.TableName);
+        Assert.Equal("testdb", info.DatabaseName);
+        Assert.Equal(IndexType.BTree, info.Type);
+        Assert.Single(info.Columns);
+        Assert.Equal("name", info.Columns[0]);
+        Assert.False(info.IsUnique);
+        Assert.False(info.IsPrimaryKey);
     }
 
-    [Test]
+    [Fact]
     public void IndexInfo_Create_MultiColumn()
     {
         var info = new IndexInfo(2, "idx_composite", "orders", "testdb",
             IndexType.BTree, ["customer_id", "order_date"], isUnique: true);
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(info.Columns, Has.Count.EqualTo(2));
-            Assert.That(info.Columns[0], Is.EqualTo("customer_id"));
-            Assert.That(info.Columns[1], Is.EqualTo("order_date"));
-            Assert.That(info.IsUnique, Is.True);
-        });
+        Assert.Equal(2, info.Columns.Count);
+        Assert.Equal("customer_id", info.Columns[0]);
+        Assert.Equal("order_date", info.Columns[1]);
+        Assert.True(info.IsUnique);
     }
 
-    [Test]
+    [Fact]
     public void IndexInfo_Create_PrimaryKey_ImpliesUnique()
     {
         var info = new IndexInfo(3, "pk_users", "users", "testdb",
             IndexType.BTree, ["id"], isUnique: false, isPrimaryKey: true);
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(info.IsPrimaryKey, Is.True);
-            Assert.That(info.IsUnique, Is.True); // Primary key implies unique
-        });
+        Assert.True(info.IsPrimaryKey);
+        Assert.True(info.IsUnique); // Primary key implies unique
     }
 
-    [Test]
+    [Fact]
     public void IndexInfo_Serialize_Deserialize()
     {
         var original = new IndexInfo(5, "idx_test", "test_table", "test_db",
@@ -85,19 +72,16 @@ public class IndexTests
         var bytes = original.Serialize();
         var deserialized = IndexInfo.Deserialize(bytes);
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(deserialized.IndexId, Is.EqualTo(original.IndexId));
-            Assert.That(deserialized.IndexName, Is.EqualTo(original.IndexName));
-            Assert.That(deserialized.TableName, Is.EqualTo(original.TableName));
-            Assert.That(deserialized.DatabaseName, Is.EqualTo(original.DatabaseName));
-            Assert.That(deserialized.Type, Is.EqualTo(original.Type));
-            Assert.That(deserialized.Columns.Count, Is.EqualTo(original.Columns.Count));
-            Assert.That(deserialized.IsUnique, Is.EqualTo(original.IsUnique));
-        });
+        Assert.Equal(original.IndexId, deserialized.IndexId);
+        Assert.Equal(original.IndexName, deserialized.IndexName);
+        Assert.Equal(original.TableName, deserialized.TableName);
+        Assert.Equal(original.DatabaseName, deserialized.DatabaseName);
+        Assert.Equal(original.Type, deserialized.Type);
+        Assert.Equal(original.Columns.Count, deserialized.Columns.Count);
+        Assert.Equal(original.IsUnique, deserialized.IsUnique);
     }
 
-    [Test]
+    [Fact]
     public void IndexInfo_ExtractKeyValues()
     {
         var columns = new List<ColumnDefinition>
@@ -120,18 +104,18 @@ public class IndexTests
 
         var keys = info.ExtractKeyValues(row);
 
-        Assert.That(keys.Length, Is.EqualTo(1));
-        Assert.That(keys[0].AsVarChar(), Is.EqualTo("John"));
+        Assert.Single(keys);
+        Assert.Equal("John", keys[0].AsVarChar());
     }
 
-    [Test]
+    [Fact]
     public void IndexInfo_Create_ThrowsForEmptyName()
     {
         Assert.Throws<ArgumentException>(() =>
             new IndexInfo(1, "", "users", "testdb", IndexType.BTree, ["name"]));
     }
 
-    [Test]
+    [Fact]
     public void IndexInfo_Create_ThrowsForEmptyColumns()
     {
         Assert.Throws<ArgumentException>(() =>
@@ -142,59 +126,59 @@ public class IndexTests
 
     #region CompositeKey Tests
 
-    [Test]
+    [Fact]
     public void CompositeKey_Compare_Equal()
     {
         var key1 = new CompositeKey([DataValue.FromInt(1), DataValue.FromVarChar("test")]);
         var key2 = new CompositeKey([DataValue.FromInt(1), DataValue.FromVarChar("test")]);
 
-        Assert.That(key1, Is.EqualTo(key2));
-        Assert.That(key1.CompareTo(key2), Is.EqualTo(0));
+        Assert.Equal(key1, key2);
+        Assert.Equal(0, key1.CompareTo(key2));
     }
 
-    [Test]
+    [Fact]
     public void CompositeKey_Compare_LessThan()
     {
         var key1 = new CompositeKey([DataValue.FromInt(1)]);
         var key2 = new CompositeKey([DataValue.FromInt(2)]);
 
-        Assert.That(key1.CompareTo(key2), Is.LessThan(0));
-        Assert.That(key1 < key2, Is.True);
+        Assert.True(key1.CompareTo(key2) < 0);
+        Assert.True(key1 < key2);
     }
 
-    [Test]
+    [Fact]
     public void CompositeKey_Compare_GreaterThan()
     {
         var key1 = new CompositeKey([DataValue.FromInt(3)]);
         var key2 = new CompositeKey([DataValue.FromInt(2)]);
 
-        Assert.That(key1.CompareTo(key2), Is.GreaterThan(0));
-        Assert.That(key1 > key2, Is.True);
+        Assert.True(key1.CompareTo(key2) > 0);
+        Assert.True(key1 > key2);
     }
 
-    [Test]
+    [Fact]
     public void CompositeKey_Compare_MultiColumn()
     {
         var key1 = new CompositeKey([DataValue.FromInt(1), DataValue.FromVarChar("aaa")]);
         var key2 = new CompositeKey([DataValue.FromInt(1), DataValue.FromVarChar("bbb")]);
 
-        Assert.That(key1.CompareTo(key2), Is.LessThan(0));
+        Assert.True(key1.CompareTo(key2) < 0);
     }
 
-    [Test]
+    [Fact]
     public void CompositeKey_HashCode_SameForEqualKeys()
     {
         var key1 = new CompositeKey([DataValue.FromInt(1)]);
         var key2 = new CompositeKey([DataValue.FromInt(1)]);
 
-        Assert.That(key1.GetHashCode(), Is.EqualTo(key2.GetHashCode()));
+        Assert.Equal(key1.GetHashCode(), key2.GetHashCode());
     }
 
     #endregion
 
     #region BTreeIndex Tests
 
-    [Test]
+    [Fact]
     public void BTreeIndex_InsertAndLookup_SingleKey()
     {
         var columns = new List<ColumnDefinition>
@@ -222,11 +206,11 @@ public class IndexTests
         // Lookup
         var result = index.Lookup([DataValue.FromInt(2)]).ToList();
 
-        Assert.That(result, Has.Count.EqualTo(1));
-        Assert.That(result[0], Is.EqualTo(new RowId(0, 1)));
+        Assert.Single(result);
+        Assert.Equal(new RowId(0, 1), result[0]);
     }
 
-    [Test]
+    [Fact]
     public void BTreeIndex_RangeScan()
     {
         var columns = new List<ColumnDefinition>
@@ -257,10 +241,10 @@ public class IndexTests
             [DataValue.FromInt(3)],
             [DataValue.FromInt(7)]).ToList();
 
-        Assert.That(results, Has.Count.EqualTo(5));
+        Assert.Equal(5, results.Count);
     }
 
-    [Test]
+    [Fact]
     public void BTreeIndex_Delete()
     {
         var columns = new List<ColumnDefinition>
@@ -284,17 +268,17 @@ public class IndexTests
 
         // Verify inserted
         var before = index.Lookup([DataValue.FromInt(5)]).ToList();
-        Assert.That(before, Has.Count.EqualTo(1));
+        Assert.Single(before);
 
         // Delete
         index.Delete([DataValue.FromInt(5)], rowId);
 
         // Verify deleted
         var after = index.Lookup([DataValue.FromInt(5)]).ToList();
-        Assert.That(after, Has.Count.EqualTo(0));
+        Assert.Empty(after);
     }
 
-    [Test]
+    [Fact]
     public void BTreeIndex_UniqueConstraint_ThrowsOnDuplicate()
     {
         var columns = new List<ColumnDefinition>
@@ -323,7 +307,7 @@ public class IndexTests
 
     #region HashIndex Tests
 
-    [Test]
+    [Fact]
     public void HashIndex_InsertAndLookup()
     {
         var columns = new List<ColumnDefinition>
@@ -349,11 +333,11 @@ public class IndexTests
         // Lookup
         var result = index.Lookup([DataValue.FromInt(42)]).ToList();
 
-        Assert.That(result, Has.Count.EqualTo(1));
-        Assert.That(result[0], Is.EqualTo(new RowId(0, 0)));
+        Assert.Single(result);
+        Assert.Equal(new RowId(0, 0), result[0]);
     }
 
-    [Test]
+    [Fact]
     public void HashIndex_Delete()
     {
         var columns = new List<ColumnDefinition>
@@ -378,7 +362,7 @@ public class IndexTests
         index.Delete([DataValue.FromInt(99)], rowId);
 
         var result = index.Lookup([DataValue.FromInt(99)]).ToList();
-        Assert.That(result, Has.Count.EqualTo(0));
+        Assert.Empty(result);
     }
 
     #endregion

@@ -24,7 +24,8 @@ public sealed class InformationSchemaProvider
         "SCHEMATA",
         "TABLES",
         "COLUMNS",
-        "STATISTICS"
+        "STATISTICS",
+        "ENGINES"
     ];
 
     public InformationSchemaProvider(Catalog catalog)
@@ -51,6 +52,7 @@ public sealed class InformationSchemaProvider
             "TABLES" => GetTables(filterSchema, filterTable),
             "COLUMNS" => GetColumns(filterSchema, filterTable),
             "STATISTICS" => GetStatistics(filterSchema, filterTable),
+            "ENGINES" => GetEngines(),
             _ => throw new CyscaleException($"Unknown information_schema table: {tableName}")
         };
     }
@@ -66,6 +68,7 @@ public sealed class InformationSchemaProvider
             "TABLES" => CreateTablesSchema(),
             "COLUMNS" => CreateColumnsSchema(),
             "STATISTICS" => CreateStatisticsSchema(),
+            "ENGINES" => CreateEnginesSchema(),
             _ => throw new CyscaleException($"Unknown information_schema table: {tableName}")
         };
     }
@@ -294,6 +297,40 @@ public sealed class InformationSchemaProvider
                 }
             }
         }
+
+        return result;
+    }
+
+    #endregion
+
+    #region ENGINES
+
+    private static TableSchema CreateEnginesSchema()
+    {
+        return new TableSchema(0, DatabaseName, "ENGINES",
+        [
+            new ColumnDefinition("ENGINE", DataType.VarChar, 64),
+            new ColumnDefinition("SUPPORT", DataType.VarChar, 8),
+            new ColumnDefinition("COMMENT", DataType.VarChar, 160),
+            new ColumnDefinition("TRANSACTIONS", DataType.VarChar, 3),
+            new ColumnDefinition("XA", DataType.VarChar, 3),
+            new ColumnDefinition("SAVEPOINTS", DataType.VarChar, 3)
+        ]);
+    }
+
+    private ResultSet GetEngines()
+    {
+        var result = ResultSet.FromSchema(CreateEnginesSchema());
+
+        // Return CyscaleDB as the default engine
+        result.Rows.Add([
+            DataValue.FromVarChar("CyscaleDB"),
+            DataValue.FromVarChar("DEFAULT"),
+            DataValue.FromVarChar("CyscaleDB native storage engine"),
+            DataValue.FromVarChar("YES"),
+            DataValue.FromVarChar("NO"),
+            DataValue.FromVarChar("NO")
+        ]);
 
         return result;
     }

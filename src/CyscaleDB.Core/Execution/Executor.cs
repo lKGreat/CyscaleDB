@@ -60,13 +60,25 @@ public sealed class Executor
     }
 
     /// <summary>
-    /// Executes a SQL string.
+    /// Executes a SQL string. Supports multiple statements separated by semicolons.
     /// </summary>
     public ExecutionResult Execute(string sql)
     {
         var parser = new Parser(sql);
-        var statement = parser.Parse();
-        return Execute(statement);
+        var statements = parser.ParseMultiple();
+        
+        if (statements.Count == 0)
+        {
+            return ExecutionResult.Empty();
+        }
+        
+        // Execute all statements, return the last result
+        ExecutionResult result = ExecutionResult.Empty();
+        foreach (var statement in statements)
+        {
+            result = Execute(statement);
+        }
+        return result;
     }
 
     /// <summary>

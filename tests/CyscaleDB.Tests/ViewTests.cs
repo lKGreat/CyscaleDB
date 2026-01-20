@@ -1,45 +1,37 @@
-using NUnit.Framework;
 using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Storage;
 
 namespace CyscaleDB.Tests;
 
-[TestFixture]
 public class ViewTests
 {
-    [Test]
+    [Fact]
     public void ViewInfo_Create_WithBasicProperties()
     {
         var view = new ViewInfo(1, "active_users", "testdb",
             "SELECT * FROM users WHERE active = 1");
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(view.ViewId, Is.EqualTo(1));
-            Assert.That(view.ViewName, Is.EqualTo("active_users"));
-            Assert.That(view.DatabaseName, Is.EqualTo("testdb"));
-            Assert.That(view.Definition, Is.EqualTo("SELECT * FROM users WHERE active = 1"));
-            Assert.That(view.ColumnNames, Is.Null);
-        });
+        Assert.Equal(1, view.ViewId);
+        Assert.Equal("active_users", view.ViewName);
+        Assert.Equal("testdb", view.DatabaseName);
+        Assert.Equal("SELECT * FROM users WHERE active = 1", view.Definition);
+        Assert.Null(view.ColumnNames);
     }
 
-    [Test]
+    [Fact]
     public void ViewInfo_Create_WithColumnNames()
     {
         var view = new ViewInfo(2, "user_summary", "testdb",
             "SELECT id, name FROM users",
             columnNames: new[] { "user_id", "user_name" });
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(view.ColumnNames, Is.Not.Null);
-            Assert.That(view.ColumnNames!.Count, Is.EqualTo(2));
-            Assert.That(view.ColumnNames![0], Is.EqualTo("user_id"));
-            Assert.That(view.ColumnNames![1], Is.EqualTo("user_name"));
-        });
+        Assert.NotNull(view.ColumnNames);
+        Assert.Equal(2, view.ColumnNames!.Count);
+        Assert.Equal("user_id", view.ColumnNames![0]);
+        Assert.Equal("user_name", view.ColumnNames![1]);
     }
 
-    [Test]
+    [Fact]
     public void ViewInfo_Serialize_Deserialize()
     {
         var original = new ViewInfo(3, "test_view", "mydb",
@@ -50,18 +42,15 @@ public class ViewTests
         var bytes = original.Serialize();
         var deserialized = ViewInfo.Deserialize(bytes);
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(deserialized.ViewId, Is.EqualTo(original.ViewId));
-            Assert.That(deserialized.ViewName, Is.EqualTo(original.ViewName));
-            Assert.That(deserialized.DatabaseName, Is.EqualTo(original.DatabaseName));
-            Assert.That(deserialized.Definition, Is.EqualTo(original.Definition));
-            Assert.That(deserialized.ColumnNames!.Count, Is.EqualTo(original.ColumnNames!.Count));
-            Assert.That(deserialized.OrReplace, Is.EqualTo(original.OrReplace));
-        });
+        Assert.Equal(original.ViewId, deserialized.ViewId);
+        Assert.Equal(original.ViewName, deserialized.ViewName);
+        Assert.Equal(original.DatabaseName, deserialized.DatabaseName);
+        Assert.Equal(original.Definition, deserialized.Definition);
+        Assert.Equal(original.ColumnNames!.Count, deserialized.ColumnNames!.Count);
+        Assert.Equal(original.OrReplace, deserialized.OrReplace);
     }
 
-    [Test]
+    [Fact]
     public void ViewInfo_Serialize_Deserialize_NoColumnNames()
     {
         var original = new ViewInfo(4, "simple_view", "db", "SELECT * FROM t");
@@ -69,24 +58,24 @@ public class ViewTests
         var bytes = original.Serialize();
         var deserialized = ViewInfo.Deserialize(bytes);
 
-        Assert.That(deserialized.ColumnNames, Is.Null);
+        Assert.Null(deserialized.ColumnNames);
     }
 
-    [Test]
+    [Fact]
     public void ViewInfo_Create_ThrowsForEmptyName()
     {
         Assert.Throws<ArgumentException>(() =>
             new ViewInfo(1, "", "db", "SELECT 1"));
     }
 
-    [Test]
+    [Fact]
     public void ViewInfo_Create_ThrowsForEmptyDefinition()
     {
         Assert.Throws<ArgumentException>(() =>
             new ViewInfo(1, "view1", "db", ""));
     }
 
-    [Test]
+    [Fact]
     public void DatabaseInfo_AddView_And_GetView()
     {
         var db = new DatabaseInfo(1, "testdb", "/data/testdb");
@@ -94,25 +83,25 @@ public class ViewTests
 
         db.AddView(view);
 
-        Assert.That(db.HasView("my_view"), Is.True);
-        Assert.That(db.GetView("my_view"), Is.Not.Null);
-        Assert.That(db.GetView("my_view")!.ViewId, Is.EqualTo(1));
+        Assert.True(db.HasView("my_view"));
+        Assert.NotNull(db.GetView("my_view"));
+        Assert.Equal(1, db.GetView("my_view")!.ViewId);
     }
 
-    [Test]
+    [Fact]
     public void DatabaseInfo_RemoveView()
     {
         var db = new DatabaseInfo(1, "testdb", "/data/testdb");
         var view = new ViewInfo(1, "my_view", "testdb", "SELECT 1");
 
         db.AddView(view);
-        Assert.That(db.HasView("my_view"), Is.True);
+        Assert.True(db.HasView("my_view"));
 
         db.RemoveView("my_view");
-        Assert.That(db.HasView("my_view"), Is.False);
+        Assert.False(db.HasView("my_view"));
     }
 
-    [Test]
+    [Fact]
     public void DatabaseInfo_AddOrReplaceView_ReplacesExisting()
     {
         var db = new DatabaseInfo(1, "testdb", "/data/testdb");
@@ -124,11 +113,11 @@ public class ViewTests
         db.AddOrReplaceView(view2);
 
         var retrieved = db.GetView("my_view");
-        Assert.That(retrieved!.ViewId, Is.EqualTo(2));
-        Assert.That(retrieved.Definition, Is.EqualTo("SELECT 2"));
+        Assert.Equal(2, retrieved!.ViewId);
+        Assert.Equal("SELECT 2", retrieved.Definition);
     }
 
-    [Test]
+    [Fact]
     public void DatabaseInfo_Views_Property_ReturnsAllViews()
     {
         var db = new DatabaseInfo(1, "testdb", "/data/testdb");
@@ -136,10 +125,10 @@ public class ViewTests
         db.AddView(new ViewInfo(1, "view1", "testdb", "SELECT 1"));
         db.AddView(new ViewInfo(2, "view2", "testdb", "SELECT 2"));
 
-        Assert.That(db.Views, Has.Count.EqualTo(2));
+        Assert.Equal(2, db.Views.Count);
     }
 
-    [Test]
+    [Fact]
     public void DatabaseInfo_Serialize_WithViews()
     {
         var original = new DatabaseInfo(1, "testdb", "/data/testdb");
@@ -149,8 +138,8 @@ public class ViewTests
         var bytes = original.Serialize();
         var deserialized = DatabaseInfo.Deserialize(bytes);
 
-        Assert.That(deserialized.Views, Has.Count.EqualTo(2));
-        Assert.That(deserialized.HasView("v1"), Is.True);
-        Assert.That(deserialized.HasView("v2"), Is.True);
+        Assert.Equal(2, deserialized.Views.Count);
+        Assert.True(deserialized.HasView("v1"));
+        Assert.True(deserialized.HasView("v2"));
     }
 }

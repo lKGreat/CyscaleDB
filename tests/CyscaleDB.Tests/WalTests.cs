@@ -1,23 +1,19 @@
-using NUnit.Framework;
 using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Transactions;
 
 namespace CyscaleDB.Tests;
 
-[TestFixture]
-public class WalTests
+public class WalTests : IDisposable
 {
-    private string _testDir = null!;
+    private readonly string _testDir;
 
-    [SetUp]
-    public void SetUp()
+    public WalTests()
     {
         _testDir = Path.Combine(Path.GetTempPath(), $"CyscaleDB_WalTests_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_testDir);
     }
 
-    [TearDown]
-    public void TearDown()
+    public void Dispose()
     {
         if (Directory.Exists(_testDir))
         {
@@ -25,7 +21,7 @@ public class WalTests
         }
     }
 
-    [Test]
+    [Fact]
     public void WalLog_Create_AndAppend()
     {
         var walPath = Path.Combine(_testDir, "test.wal");
@@ -44,10 +40,10 @@ public class WalTests
 
         var lsn = wal.Append(record);
 
-        Assert.That(lsn, Is.GreaterThan(0));
+        Assert.True(lsn > 0);
     }
 
-    [Test]
+    [Fact]
     public void WalLog_Replay_ReturnsRecords()
     {
         var walPath = Path.Combine(_testDir, "replay.wal");
@@ -77,10 +73,10 @@ public class WalTests
         wal2.Open();
         var records = wal2.Replay().ToList();
 
-        Assert.That(records, Has.Count.EqualTo(5));
+        Assert.Equal(5, records.Count);
     }
 
-    [Test]
+    [Fact]
     public void WalLog_Rotation()
     {
         var walPath = Path.Combine(_testDir, "rotate.wal");
@@ -107,10 +103,10 @@ public class WalTests
 
         // Check rotated file exists
         var rotatedPath = wal.GetRotatedFilePath(1);
-        Assert.That(File.Exists(rotatedPath), Is.True);
+        Assert.True(File.Exists(rotatedPath));
     }
 
-    [Test]
+    [Fact]
     public void WalLog_GetRotatedLogFiles()
     {
         var walPath = Path.Combine(_testDir, "files.wal");
@@ -133,10 +129,10 @@ public class WalTests
         wal.ForceRotate();
 
         var rotatedFiles = wal.GetRotatedLogFiles();
-        Assert.That(rotatedFiles.Count, Is.GreaterThanOrEqualTo(1));
+        Assert.True(rotatedFiles.Count >= 1);
     }
 
-    [Test]
+    [Fact]
     public void WalArchiver_ArchiveOldLogs()
     {
         var walPath = Path.Combine(_testDir, "archive.wal");
@@ -160,10 +156,10 @@ public class WalTests
 
         // Check for .gz files
         var archives = Directory.GetFiles(_testDir, "*.gz");
-        Assert.That(archives.Length, Is.GreaterThanOrEqualTo(1));
+        Assert.True(archives.Length >= 1);
     }
 
-    [Test]
+    [Fact]
     public void CheckpointManager_TakeCheckpoint()
     {
         // This is a simplified test - a real test would need full infrastructure
@@ -181,6 +177,6 @@ public class WalTests
         var lsn = wal.Append(record);
 
         // Verify LSN is valid
-        Assert.That(lsn, Is.GreaterThan(0));
+        Assert.True(lsn > 0);
     }
 }

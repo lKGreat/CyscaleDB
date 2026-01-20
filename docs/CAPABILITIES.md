@@ -37,6 +37,16 @@
 | SHOW TABLES | ✅ |
 | DESCRIBE table | ✅ |
 
+### information_schema 虚拟表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| SCHEMATA | ✅ | 数据库列表 |
+| TABLES | ✅ | 表列表 |
+| COLUMNS | ✅ | 列信息 |
+| STATISTICS | ✅ | 索引统计 |
+| ENGINES | ✅ | 存储引擎信息 |
+
 ---
 
 ## SELECT 查询能力
@@ -214,6 +224,7 @@
 | MySQL Protocol | ✅ | 可使用标准 MySQL 客户端连接 |
 | 默认端口 | 3306 | |
 | 认证 | ⚠️ | MVP阶段跳过密码验证 |
+| 多语句支持 | ✅ | 支持用分号分隔的多条SQL语句 |
 
 ---
 

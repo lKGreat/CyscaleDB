@@ -1,23 +1,19 @@
-using NUnit.Framework;
 using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Storage;
 
 namespace CyscaleDB.Tests;
 
-[TestFixture]
-public class OptimizationTests
+public class OptimizationTests : IDisposable
 {
-    private string _testDir = null!;
+    private readonly string _testDir;
 
-    [SetUp]
-    public void SetUp()
+    public OptimizationTests()
     {
         _testDir = Path.Combine(Path.GetTempPath(), $"CyscaleDB_OptTests_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_testDir);
     }
 
-    [TearDown]
-    public void TearDown()
+    public void Dispose()
     {
         if (Directory.Exists(_testDir))
         {
@@ -43,22 +39,19 @@ public class OptimizationTests
         return table;
     }
 
-    [Test]
+    [Fact]
     public void Table_GetStatistics_EmptyTable()
     {
         using var table = CreateTestTable();
 
         var stats = table.GetStatistics();
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(stats.RowCount, Is.EqualTo(0));
-            Assert.That(stats.PageCount, Is.EqualTo(0));
-            Assert.That(stats.DataSize, Is.EqualTo(0));
-        });
+        Assert.Equal(0, stats.RowCount);
+        Assert.Equal(0, stats.PageCount);
+        Assert.Equal(0, stats.DataSize);
     }
 
-    [Test]
+    [Fact]
     public void Table_GetStatistics_WithData()
     {
         using var table = CreateTestTable();
@@ -76,29 +69,23 @@ public class OptimizationTests
 
         var stats = table.GetStatistics();
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(stats.RowCount, Is.EqualTo(10));
-            Assert.That(stats.PageCount, Is.GreaterThan(0));
-            Assert.That(stats.DataSize, Is.GreaterThan(0));
-        });
+        Assert.Equal(10, stats.RowCount);
+        Assert.True(stats.PageCount > 0);
+        Assert.True(stats.DataSize > 0);
     }
 
-    [Test]
+    [Fact]
     public void Table_Optimize_EmptyTable()
     {
         using var table = CreateTestTable();
 
         var result = table.Optimize();
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(result.RowsProcessed, Is.EqualTo(0));
-            Assert.That(result.NewPageCount, Is.EqualTo(0));
-        });
+        Assert.Equal(0, result.RowsProcessed);
+        Assert.Equal(0, result.NewPageCount);
     }
 
-    [Test]
+    [Fact]
     public void Table_Optimize_WithDeletedRows()
     {
         using var table = CreateTestTable("optimize_test");
@@ -128,14 +115,11 @@ public class OptimizationTests
 
         var statsAfter = table.GetStatistics();
 
-        Assert.Multiple(() =>
-        {
-            Assert.That(result.RowsProcessed, Is.EqualTo(10)); // Half deleted
-            Assert.That(result.SpaceReclaimed, Is.GreaterThanOrEqualTo(0));
-        });
+        Assert.Equal(10, result.RowsProcessed); // Half deleted
+        Assert.True(result.SpaceReclaimed >= 0);
     }
 
-    [Test]
+    [Fact]
     public void Table_CompactPages()
     {
         using var table = CreateTestTable();
@@ -161,10 +145,10 @@ public class OptimizationTests
 
         // Verify rows still accessible
         var remaining = table.ScanTable().ToList();
-        Assert.That(remaining, Has.Count.EqualTo(3));
+        Assert.Equal(3, remaining.Count);
     }
 
-    [Test]
+    [Fact]
     public void OptimizeResult_ToString()
     {
         var result = new OptimizeResult(
@@ -176,12 +160,12 @@ public class OptimizationTests
 
         var str = result.ToString();
 
-        Assert.That(str, Does.Contain("100 rows"));
-        Assert.That(str, Does.Contain("10 -> 5 pages"));
-        Assert.That(str, Does.Contain("20480 bytes"));
+        Assert.Contains("100 rows", str);
+        Assert.Contains("10 -> 5 pages", str);
+        Assert.Contains("20480 bytes", str);
     }
 
-    [Test]
+    [Fact]
     public void TableStatistics_ToString()
     {
         var stats = new TableStatistics(
@@ -195,11 +179,11 @@ public class OptimizationTests
 
         var str = stats.ToString();
 
-        Assert.That(str, Does.Contain("1000 rows"));
-        Assert.That(str, Does.Contain("50 pages"));
+        Assert.Contains("1000 rows", str);
+        Assert.Contains("50 pages", str);
     }
 
-    [Test]
+    [Fact]
     public void PageManager_Truncate()
     {
         var filePath = Path.Combine(_testDir, "truncate_test.cdb");
@@ -211,11 +195,11 @@ public class OptimizationTests
         pm.AllocatePage();
         pm.AllocatePage();
 
-        Assert.That(pm.PageCount, Is.EqualTo(3));
+        Assert.Equal(3, pm.PageCount);
 
         // Truncate to 1 page
         pm.Truncate(1);
 
-        Assert.That(pm.PageCount, Is.EqualTo(1));
+        Assert.Equal(1, pm.PageCount);
     }
 }
