@@ -37,13 +37,30 @@ public class AggregateSpec
 }
 
 /// <summary>
+/// Represents a group-by key with its evaluator, name, and data type.
+/// </summary>
+public class GroupByKeySpec
+{
+    public IExpressionEvaluator Evaluator { get; }
+    public string OutputName { get; }
+    public DataType OutputType { get; }
+
+    public GroupByKeySpec(IExpressionEvaluator evaluator, string outputName, DataType outputType)
+    {
+        Evaluator = evaluator;
+        OutputName = outputName;
+        OutputType = outputType;
+    }
+}
+
+/// <summary>
 /// GROUP BY operator with aggregate functions.
 /// Materializes all input rows, groups them, and computes aggregates.
 /// </summary>
 public sealed class GroupByOperator : OperatorBase
 {
     private readonly IOperator _input;
-    private readonly List<IExpressionEvaluator> _groupByKeys;
+    private readonly List<GroupByKeySpec> _groupByKeys;
     private readonly List<AggregateSpec> _aggregates;
     private readonly TableSchema _outputSchema;
     private List<Row>? _resultRows;
@@ -53,7 +70,7 @@ public sealed class GroupByOperator : OperatorBase
 
     public GroupByOperator(
         IOperator input,
-        List<IExpressionEvaluator> groupByKeys,
+        List<GroupByKeySpec> groupByKeys,
         List<AggregateSpec> aggregates,
         string databaseName,
         string tableName)
@@ -71,10 +88,10 @@ public sealed class GroupByOperator : OperatorBase
         var columns = new List<ColumnDefinition>();
         int ordinal = 0;
 
-        // Add group by columns to schema
+        // Add group by columns to schema with their original names
         foreach (var key in _groupByKeys)
         {
-            var col = new ColumnDefinition($"group_{ordinal}", DataType.VarChar, 255, 0, 0, true)
+            var col = new ColumnDefinition(key.OutputName, key.OutputType, 255, 0, 0, true)
             {
                 OrdinalPosition = ordinal++
             };
@@ -106,7 +123,7 @@ public sealed class GroupByOperator : OperatorBase
         Row? row;
         while ((row = _input.Next()) != null)
         {
-            var keyValues = _groupByKeys.Select(k => k.Evaluate(row)).ToArray();
+            var keyValues = _groupByKeys.Select(k => k.Evaluator.Evaluate(row)).ToArray();
             var key = CreateGroupKey(keyValues);
 
             if (!groups.TryGetValue(key, out var group))

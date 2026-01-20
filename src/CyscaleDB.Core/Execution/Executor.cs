@@ -225,16 +225,43 @@ public sealed class Executor
 
     private IOperator BuildGroupByOperator(SelectStatement stmt, IOperator input)
     {
-        // Build group by key evaluators
-        var groupByKeys = new List<IExpressionEvaluator>();
+        // Build group by key specs with proper names from SELECT columns
+        var groupByKeys = new List<GroupByKeySpec>();
+        var selectColIndex = 0;
+        
+        // First, find which SELECT columns correspond to GROUP BY keys
+        // They appear in the same order as in the SELECT list (non-aggregate columns first)
+        var nonAggSelectCols = stmt.Columns
+            .Where(c => !(c.Expression is FunctionCall func && IsAggregateFunction(func.FunctionName)))
+            .ToList();
+
         foreach (var expr in stmt.GroupBy)
         {
-            groupByKeys.Add(BuildExpression(expr, input.Schema));
+            var evaluator = BuildExpression(expr, input.Schema);
+            
+            // Try to find a matching SELECT column to get the output name
+            string outputName;
+            DataType outputType;
+            
+            if (selectColIndex < nonAggSelectCols.Count)
+            {
+                var selectCol = nonAggSelectCols[selectColIndex];
+                outputName = selectCol.Alias ?? GetExpressionName(selectCol.Expression);
+                outputType = InferDataType(selectCol.Expression, input.Schema);
+                selectColIndex++;
+            }
+            else
+            {
+                // No matching SELECT column - use expression name
+                outputName = GetExpressionName(expr);
+                outputType = InferDataType(expr, input.Schema);
+            }
+            
+            groupByKeys.Add(new GroupByKeySpec(evaluator, outputName, outputType));
         }
 
         // Build aggregate specifications from SELECT columns
         var aggregates = new List<AggregateSpec>();
-        int groupKeyIdx = 0;
 
         foreach (var col in stmt.Columns)
         {
@@ -266,18 +293,6 @@ public sealed class Executor
 
                 var name = col.Alias ?? $"{func.FunctionName}(*)";
                 aggregates.Add(new AggregateSpec(aggType, argExpr, name, outputType));
-            }
-            else if (stmt.GroupBy.Count > 0)
-            {
-                // Non-aggregate column in GROUP BY query - should be in GROUP BY list
-                // For now, treat it as a group key output
-                if (groupKeyIdx < groupByKeys.Count)
-                {
-                    var name = col.Alias ?? GetExpressionName(col.Expression);
-                    var dataType = InferDataType(col.Expression, input.Schema);
-                    // Group keys will be in the output already
-                    groupKeyIdx++;
-                }
             }
         }
 
