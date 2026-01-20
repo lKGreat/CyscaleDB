@@ -31,6 +31,11 @@ public interface IAstVisitor<T>
     T VisitBeginStatement(BeginStatement node);
     T VisitCommitStatement(CommitStatement node);
     T VisitRollbackStatement(RollbackStatement node);
+    T VisitCreateIndexStatement(CreateIndexStatement node);
+    T VisitDropIndexStatement(DropIndexStatement node);
+    T VisitCreateViewStatement(CreateViewStatement node);
+    T VisitDropViewStatement(DropViewStatement node);
+    T VisitOptimizeTableStatement(OptimizeTableStatement node);
     
     T VisitBinaryExpression(BinaryExpression node);
     T VisitUnaryExpression(UnaryExpression node);

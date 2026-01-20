@@ -128,6 +128,62 @@ public class ColumnNotFoundException : CyscaleException
 }
 
 /// <summary>
+/// Exception thrown when a view is not found.
+/// </summary>
+public class ViewNotFoundException : CyscaleException
+{
+    public string ViewName { get; }
+
+    public ViewNotFoundException(string viewName)
+        : base($"View '{viewName}' does not exist", ErrorCode.ViewNotFound)
+    {
+        ViewName = viewName;
+    }
+}
+
+/// <summary>
+/// Exception thrown when a view already exists.
+/// </summary>
+public class ViewExistsException : CyscaleException
+{
+    public string ViewName { get; }
+
+    public ViewExistsException(string viewName)
+        : base($"View '{viewName}' already exists", ErrorCode.ViewExists)
+    {
+        ViewName = viewName;
+    }
+}
+
+/// <summary>
+/// Exception thrown when an index is not found.
+/// </summary>
+public class IndexNotFoundException : CyscaleException
+{
+    public string IndexName { get; }
+
+    public IndexNotFoundException(string indexName)
+        : base($"Index '{indexName}' does not exist", ErrorCode.IndexNotFound)
+    {
+        IndexName = indexName;
+    }
+}
+
+/// <summary>
+/// Exception thrown when an index already exists.
+/// </summary>
+public class IndexExistsException : CyscaleException
+{
+    public string IndexName { get; }
+
+    public IndexExistsException(string indexName)
+        : base($"Index '{indexName}' already exists", ErrorCode.IndexExists)
+    {
+        IndexName = indexName;
+    }
+}
+
+/// <summary>
 /// Exception thrown for data type conversion errors.
 /// </summary>
 public class TypeConversionException : CyscaleException
@@ -246,6 +302,10 @@ public enum ErrorCode
     TableNotFound = 1202,
     TableExists = 1203,
     ColumnNotFound = 1204,
+    ViewNotFound = 1205,
+    ViewExists = 1206,
+    IndexNotFound = 1207,
+    IndexExists = 1208,
     
     // Data errors (1300-1399)
     TypeMismatch = 1300,

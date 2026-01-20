@@ -4,15 +4,18 @@ namespace CyscaleDB.Core.Transactions;
 
 /// <summary>
 /// Write-Ahead Log (WAL) for durability and crash recovery.
+/// Supports log rotation and archiving.
 /// </summary>
 public sealed class WalLog : IDisposable
 {
+    private readonly string _dataDirectory;
     private readonly string _logFilePath;
     private FileStream? _logStream;
     private BinaryWriter? _writer;
     private readonly object _writeLock = new();
     private readonly Logger _logger;
     private long _logSequenceNumber;
+    private int _currentFileNumber;
     private bool _disposed;
 
     /// <summary>
@@ -21,12 +24,29 @@ public sealed class WalLog : IDisposable
     public long CurrentLsn => _logSequenceNumber;
 
     /// <summary>
+    /// Gets the current log file size.
+    /// </summary>
+    public long CurrentFileSize => _logStream?.Length ?? 0;
+
+    /// <summary>
+    /// Gets the current WAL file number.
+    /// </summary>
+    public int CurrentFileNumber => _currentFileNumber;
+
+    /// <summary>
+    /// Event raised when a log file is rotated.
+    /// </summary>
+    public event EventHandler<WalRotatedEventArgs>? LogRotated;
+
+    /// <summary>
     /// Creates a new WAL log.
     /// </summary>
     public WalLog(string dataDirectory)
     {
+        _dataDirectory = dataDirectory;
         _logFilePath = Path.Combine(dataDirectory, "cyscaledb" + Constants.WalFileExtension);
         _logger = LogManager.Default.GetLogger<WalLog>();
+        _currentFileNumber = 0;
     }
 
     /// <summary>
@@ -72,6 +92,9 @@ public sealed class WalLog : IDisposable
         {
             EnsureOpen();
 
+            // Check if rotation is needed
+            CheckAndRotate();
+
             entry.Lsn = Interlocked.Increment(ref _logSequenceNumber);
 
             // Serialize entry
@@ -83,6 +106,102 @@ public sealed class WalLog : IDisposable
             _writer.Write(ComputeChecksum(data));
 
             return entry.Lsn;
+        }
+    }
+
+    /// <summary>
+    /// Checks if log file needs rotation and rotates if necessary.
+    /// </summary>
+    private void CheckAndRotate()
+    {
+        if (_logStream != null && _logStream.Length >= Constants.MaxWalFileSize)
+        {
+            Rotate();
+        }
+    }
+
+    /// <summary>
+    /// Rotates the current log file to a numbered backup.
+    /// </summary>
+    public void Rotate()
+    {
+        lock (_writeLock)
+        {
+            if (_logStream == null)
+                return;
+
+            var oldLsn = _logSequenceNumber;
+            
+            // Flush and close current file
+            Flush();
+            _writer?.Dispose();
+            _logStream.Dispose();
+
+            // Rename current file to numbered backup
+            _currentFileNumber++;
+            var rotatedPath = GetRotatedFilePath(_currentFileNumber);
+            
+            if (File.Exists(_logFilePath))
+            {
+                File.Move(_logFilePath, rotatedPath, overwrite: true);
+            }
+
+            // Create new log file
+            _logStream = new FileStream(
+                _logFilePath,
+                FileMode.Create,
+                FileAccess.ReadWrite,
+                FileShare.None,
+                bufferSize: 4096,
+                FileOptions.SequentialScan);
+            _writer = new BinaryWriter(_logStream);
+
+            _logger.Info("Rotated WAL log to {0}, starting new file at LSN {1}", rotatedPath, _logSequenceNumber);
+
+            // Raise event
+            LogRotated?.Invoke(this, new WalRotatedEventArgs(rotatedPath, oldLsn, _logSequenceNumber));
+        }
+    }
+
+    /// <summary>
+    /// Gets the file path for a rotated log file.
+    /// </summary>
+    public string GetRotatedFilePath(int fileNumber)
+    {
+        return Path.Combine(_dataDirectory, $"cyscaledb{Constants.WalFileExtension}.{fileNumber}");
+    }
+
+    /// <summary>
+    /// Gets all rotated log file paths.
+    /// </summary>
+    public IEnumerable<string> GetRotatedLogFiles()
+    {
+        var pattern = $"cyscaledb{Constants.WalFileExtension}.*";
+        var directory = Path.GetDirectoryName(_logFilePath) ?? _dataDirectory;
+        
+        if (!Directory.Exists(directory))
+            yield break;
+
+        foreach (var file in Directory.GetFiles(directory, pattern))
+        {
+            // Skip compressed files
+            if (file.EndsWith(".gz"))
+                continue;
+            yield return file;
+        }
+    }
+
+    /// <summary>
+    /// Forces immediate rotation regardless of file size.
+    /// </summary>
+    public void ForceRotate()
+    {
+        lock (_writeLock)
+        {
+            if (_logStream != null && _logStream.Length > 0)
+            {
+                Rotate();
+            }
         }
     }
 
@@ -546,5 +665,33 @@ public class WalEntry
             data[i] = reader.ReadInt64();
         }
         return data;
+    }
+}
+
+/// <summary>
+/// Event args for WAL rotation events.
+/// </summary>
+public class WalRotatedEventArgs : EventArgs
+{
+    /// <summary>
+    /// The path to the rotated log file.
+    /// </summary>
+    public string RotatedFilePath { get; }
+
+    /// <summary>
+    /// The LSN at the start of the rotated file.
+    /// </summary>
+    public long StartLsn { get; }
+
+    /// <summary>
+    /// The LSN at the end of the rotated file.
+    /// </summary>
+    public long EndLsn { get; }
+
+    public WalRotatedEventArgs(string rotatedFilePath, long startLsn, long endLsn)
+    {
+        RotatedFilePath = rotatedFilePath;
+        StartLsn = startLsn;
+        EndLsn = endLsn;
     }
 }

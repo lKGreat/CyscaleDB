@@ -176,6 +176,18 @@ public enum TokenType
     AVG,
     MIN,
     MAX,
+
+    // Index keywords
+    BTREE,
+    HASH,
+    USING,
+
+    // View keywords
+    VIEW,
+    REPLACE,
+
+    // Optimization keywords
+    OPTIMIZE,
 }
 
 /// <summary>
@@ -278,6 +290,19 @@ public static class Keywords
         ["AVG"] = TokenType.AVG,
         ["MIN"] = TokenType.MIN,
         ["MAX"] = TokenType.MAX,
+
+        // Index keywords
+        ["BTREE"] = TokenType.BTREE,
+        ["HASH"] = TokenType.HASH,
+        ["USING"] = TokenType.USING,
+
+        // View keywords
+        ["VIEW"] = TokenType.VIEW,
+        ["REPLACE"] = TokenType.REPLACE,
+        // Note: OR is already defined for the OR logical operator
+
+        // Optimization keywords
+        ["OPTIMIZE"] = TokenType.OPTIMIZE,
     };
 
     /// <summary>

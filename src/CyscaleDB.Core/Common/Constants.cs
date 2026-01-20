@@ -95,4 +95,86 @@ public static class Constants
     /// Maximum row size in bytes.
     /// </summary>
     public const int MaxRowSize = PageSize - PageHeaderSize - SlotSize;
+
+    #region Index Constants
+
+    /// <summary>
+    /// The file extension for B-Tree index files.
+    /// </summary>
+    public const string IndexFileExtension = ".idx";
+
+    /// <summary>
+    /// The file extension for Hash index files.
+    /// </summary>
+    public const string HashIndexExtension = ".hash";
+
+    /// <summary>
+    /// Maximum number of keys per B-Tree internal node.
+    /// </summary>
+    public const int BTreeOrder = 128;
+
+    /// <summary>
+    /// Maximum number of keys per B-Tree leaf node.
+    /// </summary>
+    public const int BTreeLeafCapacity = 256;
+
+    /// <summary>
+    /// Maximum length of an index name.
+    /// </summary>
+    public const int MaxIndexNameLength = 64;
+
+    /// <summary>
+    /// Initial directory size for extendible hash index.
+    /// </summary>
+    public const int HashInitialDirectorySize = 4;
+
+    /// <summary>
+    /// Maximum bucket size for hash index.
+    /// </summary>
+    public const int HashBucketCapacity = 64;
+
+    #endregion
+
+    #region WAL and Checkpoint Constants
+
+    /// <summary>
+    /// The name of the checkpoint metadata file.
+    /// </summary>
+    public const string CheckpointFileName = "checkpoint.meta";
+
+    /// <summary>
+    /// Maximum WAL file size before rotation (16MB).
+    /// </summary>
+    public const long MaxWalFileSize = 16 * 1024 * 1024;
+
+    /// <summary>
+    /// Maximum number of WAL files to keep before archiving.
+    /// </summary>
+    public const int MaxWalFiles = 10;
+
+    /// <summary>
+    /// Checkpoint interval in seconds (5 minutes).
+    /// </summary>
+    public const int CheckpointIntervalSeconds = 300;
+
+    /// <summary>
+    /// Default retention days for archived WAL files.
+    /// </summary>
+    public const int WalArchiveRetentionDays = 7;
+
+    #endregion
+
+    #region View Constants
+
+    /// <summary>
+    /// Maximum length of a view name.
+    /// </summary>
+    public const int MaxViewNameLength = 64;
+
+    /// <summary>
+    /// Maximum length of view definition SQL.
+    /// </summary>
+    public const int MaxViewDefinitionLength = 65535;
+
+    #endregion
 }

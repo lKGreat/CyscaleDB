@@ -180,6 +180,22 @@ public sealed class TransactionManager : IDisposable
     }
 
     /// <summary>
+    /// Gets the IDs of all active transactions.
+    /// </summary>
+    public List<long> GetActiveTransactionIds()
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            return _activeTransactions.Keys.ToList();
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
     /// Creates a checkpoint.
     /// </summary>
     public void Checkpoint()

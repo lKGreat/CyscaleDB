@@ -607,6 +607,177 @@ public class DescribeStatement : Statement
 
 #endregion
 
+#region Index Statements
+
+/// <summary>
+/// Represents a CREATE INDEX statement.
+/// </summary>
+public class CreateIndexStatement : Statement
+{
+    /// <summary>
+    /// The name of the index.
+    /// </summary>
+    public string IndexName { get; set; } = null!;
+
+    /// <summary>
+    /// The table name.
+    /// </summary>
+    public string TableName { get; set; } = null!;
+
+    /// <summary>
+    /// The database name (optional).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// The columns to include in the index.
+    /// </summary>
+    public List<string> Columns { get; set; } = [];
+
+    /// <summary>
+    /// The index type (BTREE or HASH).
+    /// </summary>
+    public IndexTypeAst IndexType { get; set; } = IndexTypeAst.BTree;
+
+    /// <summary>
+    /// Whether this is a unique index.
+    /// </summary>
+    public bool IsUnique { get; set; }
+
+    /// <summary>
+    /// Whether IF NOT EXISTS is specified.
+    /// </summary>
+    public bool IfNotExists { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitCreateIndexStatement(this);
+}
+
+/// <summary>
+/// Represents a DROP INDEX statement.
+/// </summary>
+public class DropIndexStatement : Statement
+{
+    /// <summary>
+    /// The name of the index.
+    /// </summary>
+    public string IndexName { get; set; } = null!;
+
+    /// <summary>
+    /// The table name.
+    /// </summary>
+    public string TableName { get; set; } = null!;
+
+    /// <summary>
+    /// The database name (optional).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// Whether IF EXISTS is specified.
+    /// </summary>
+    public bool IfExists { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDropIndexStatement(this);
+}
+
+/// <summary>
+/// Index type in AST.
+/// </summary>
+public enum IndexTypeAst
+{
+    BTree,
+    Hash
+}
+
+#endregion
+
+#region View Statements
+
+/// <summary>
+/// Represents a CREATE VIEW statement.
+/// </summary>
+public class CreateViewStatement : Statement
+{
+    /// <summary>
+    /// The name of the view.
+    /// </summary>
+    public string ViewName { get; set; } = null!;
+
+    /// <summary>
+    /// The database name (optional).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// Optional column names for the view.
+    /// </summary>
+    public List<string>? ColumnNames { get; set; }
+
+    /// <summary>
+    /// The SELECT statement defining this view.
+    /// </summary>
+    public SelectStatement Query { get; set; } = null!;
+
+    /// <summary>
+    /// Whether this is CREATE OR REPLACE.
+    /// </summary>
+    public bool OrReplace { get; set; }
+
+    /// <summary>
+    /// Whether IF NOT EXISTS is specified.
+    /// </summary>
+    public bool IfNotExists { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitCreateViewStatement(this);
+}
+
+/// <summary>
+/// Represents a DROP VIEW statement.
+/// </summary>
+public class DropViewStatement : Statement
+{
+    /// <summary>
+    /// The name of the view.
+    /// </summary>
+    public string ViewName { get; set; } = null!;
+
+    /// <summary>
+    /// The database name (optional).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// Whether IF EXISTS is specified.
+    /// </summary>
+    public bool IfExists { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDropViewStatement(this);
+}
+
+#endregion
+
+#region Optimization Statements
+
+/// <summary>
+/// Represents an OPTIMIZE TABLE statement.
+/// </summary>
+public class OptimizeTableStatement : Statement
+{
+    /// <summary>
+    /// The table name.
+    /// </summary>
+    public string TableName { get; set; } = null!;
+
+    /// <summary>
+    /// The database name (optional).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitOptimizeTableStatement(this);
+}
+
+#endregion
+
 #region Transaction Statements
 
 /// <summary>

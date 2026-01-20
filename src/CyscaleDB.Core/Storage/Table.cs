@@ -338,6 +338,223 @@ public sealed class Table : IDisposable
         _pageManager.Flush();
     }
 
+    #region Table Optimization
+
+    /// <summary>
+    /// Optimizes the table by compacting data and reclaiming space from deleted rows.
+    /// Returns statistics about the optimization.
+    /// </summary>
+    public OptimizeResult Optimize()
+    {
+        _logger.Info("Starting optimization of table {0}", _schema.FullName);
+
+        var startTime = DateTime.UtcNow;
+        var originalPageCount = _pageManager.PageCount;
+        long rowsProcessed = 0;
+        long spaceReclaimed = 0;
+
+        // Collect all valid rows
+        var validRows = new List<(Row Row, byte[] Data)>();
+        long originalDataSize = 0;
+
+        for (int pageId = 0; pageId < _pageManager.PageCount; pageId++)
+        {
+            var page = _pageManager.ReadPage(pageId);
+            originalDataSize += Constants.PageSize;
+
+            foreach (var (slotNumber, recordData) in page.EnumerateRecords())
+            {
+                var row = Row.Deserialize(recordData, _schema);
+                validRows.Add((row, recordData));
+                rowsProcessed++;
+            }
+        }
+
+        if (validRows.Count == 0)
+        {
+            // Table is empty, just truncate
+            _pageManager.Truncate(0);
+            spaceReclaimed = originalDataSize;
+        }
+        else
+        {
+            // Create a temporary file for the compacted data
+            var tempFilePath = _pageManager.FilePath + ".tmp";
+            var tempPageManager = new PageManager(tempFilePath);
+            tempPageManager.Open(createIfNotExists: true);
+
+            try
+            {
+                // Write rows to new file in a compact manner
+                Page? currentPage = null;
+                int currentPageId = -1;
+
+                foreach (var (row, recordData) in validRows)
+                {
+                    // Find or create a page with space
+                    if (currentPage == null || !currentPage.CanFit(recordData.Length))
+                    {
+                        if (currentPage != null)
+                        {
+                            tempPageManager.WritePage(currentPage);
+                        }
+                        currentPage = tempPageManager.AllocatePage();
+                        currentPageId = currentPage.PageId;
+                    }
+
+                    var slotNumber = currentPage.InsertRecord(recordData);
+                    if (slotNumber < 0)
+                    {
+                        // Page full, allocate new one
+                        tempPageManager.WritePage(currentPage);
+                        currentPage = tempPageManager.AllocatePage();
+                        currentPageId = currentPage.PageId;
+                        slotNumber = currentPage.InsertRecord(recordData);
+                    }
+                }
+
+                // Write last page
+                if (currentPage != null)
+                {
+                    tempPageManager.WritePage(currentPage);
+                }
+
+                tempPageManager.Flush();
+                tempPageManager.Dispose();
+
+                // Close original file and replace with temp file
+                _pageManager.Close();
+
+                var originalPath = _pageManager.FilePath;
+                var backupPath = originalPath + ".bak";
+
+                // Backup original file
+                if (File.Exists(originalPath))
+                {
+                    File.Move(originalPath, backupPath, overwrite: true);
+                }
+
+                // Move temp to original
+                File.Move(tempFilePath, originalPath);
+
+                // Delete backup
+                if (File.Exists(backupPath))
+                {
+                    File.Delete(backupPath);
+                }
+
+                // Reopen the page manager
+                _pageManager.Open(createIfNotExists: false);
+
+                var newPageCount = _pageManager.PageCount;
+                spaceReclaimed = (originalPageCount - newPageCount) * Constants.PageSize;
+            }
+            catch
+            {
+                // Cleanup temp file on error
+                tempPageManager.Dispose();
+                if (File.Exists(tempFilePath))
+                {
+                    File.Delete(tempFilePath);
+                }
+
+                // Reopen original file
+                _pageManager.Open(createIfNotExists: false);
+                throw;
+            }
+        }
+
+        var result = new OptimizeResult(
+            rowsProcessed,
+            originalPageCount,
+            _pageManager.PageCount,
+            spaceReclaimed,
+            DateTime.UtcNow - startTime);
+
+        _logger.Info("Optimization of table {0} complete: {1} rows, {2} pages -> {3} pages, {4} bytes reclaimed",
+            _schema.FullName, rowsProcessed, originalPageCount, _pageManager.PageCount, spaceReclaimed);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Compacts individual pages to reclaim space from deleted records.
+    /// Less aggressive than full Optimize().
+    /// </summary>
+    public int CompactPages()
+    {
+        int compactedCount = 0;
+
+        for (int pageId = 0; pageId < _pageManager.PageCount; pageId++)
+        {
+            var page = _pageManager.ReadPage(pageId);
+            var originalFreeSpace = page.FreeSpace;
+
+            page.Compact();
+
+            if (page.FreeSpace > originalFreeSpace)
+            {
+                _pageManager.WritePage(page);
+                compactedCount++;
+            }
+        }
+
+        _logger.Debug("Compacted {0} pages in table {1}", compactedCount, _schema.FullName);
+        return compactedCount;
+    }
+
+    /// <summary>
+    /// Gets table statistics including fragmentation info.
+    /// </summary>
+    public TableStatistics GetStatistics()
+    {
+        long totalRows = 0;
+        long totalDataSize = 0;
+        long totalFreeSpace = 0;
+        int emptyPages = 0;
+        int fragmentedPages = 0;
+
+        for (int pageId = 0; pageId < _pageManager.PageCount; pageId++)
+        {
+            var page = _pageManager.ReadPage(pageId);
+            var recordCount = 0;
+            var dataSize = 0;
+
+            foreach (var (_, recordData) in page.EnumerateRecords())
+            {
+                recordCount++;
+                dataSize += recordData.Length;
+            }
+
+            totalRows += recordCount;
+            totalDataSize += dataSize;
+            totalFreeSpace += page.FreeSpace;
+
+            if (recordCount == 0)
+            {
+                emptyPages++;
+            }
+            else if (page.FreeSpace > Constants.PageSize / 2)
+            {
+                fragmentedPages++;
+            }
+        }
+
+        var totalSpace = _pageManager.PageCount * Constants.PageSize;
+        var fragmentation = totalSpace > 0 ? (double)totalFreeSpace / totalSpace * 100 : 0;
+
+        return new TableStatistics(
+            totalRows,
+            _pageManager.PageCount,
+            totalDataSize,
+            totalFreeSpace,
+            emptyPages,
+            fragmentedPages,
+            fragmentation);
+    }
+
+    #endregion
+
     public void Dispose()
     {
         if (_disposed)
@@ -348,4 +565,114 @@ public sealed class Table : IDisposable
         Flush();
         _pageManager.Dispose();
     }
+}
+
+/// <summary>
+/// Result of a table optimization operation.
+/// </summary>
+public sealed class OptimizeResult
+{
+    /// <summary>
+    /// Number of rows processed during optimization.
+    /// </summary>
+    public long RowsProcessed { get; }
+
+    /// <summary>
+    /// Original number of pages before optimization.
+    /// </summary>
+    public int OriginalPageCount { get; }
+
+    /// <summary>
+    /// Number of pages after optimization.
+    /// </summary>
+    public int NewPageCount { get; }
+
+    /// <summary>
+    /// Bytes of space reclaimed.
+    /// </summary>
+    public long SpaceReclaimed { get; }
+
+    /// <summary>
+    /// Duration of the optimization.
+    /// </summary>
+    public TimeSpan Duration { get; }
+
+    public OptimizeResult(
+        long rowsProcessed,
+        int originalPageCount,
+        int newPageCount,
+        long spaceReclaimed,
+        TimeSpan duration)
+    {
+        RowsProcessed = rowsProcessed;
+        OriginalPageCount = originalPageCount;
+        NewPageCount = newPageCount;
+        SpaceReclaimed = spaceReclaimed;
+        Duration = duration;
+    }
+
+    public override string ToString() =>
+        $"Optimize: {RowsProcessed} rows, {OriginalPageCount} -> {NewPageCount} pages, {SpaceReclaimed} bytes reclaimed in {Duration.TotalMilliseconds:F2}ms";
+}
+
+/// <summary>
+/// Table storage statistics.
+/// </summary>
+public sealed class TableStatistics
+{
+    /// <summary>
+    /// Total number of rows in the table.
+    /// </summary>
+    public long RowCount { get; }
+
+    /// <summary>
+    /// Total number of pages in the table.
+    /// </summary>
+    public int PageCount { get; }
+
+    /// <summary>
+    /// Total data size in bytes.
+    /// </summary>
+    public long DataSize { get; }
+
+    /// <summary>
+    /// Total free space in bytes.
+    /// </summary>
+    public long FreeSpace { get; }
+
+    /// <summary>
+    /// Number of empty pages.
+    /// </summary>
+    public int EmptyPages { get; }
+
+    /// <summary>
+    /// Number of fragmented pages (more than 50% free).
+    /// </summary>
+    public int FragmentedPages { get; }
+
+    /// <summary>
+    /// Fragmentation percentage.
+    /// </summary>
+    public double FragmentationPercent { get; }
+
+    public TableStatistics(
+        long rowCount,
+        int pageCount,
+        long dataSize,
+        long freeSpace,
+        int emptyPages,
+        int fragmentedPages,
+        double fragmentationPercent)
+    {
+        RowCount = rowCount;
+        PageCount = pageCount;
+        DataSize = dataSize;
+        FreeSpace = freeSpace;
+        EmptyPages = emptyPages;
+        FragmentedPages = fragmentedPages;
+        FragmentationPercent = fragmentationPercent;
+    }
+
+    public override string ToString() =>
+        $"Stats: {RowCount} rows, {PageCount} pages, {DataSize} bytes data, {FragmentationPercent:F1}% fragmented";
 }

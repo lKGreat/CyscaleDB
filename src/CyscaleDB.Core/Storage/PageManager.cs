@@ -190,6 +190,28 @@ public sealed class PageManager : IDisposable
     }
 
     /// <summary>
+    /// Truncates the file to the specified number of pages.
+    /// </summary>
+    public void Truncate(int newPageCount)
+    {
+        EnsureOpen();
+
+        lock (_fileLock)
+        {
+            if (newPageCount < 0)
+                throw new ArgumentOutOfRangeException(nameof(newPageCount));
+
+            _pageCount = newPageCount;
+            var newLength = FileHeaderSize + ((long)newPageCount * Constants.PageSize);
+            _fileStream!.SetLength(newLength);
+            WriteFileHeader();
+            Flush();
+
+            _logger.Debug("Truncated file {0} to {1} pages", _filePath, newPageCount);
+        }
+    }
+
+    /// <summary>
     /// Gets the file offset for a page.
     /// </summary>
     private long GetPageOffset(int pageId)

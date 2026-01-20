@@ -79,8 +79,26 @@ public sealed class Parser
             TokenType.BEGIN => ParseBeginStatement(),
             TokenType.COMMIT => ParseCommitStatement(),
             TokenType.ROLLBACK => ParseRollbackStatement(),
+            TokenType.OPTIMIZE => ParseOptimizeStatement(),
             _ => throw Error($"Unexpected token at start of statement: {_currentToken.Value}")
         };
+    }
+
+    private OptimizeTableStatement ParseOptimizeStatement()
+    {
+        Expect(TokenType.OPTIMIZE);
+        Expect(TokenType.TABLE);
+
+        var stmt = new OptimizeTableStatement();
+        stmt.TableName = ExpectIdentifier();
+
+        if (Match(TokenType.Dot))
+        {
+            stmt.DatabaseName = stmt.TableName;
+            stmt.TableName = ExpectIdentifier();
+        }
+
+        return stmt;
     }
 
     #region SELECT Statement
@@ -496,16 +514,135 @@ public sealed class Parser
     {
         Expect(TokenType.CREATE);
 
+        // Check for UNIQUE keyword before INDEX
+        bool isUnique = false;
+        if (Match(TokenType.UNIQUE))
+        {
+            isUnique = true;
+        }
+
         if (Check(TokenType.TABLE))
         {
+            if (isUnique)
+                throw Error("UNIQUE cannot be used with CREATE TABLE");
             return ParseCreateTableStatement();
         }
         else if (Check(TokenType.DATABASE))
         {
+            if (isUnique)
+                throw Error("UNIQUE cannot be used with CREATE DATABASE");
             return ParseCreateDatabaseStatement();
         }
+        else if (Check(TokenType.INDEX))
+        {
+            return ParseCreateIndexStatement(isUnique);
+        }
+        else if (Check(TokenType.VIEW) || Check(TokenType.OR))
+        {
+            if (isUnique)
+                throw Error("UNIQUE cannot be used with CREATE VIEW");
+            return ParseCreateViewStatement();
+        }
 
-        throw Error($"Expected TABLE or DATABASE after CREATE, got: {_currentToken.Value}");
+        throw Error($"Expected TABLE, DATABASE, INDEX, or VIEW after CREATE, got: {_currentToken.Value}");
+    }
+
+    private CreateIndexStatement ParseCreateIndexStatement(bool isUnique)
+    {
+        Expect(TokenType.INDEX);
+
+        var stmt = new CreateIndexStatement();
+        stmt.IsUnique = isUnique;
+
+        // IF NOT EXISTS
+        if (Match(TokenType.IF))
+        {
+            Expect(TokenType.NOT);
+            Expect(TokenType.EXISTS);
+            stmt.IfNotExists = true;
+        }
+
+        stmt.IndexName = ExpectIdentifier();
+
+        Expect(TokenType.ON);
+
+        stmt.TableName = ExpectIdentifier();
+        if (Match(TokenType.Dot))
+        {
+            stmt.DatabaseName = stmt.TableName;
+            stmt.TableName = ExpectIdentifier();
+        }
+
+        // Column list
+        Expect(TokenType.LeftParen);
+        stmt.Columns = ParseIdentifierList();
+        Expect(TokenType.RightParen);
+
+        // Optional USING clause for index type
+        if (Match(TokenType.USING))
+        {
+            if (Match(TokenType.BTREE))
+            {
+                stmt.IndexType = IndexTypeAst.BTree;
+            }
+            else if (Match(TokenType.HASH))
+            {
+                stmt.IndexType = IndexTypeAst.Hash;
+            }
+            else
+            {
+                throw Error($"Expected BTREE or HASH, got: {_currentToken.Value}");
+            }
+        }
+
+        return stmt;
+    }
+
+    private Statement ParseCreateViewStatement()
+    {
+        // Handle OR REPLACE
+        bool orReplace = false;
+        if (Match(TokenType.OR))
+        {
+            Expect(TokenType.REPLACE);
+            orReplace = true;
+        }
+
+        Expect(TokenType.VIEW);
+
+        var stmt = new CreateViewStatement();
+        stmt.OrReplace = orReplace;
+
+        // IF NOT EXISTS
+        if (Match(TokenType.IF))
+        {
+            Expect(TokenType.NOT);
+            Expect(TokenType.EXISTS);
+            stmt.IfNotExists = true;
+        }
+
+        stmt.ViewName = ExpectIdentifier();
+
+        if (Match(TokenType.Dot))
+        {
+            stmt.DatabaseName = stmt.ViewName;
+            stmt.ViewName = ExpectIdentifier();
+        }
+
+        // Optional column names
+        if (Check(TokenType.LeftParen))
+        {
+            Advance();
+            stmt.ColumnNames = ParseIdentifierList();
+            Expect(TokenType.RightParen);
+        }
+
+        Expect(TokenType.AS);
+
+        // Parse the SELECT statement
+        stmt.Query = ParseSelectStatement();
+
+        return stmt;
     }
 
     private CreateTableStatement ParseCreateTableStatement()
@@ -757,8 +894,65 @@ public sealed class Parser
             stmt.DatabaseName = ExpectIdentifier();
             return stmt;
         }
+        else if (Check(TokenType.INDEX))
+        {
+            return ParseDropIndexStatement();
+        }
+        else if (Check(TokenType.VIEW))
+        {
+            return ParseDropViewStatement();
+        }
 
-        throw Error($"Expected TABLE or DATABASE after DROP, got: {_currentToken.Value}");
+        throw Error($"Expected TABLE, DATABASE, INDEX, or VIEW after DROP, got: {_currentToken.Value}");
+    }
+
+    private DropIndexStatement ParseDropIndexStatement()
+    {
+        Expect(TokenType.INDEX);
+
+        var stmt = new DropIndexStatement();
+
+        if (Match(TokenType.IF))
+        {
+            Expect(TokenType.EXISTS);
+            stmt.IfExists = true;
+        }
+
+        stmt.IndexName = ExpectIdentifier();
+
+        Expect(TokenType.ON);
+
+        stmt.TableName = ExpectIdentifier();
+        if (Match(TokenType.Dot))
+        {
+            stmt.DatabaseName = stmt.TableName;
+            stmt.TableName = ExpectIdentifier();
+        }
+
+        return stmt;
+    }
+
+    private DropViewStatement ParseDropViewStatement()
+    {
+        Expect(TokenType.VIEW);
+
+        var stmt = new DropViewStatement();
+
+        if (Match(TokenType.IF))
+        {
+            Expect(TokenType.EXISTS);
+            stmt.IfExists = true;
+        }
+
+        stmt.ViewName = ExpectIdentifier();
+
+        if (Match(TokenType.Dot))
+        {
+            stmt.DatabaseName = stmt.ViewName;
+            stmt.ViewName = ExpectIdentifier();
+        }
+
+        return stmt;
     }
 
     #endregion

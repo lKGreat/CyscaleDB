@@ -172,7 +172,7 @@ public sealed class Row
 /// <summary>
 /// Identifies a row by its page and slot.
 /// </summary>
-public readonly struct RowId : IEquatable<RowId>
+public readonly struct RowId : IEquatable<RowId>, IComparable<RowId>
 {
     /// <summary>
     /// The page ID containing this row.
@@ -204,8 +204,35 @@ public readonly struct RowId : IEquatable<RowId>
     public override bool Equals(object? obj) => obj is RowId other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(PageId, SlotNumber);
 
+    public int CompareTo(RowId other)
+    {
+        var cmp = PageId.CompareTo(other.PageId);
+        return cmp != 0 ? cmp : SlotNumber.CompareTo(other.SlotNumber);
+    }
+
     public static bool operator ==(RowId left, RowId right) => left.Equals(right);
     public static bool operator !=(RowId left, RowId right) => !left.Equals(right);
 
     public override string ToString() => $"RowId({PageId}:{SlotNumber})";
+
+    /// <summary>
+    /// Serializes this RowId to bytes (6 bytes: 4 for PageId + 2 for SlotNumber).
+    /// </summary>
+    public byte[] Serialize()
+    {
+        var bytes = new byte[6];
+        BitConverter.TryWriteBytes(bytes.AsSpan(0, 4), PageId);
+        BitConverter.TryWriteBytes(bytes.AsSpan(4, 2), SlotNumber);
+        return bytes;
+    }
+
+    /// <summary>
+    /// Deserializes a RowId from bytes.
+    /// </summary>
+    public static RowId Deserialize(ReadOnlySpan<byte> data)
+    {
+        var pageId = BitConverter.ToInt32(data[..4]);
+        var slotNumber = BitConverter.ToInt16(data.Slice(4, 2));
+        return new RowId(pageId, slotNumber);
+    }
 }

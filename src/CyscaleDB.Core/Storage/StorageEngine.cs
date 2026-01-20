@@ -290,6 +290,126 @@ public sealed class StorageEngine : IDisposable
 
     #endregion
 
+    #region Optimization Operations
+
+    /// <summary>
+    /// Optimizes a single table by compacting data and reclaiming space.
+    /// </summary>
+    public OptimizeResult OptimizeTable(string databaseName, string tableName)
+    {
+        EnsureNotDisposed();
+
+        // Close the table from buffer pool first
+        CloseTable(databaseName, tableName);
+
+        // Reopen without buffer pool for optimization
+        var schema = _catalog.GetTableSchema(databaseName, tableName);
+        if (schema == null)
+            throw new TableNotFoundException(tableName);
+
+        var db = _catalog.GetDatabase(databaseName)!;
+        var filePath = Path.Combine(db.DataDirectory, $"{tableName}{Constants.DataFileExtension}");
+        var pageManager = new PageManager(filePath);
+        
+        using var table = new Table(schema, pageManager, null); // No buffer pool
+        table.Open();
+
+        var result = table.Optimize();
+
+        _logger.Info("Optimized table {0}.{1}: {2}", databaseName, tableName, result);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Shrinks a database by optimizing all tables and compacting free pages.
+    /// </summary>
+    public DatabaseShrinkResult ShrinkDatabase(string databaseName)
+    {
+        EnsureNotDisposed();
+
+        var db = _catalog.GetDatabase(databaseName);
+        if (db == null)
+            throw new DatabaseNotFoundException(databaseName);
+
+        var startTime = DateTime.UtcNow;
+        var tableResults = new List<(string TableName, OptimizeResult Result)>();
+        long totalSpaceReclaimed = 0;
+
+        _logger.Info("Starting database shrink for {0}", databaseName);
+
+        foreach (var tableSchema in db.Tables)
+        {
+            try
+            {
+                var result = OptimizeTable(databaseName, tableSchema.TableName);
+                tableResults.Add((tableSchema.TableName, result));
+                totalSpaceReclaimed += result.SpaceReclaimed;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error("Error optimizing table {0}.{1}: {2}", 
+                    databaseName, tableSchema.TableName, ex.Message);
+            }
+        }
+
+        var duration = DateTime.UtcNow - startTime;
+
+        var shrinkResult = new DatabaseShrinkResult(
+            databaseName,
+            tableResults,
+            totalSpaceReclaimed,
+            duration);
+
+        _logger.Info("Database shrink completed for {0}: {1} bytes reclaimed in {2}ms",
+            databaseName, totalSpaceReclaimed, duration.TotalMilliseconds);
+
+        return shrinkResult;
+    }
+
+    /// <summary>
+    /// Gets statistics for a table.
+    /// </summary>
+    public TableStatistics GetTableStatistics(string databaseName, string tableName)
+    {
+        EnsureNotDisposed();
+
+        var table = OpenTable(databaseName, tableName);
+        return table.GetStatistics();
+    }
+
+    /// <summary>
+    /// Gets statistics for all tables in a database.
+    /// </summary>
+    public Dictionary<string, TableStatistics> GetDatabaseStatistics(string databaseName)
+    {
+        EnsureNotDisposed();
+
+        var db = _catalog.GetDatabase(databaseName);
+        if (db == null)
+            throw new DatabaseNotFoundException(databaseName);
+
+        var stats = new Dictionary<string, TableStatistics>();
+
+        foreach (var tableSchema in db.Tables)
+        {
+            try
+            {
+                var tableStats = GetTableStatistics(databaseName, tableSchema.TableName);
+                stats[tableSchema.TableName] = tableStats;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error("Error getting stats for table {0}.{1}: {2}",
+                    databaseName, tableSchema.TableName, ex.Message);
+            }
+        }
+
+        return stats;
+    }
+
+    #endregion
+
     public void Dispose()
     {
         if (_disposed)
@@ -312,4 +432,45 @@ public sealed class StorageEngine : IDisposable
 
         _logger.Info("Storage engine shut down");
     }
+}
+
+/// <summary>
+/// Result of a database shrink operation.
+/// </summary>
+public sealed class DatabaseShrinkResult
+{
+    /// <summary>
+    /// Name of the database that was shrunk.
+    /// </summary>
+    public string DatabaseName { get; }
+
+    /// <summary>
+    /// Results for each table optimization.
+    /// </summary>
+    public IReadOnlyList<(string TableName, OptimizeResult Result)> TableResults { get; }
+
+    /// <summary>
+    /// Total space reclaimed in bytes.
+    /// </summary>
+    public long TotalSpaceReclaimed { get; }
+
+    /// <summary>
+    /// Total duration of the shrink operation.
+    /// </summary>
+    public TimeSpan Duration { get; }
+
+    public DatabaseShrinkResult(
+        string databaseName,
+        List<(string TableName, OptimizeResult Result)> tableResults,
+        long totalSpaceReclaimed,
+        TimeSpan duration)
+    {
+        DatabaseName = databaseName;
+        TableResults = tableResults.AsReadOnly();
+        TotalSpaceReclaimed = totalSpaceReclaimed;
+        Duration = duration;
+    }
+
+    public override string ToString() =>
+        $"Shrink {DatabaseName}: {TableResults.Count} tables, {TotalSpaceReclaimed} bytes reclaimed in {Duration.TotalMilliseconds:F2}ms";
 }

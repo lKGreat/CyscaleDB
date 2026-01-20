@@ -33,9 +33,19 @@ public sealed class DatabaseInfo
     private readonly Dictionary<string, TableSchema> _tables;
 
     /// <summary>
+    /// The views in this database, keyed by name (case-insensitive).
+    /// </summary>
+    private readonly Dictionary<string, ViewInfo> _views;
+
+    /// <summary>
     /// Gets all tables in this database.
     /// </summary>
     public IReadOnlyCollection<TableSchema> Tables => _tables.Values;
+
+    /// <summary>
+    /// Gets all views in this database.
+    /// </summary>
+    public IReadOnlyCollection<ViewInfo> Views => _views.Values;
 
     /// <summary>
     /// Gets the number of tables in this database.
@@ -56,6 +66,11 @@ public sealed class DatabaseInfo
     /// Counter for generating unique table IDs.
     /// </summary>
     private int _nextTableId;
+
+    /// <summary>
+    /// Counter for generating unique view IDs.
+    /// </summary>
+    private int _nextViewId;
 
     /// <summary>
     /// Creates a new database info.
@@ -81,7 +96,9 @@ public sealed class DatabaseInfo
         CharacterSet = characterSet;
         Collation = collation;
         _tables = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
+        _views = new Dictionary<string, ViewInfo>(StringComparer.OrdinalIgnoreCase);
         _nextTableId = 1;
+        _nextViewId = 1;
     }
 
     /// <summary>
@@ -126,6 +143,60 @@ public sealed class DatabaseInfo
     /// </summary>
     internal void SetNextTableId(int nextId) => _nextTableId = nextId;
 
+    #region View Management
+
+    /// <summary>
+    /// Gets a view by name.
+    /// </summary>
+    public ViewInfo? GetView(string viewName)
+    {
+        return _views.TryGetValue(viewName, out var view) ? view : null;
+    }
+
+    /// <summary>
+    /// Checks if a view exists.
+    /// </summary>
+    public bool HasView(string viewName) => _views.ContainsKey(viewName);
+
+    /// <summary>
+    /// Adds a view to this database.
+    /// </summary>
+    public void AddView(ViewInfo view)
+    {
+        if (_views.ContainsKey(view.ViewName))
+            throw new CyscaleException($"View '{view.ViewName}' already exists", ErrorCode.ViewExists);
+
+        _views[view.ViewName] = view;
+    }
+
+    /// <summary>
+    /// Adds or replaces a view in this database.
+    /// </summary>
+    public void AddOrReplaceView(ViewInfo view)
+    {
+        _views[view.ViewName] = view;
+    }
+
+    /// <summary>
+    /// Removes a view from this database.
+    /// </summary>
+    public bool RemoveView(string viewName)
+    {
+        return _views.Remove(viewName);
+    }
+
+    /// <summary>
+    /// Gets the next unique view ID.
+    /// </summary>
+    public int GetNextViewId() => _nextViewId++;
+
+    /// <summary>
+    /// Sets the next view ID (used during deserialization).
+    /// </summary>
+    internal void SetNextViewId(int nextId) => _nextViewId = nextId;
+
+    #endregion
+
     /// <summary>
     /// Serializes this database info to bytes.
     /// </summary>
@@ -141,6 +212,7 @@ public sealed class DatabaseInfo
         writer.Write(CharacterSet);
         writer.Write(Collation);
         writer.Write(_nextTableId);
+        writer.Write(_nextViewId);
 
         // Write tables
         writer.Write(_tables.Count);
@@ -149,6 +221,15 @@ public sealed class DatabaseInfo
             var tableBytes = table.Serialize();
             writer.Write(tableBytes.Length);
             writer.Write(tableBytes);
+        }
+
+        // Write views
+        writer.Write(_views.Count);
+        foreach (var view in _views.Values)
+        {
+            var viewBytes = view.Serialize();
+            writer.Write(viewBytes.Length);
+            writer.Write(viewBytes);
         }
 
         return stream.ToArray();
@@ -169,9 +250,25 @@ public sealed class DatabaseInfo
         var characterSet = reader.ReadString();
         var collation = reader.ReadString();
         var nextTableId = reader.ReadInt32();
+        
+        // Try to read nextViewId - may not exist in older formats
+        var nextViewId = 1;
+        if (stream.Position < stream.Length)
+        {
+            try
+            {
+                nextViewId = reader.ReadInt32();
+            }
+            catch
+            {
+                // Older format without views - reset position and continue
+                nextViewId = 1;
+            }
+        }
 
         var db = new DatabaseInfo(databaseId, name, dataDirectory, createdAt, characterSet, collation);
         db.SetNextTableId(nextTableId);
+        db.SetNextViewId(nextViewId);
 
         var tableCount = reader.ReadInt32();
         for (int i = 0; i < tableCount; i++)
@@ -180,6 +277,26 @@ public sealed class DatabaseInfo
             var tableBytes = reader.ReadBytes(tableLength);
             var table = TableSchema.Deserialize(tableBytes);
             db._tables[table.TableName] = table;
+        }
+
+        // Try to read views - may not exist in older formats
+        if (stream.Position < stream.Length)
+        {
+            try
+            {
+                var viewCount = reader.ReadInt32();
+                for (int i = 0; i < viewCount; i++)
+                {
+                    var viewLength = reader.ReadInt32();
+                    var viewBytes = reader.ReadBytes(viewLength);
+                    var view = ViewInfo.Deserialize(viewBytes);
+                    db._views[view.ViewName] = view;
+                }
+            }
+            catch
+            {
+                // Older format without views - ignore
+            }
         }
 
         return db;
