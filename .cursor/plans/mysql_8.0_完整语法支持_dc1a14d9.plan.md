@@ -109,19 +109,19 @@ todos:
     status: completed
   - id: 0.6.2
     content: FlushList 脏页管理 - 新建 FlushList.cs，测试脏页刷盘
-    status: in_progress
+    status: completed
   - id: 0.6.3
     content: 预读实现 - 线性预读，测试顺序扫描性能
-    status: pending
+    status: completed
   - id: 0.9.1
     content: ALTER TABLE ADD COLUMN 在线 - 不锁表添加列，测试并发 DML
-    status: pending
+    status: completed
   - id: 0.9.2
     content: ALTER TABLE DROP COLUMN 在线 - 不锁表删除列，测试并发 DML
-    status: pending
+    status: completed
   - id: 0.9.3
     content: ALTER TABLE ADD INDEX 在线 - 不锁表创建索引，测试并发 DML
-    status: pending
+    status: completed
   - id: 1.1.1
     content: CASE/WHEN/THEN/ELSE/END 关键字 - 添加到 Token.cs，测试词法分析
     status: completed
@@ -154,7 +154,7 @@ todos:
     status: completed
   - id: 1.2.6
     content: 递归 CTE 执行 - 迭代执行直到不产生新行，测试递归查询
-    status: pending
+    status: in_progress
   - id: 1.3.1
     content: OVER/PARTITION/ROWS/RANGE 关键字 - 添加到 Token.cs
     status: completed

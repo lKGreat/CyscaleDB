@@ -10,7 +10,7 @@ public sealed class ColumnDefinition
     /// <summary>
     /// The name of the column.
     /// </summary>
-    public string Name { get; }
+    public string Name { get; internal set; }
 
     /// <summary>
     /// The data type of the column.

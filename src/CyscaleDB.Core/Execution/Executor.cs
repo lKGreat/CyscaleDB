@@ -1428,7 +1428,10 @@ public sealed class Executor
             switch (action)
             {
                 case AddColumnAction addCol:
-                    // Note: Full implementation would modify the table schema
+                    // Online ADD COLUMN - adds to schema without blocking DML (instant DDL)
+                    var newColDef = ConvertColumnDefToStorageDefinition(addCol.Column);
+                    schema.AddColumn(newColDef, addCol.AfterColumn);
+                    _catalog.Flush();
                     messages.Add($"Added column '{addCol.Column.Name}'");
                     actionsPerformed++;
                     break;
@@ -1436,6 +1439,10 @@ public sealed class Executor
                 case DropColumnAction dropCol:
                     if (schema.GetColumnOrdinal(dropCol.ColumnName) < 0)
                         throw new ColumnNotFoundException(dropCol.ColumnName, stmt.TableName);
+                    
+                    // Online DROP COLUMN - removes from schema (instant DDL)
+                    schema.DropColumn(dropCol.ColumnName);
+                    _catalog.Flush();
                     messages.Add($"Dropped column '{dropCol.ColumnName}'");
                     actionsPerformed++;
                     break;
@@ -1443,6 +1450,10 @@ public sealed class Executor
                 case ModifyColumnAction modCol:
                     if (schema.GetColumnOrdinal(modCol.Column.Name) < 0)
                         throw new ColumnNotFoundException(modCol.Column.Name, stmt.TableName);
+                    
+                    var modColDef = ConvertColumnDefToStorageDefinition(modCol.Column);
+                    schema.ModifyColumn(modCol.Column.Name, modColDef);
+                    _catalog.Flush();
                     messages.Add($"Modified column '{modCol.Column.Name}'");
                     actionsPerformed++;
                     break;
@@ -1450,6 +1461,10 @@ public sealed class Executor
                 case ChangeColumnAction changeCol:
                     if (schema.GetColumnOrdinal(changeCol.OldColumnName) < 0)
                         throw new ColumnNotFoundException(changeCol.OldColumnName, stmt.TableName);
+                    
+                    var changeColDef = ConvertColumnDefToStorageDefinition(changeCol.NewColumn);
+                    schema.ModifyColumn(changeCol.OldColumnName, changeColDef);
+                    _catalog.Flush();
                     messages.Add($"Changed column '{changeCol.OldColumnName}' to '{changeCol.NewColumn.Name}'");
                     actionsPerformed++;
                     break;
@@ -1457,6 +1472,9 @@ public sealed class Executor
                 case RenameColumnAction renameCol:
                     if (schema.GetColumnOrdinal(renameCol.OldName) < 0)
                         throw new ColumnNotFoundException(renameCol.OldName, stmt.TableName);
+                    
+                    schema.RenameColumn(renameCol.OldName, renameCol.NewName);
+                    _catalog.Flush();
                     messages.Add($"Renamed column '{renameCol.OldName}' to '{renameCol.NewName}'");
                     actionsPerformed++;
                     break;
@@ -1516,6 +1534,30 @@ public sealed class Executor
 
         _logger.Info("ALTER TABLE {0}.{1}: {2}", dbName, stmt.TableName, string.Join("; ", messages));
         return ExecutionResult.Ddl($"Table '{stmt.TableName}' altered ({actionsPerformed} action(s))");
+    }
+
+    /// <summary>
+    /// Converts an AST ColumnDef to a storage ColumnDefinition.
+    /// </summary>
+    private ColumnDefinition ConvertColumnDefToStorageDefinition(Parsing.Ast.ColumnDef colDef)
+    {
+        DataValue? defaultValue = null;
+        if (colDef.DefaultValue != null)
+        {
+            defaultValue = EvaluateLiteralExpression(colDef.DefaultValue);
+        }
+
+        return new ColumnDefinition(
+            name: colDef.Name,
+            dataType: colDef.DataType,
+            maxLength: colDef.Length ?? 255,
+            precision: colDef.Precision ?? 10,
+            scale: colDef.Scale ?? 0,
+            isNullable: colDef.IsNullable,
+            isPrimaryKey: colDef.IsPrimaryKey,
+            isAutoIncrement: colDef.IsAutoIncrement,
+            defaultValue: defaultValue
+        );
     }
 
     #endregion

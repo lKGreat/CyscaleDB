@@ -30,7 +30,12 @@ public sealed class TableSchema
     /// <summary>
     /// The columns in this table, ordered by ordinal position.
     /// </summary>
-    public IReadOnlyList<ColumnDefinition> Columns { get; }
+    public IReadOnlyList<ColumnDefinition> Columns => _columns.AsReadOnly();
+
+    /// <summary>
+    /// Internal mutable list of columns.
+    /// </summary>
+    private readonly List<ColumnDefinition> _columns;
 
     /// <summary>
     /// Quick lookup of column by name (case-insensitive).
@@ -102,7 +107,7 @@ public sealed class TableSchema
             columnList[i].OrdinalPosition = i;
         }
 
-        Columns = columnList.AsReadOnly();
+        _columns = columnList;
         _columnsByName = columnList.ToDictionary(c => c.Name, StringComparer.OrdinalIgnoreCase);
         PrimaryKeyColumns = columnList.Where(c => c.IsPrimaryKey).ToList().AsReadOnly();
 
@@ -172,6 +177,116 @@ public sealed class TableSchema
         RowCount = Math.Max(0, RowCount + delta);
         ModifiedAt = DateTime.UtcNow;
     }
+
+    #region Online Schema Change Methods
+
+    /// <summary>
+    /// Adds a new column to the schema.
+    /// For online schema change, this does not modify existing rows.
+    /// </summary>
+    /// <param name="column">The column definition to add.</param>
+    /// <param name="afterColumn">Optional: Insert after this column. If null, adds at end.</param>
+    public void AddColumn(ColumnDefinition column, string? afterColumn = null)
+    {
+        if (_columnsByName.ContainsKey(column.Name))
+            throw new ArgumentException($"Column '{column.Name}' already exists", nameof(column));
+
+        if (_columns.Count >= Constants.MaxColumnsPerTable)
+            throw new InvalidOperationException($"Cannot add column: table already has maximum {Constants.MaxColumnsPerTable} columns");
+
+        int insertIndex = _columns.Count;
+
+        if (afterColumn != null)
+        {
+            var afterOrdinal = GetColumnOrdinal(afterColumn);
+            if (afterOrdinal < 0)
+                throw new ArgumentException($"Column '{afterColumn}' not found", nameof(afterColumn));
+            insertIndex = afterOrdinal + 1;
+        }
+
+        column.OrdinalPosition = insertIndex;
+        _columns.Insert(insertIndex, column);
+        _columnsByName[column.Name] = column;
+
+        // Update ordinal positions for subsequent columns
+        for (int i = insertIndex + 1; i < _columns.Count; i++)
+        {
+            _columns[i].OrdinalPosition = i;
+        }
+
+        ModifiedAt = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Drops a column from the schema.
+    /// For online schema change, this marks existing row data for that column as invalid.
+    /// </summary>
+    /// <param name="columnName">The name of the column to drop.</param>
+    public void DropColumn(string columnName)
+    {
+        if (!_columnsByName.TryGetValue(columnName, out var column))
+            throw new ArgumentException($"Column '{columnName}' not found", nameof(columnName));
+
+        if (column.IsPrimaryKey)
+            throw new InvalidOperationException($"Cannot drop primary key column '{columnName}'");
+
+        if (_columns.Count <= 1)
+            throw new InvalidOperationException("Cannot drop the last column from a table");
+
+        var ordinal = column.OrdinalPosition;
+        _columns.RemoveAt(ordinal);
+        _columnsByName.Remove(columnName);
+
+        // Update ordinal positions for subsequent columns
+        for (int i = ordinal; i < _columns.Count; i++)
+        {
+            _columns[i].OrdinalPosition = i;
+        }
+
+        ModifiedAt = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Renames a column.
+    /// </summary>
+    /// <param name="oldName">The current column name.</param>
+    /// <param name="newName">The new column name.</param>
+    public void RenameColumn(string oldName, string newName)
+    {
+        if (!_columnsByName.TryGetValue(oldName, out var column))
+            throw new ArgumentException($"Column '{oldName}' not found", nameof(oldName));
+
+        if (_columnsByName.ContainsKey(newName))
+            throw new ArgumentException($"Column '{newName}' already exists", nameof(newName));
+
+        _columnsByName.Remove(oldName);
+        column.Name = newName;
+        _columnsByName[newName] = column;
+
+        ModifiedAt = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Modifies a column's definition.
+    /// </summary>
+    /// <param name="columnName">The column name.</param>
+    /// <param name="newDefinition">The new column definition.</param>
+    public void ModifyColumn(string columnName, ColumnDefinition newDefinition)
+    {
+        if (!_columnsByName.TryGetValue(columnName, out var oldColumn))
+            throw new ArgumentException($"Column '{columnName}' not found", nameof(columnName));
+
+        var ordinal = oldColumn.OrdinalPosition;
+        newDefinition.OrdinalPosition = ordinal;
+
+        _columns[ordinal] = newDefinition;
+        _columnsByName.Remove(columnName);
+        _columnsByName[newDefinition.Name] = newDefinition;
+
+        ModifiedAt = DateTime.UtcNow;
+    }
+
+    #endregion
 
     /// <summary>
     /// Calculates the maximum possible row size in bytes.
