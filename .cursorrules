@@ -1,0 +1,100 @@
+# CyscaleDB Cursor Rules
+
+## 项目概述
+
+CyscaleDB 是一个使用纯 C# 实现的 MySQL 兼容关系型数据库系统。
+
+## 开始新需求前必读
+
+在开始任何新功能开发或修改之前，**必须**先阅读以下文档：
+
+1. **`docs/PROJECT_STATUS.md`** - 了解项目当前进度和各模块状态
+2. **`docs/CAPABILITIES.md`** - 了解现有支持的功能能力，避免重复实现
+3. **`docs/ARCHITECTURE.md`** - 了解系统架构和代码组织结构
+
+## 代码规范
+
+### 命名规范
+- 类名使用 PascalCase
+- 私有字段使用 `_camelCase` (带下划线前缀)
+- 方法名使用 PascalCase
+- 参数和局部变量使用 camelCase
+
+### 文件组织
+- 核心代码在 `src/CyscaleDB.Core/`
+- CLI 工具在 `src/CyscaleDB.Cli/`
+- 服务器在 `src/CyscaleDB.Server/`
+- 测试在 `tests/CyscaleDB.Tests/`
+
+### 模块职责
+
+| 模块 | 职责 |
+|------|------|
+| Common/ | 公共类型、常量、异常、日志 |
+| Parsing/ | SQL 词法分析、语法分析、AST |
+| Execution/ | 查询执行器、算子、表达式求值 |
+| Storage/ | 存储引擎、页面管理、缓冲池 |
+| Transactions/ | 事务管理、锁、WAL日志 |
+| Protocol/ | MySQL 协议实现 |
+
+## 添加新功能时的工作流程
+
+### 1. 新增 SQL 语句支持
+1. 在 `Parsing/Ast/Statements.cs` 添加 AST 节点
+2. 在 `Parsing/Parser.cs` 添加解析逻辑
+3. 在 `Execution/Executor.cs` 添加执行逻辑
+4. 更新 `docs/CAPABILITIES.md`
+
+### 2. 新增算子
+1. 在 `Execution/Operators/` 创建新算子类
+2. 实现 `IOperator` 接口 (Open/Next/Close/Dispose)
+3. 在 `Executor.cs` 中集成
+4. 更新 `docs/CAPABILITIES.md` 和 `docs/ARCHITECTURE.md`
+
+### 3. 新增内置函数
+1. 在 `Executor.cs` 的 `BuildFunctionCall` 方法添加处理
+2. 如需要，创建新的 Evaluator 类
+3. 更新 `docs/CAPABILITIES.md`
+
+### 4. 新增数据类型
+1. 在 `Common/DataType.cs` 添加枚举值
+2. 在 `Common/DataValue.cs` 添加处理方法
+3. 在相关序列化/反序列化代码中添加支持
+4. 更新 `docs/CAPABILITIES.md`
+
+## 测试要求
+
+- 单元测试放在 `tests/CyscaleDB.Tests/`
+- 集成测试放在 `tests/CyscaleDB.Tests/IntegrationTests/`
+- 新功能必须包含对应测试
+
+## 完成功能后
+
+1. 更新 `docs/PROJECT_STATUS.md` 中的进度状态
+2. 更新 `docs/CAPABILITIES.md` 添加新功能说明
+3. 如有架构变更，更新 `docs/ARCHITECTURE.md`
+4. 确保所有测试通过
+
+## 常用命令
+
+```bash
+# 构建项目
+dotnet build
+
+# 运行测试
+dotnet test
+
+# 启动服务器
+dotnet run --project src/CyscaleDB.Server
+
+# 启动 CLI
+dotnet run --project src/CyscaleDB.Cli
+```
+
+## 代码风格
+
+- 使用 C# 最新语法特性
+- 使用文件级命名空间声明
+- 使用记录类型 (record) 表示不可变数据
+- 使用模式匹配简化条件逻辑
+- 添加 XML 文档注释到公共 API

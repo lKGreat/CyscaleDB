@@ -39,7 +39,7 @@ public class MySqlConnectorIntegrationTests : IDisposable
         // Give server time to start
         Thread.Sleep(200);
 
-        _connectionString = $"Server=localhost;Port={_testPort};Database=testdb;User=root;Password=;";
+        _connectionString = $"Server=127.0.0.1;Port={_testPort};Database=testdb;User Id=root;Password=;SslMode=None;AllowPublicKeyRetrieval=true;ConnectionTimeout=5;";
     }
 
     [Fact]
