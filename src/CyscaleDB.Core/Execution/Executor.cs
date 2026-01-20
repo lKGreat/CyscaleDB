@@ -423,6 +423,7 @@ public sealed class Executor
 
     /// <summary>
     /// Materializes CTEs by executing them and storing results.
+    /// For recursive CTEs, iterates until no new rows are produced.
     /// </summary>
     private void MaterializeCtes(WithClause withClause)
     {
@@ -430,15 +431,188 @@ public sealed class Executor
 
         foreach (var cte in withClause.Ctes)
         {
-            // Execute the CTE query
-            var cteOp = BuildSelectOperator(cte.Query);
-            var resultSet = ResultSet.FromOperator(cteOp);
+            if (withClause.IsRecursive && IsRecursiveCte(cte))
+            {
+                MaterializeRecursiveCte(cte);
+            }
+            else
+            {
+                // Execute the non-recursive CTE query
+                var cteOp = BuildSelectOperator(cte.Query);
+                var resultSet = ResultSet.FromOperator(cteOp);
+                cteOp.Dispose();
+
+                // Store the result for later reference
+                _cteResults[cte.Name] = resultSet;
+                _logger.Debug("Materialized CTE '{0}' with {1} rows", cte.Name, resultSet.RowCount);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Checks if a CTE definition is recursive (references itself in the query).
+    /// </summary>
+    private static bool IsRecursiveCte(CteDefinition cte)
+    {
+        return ContainsCteReference(cte.Query, cte.Name);
+    }
+
+    /// <summary>
+    /// Checks if a SELECT statement references a CTE by name.
+    /// </summary>
+    private static bool ContainsCteReference(SelectStatement stmt, string cteName)
+    {
+        // Check FROM clause
+        if (stmt.From != null && ContainsCteReferenceInTableRef(stmt.From, cteName))
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Checks if a table reference references a CTE by name.
+    /// </summary>
+    private static bool ContainsCteReferenceInTableRef(TableReference tableRef, string cteName)
+    {
+        if (tableRef is CteTableReference cteRef && 
+            string.Equals(cteRef.CteName, cteName, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (tableRef is JoinTableReference join)
+        {
+            return ContainsCteReferenceInTableRef(join.Left, cteName) ||
+                   ContainsCteReferenceInTableRef(join.Right, cteName);
+        }
+
+        if (tableRef is SimpleTableReference simple && 
+            string.Equals(simple.TableName, cteName, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Materializes a recursive CTE by iterating until no new rows are produced.
+    /// Recursive CTE structure: anchor_part UNION ALL recursive_part
+    /// </summary>
+    private void MaterializeRecursiveCte(CteDefinition cte)
+    {
+        const int MaxIterations = 1000; // Safety limit to prevent infinite recursion
+        
+        // Split the query into anchor and recursive parts
+        // Typically, a recursive CTE has UNION ALL between anchor and recursive part
+        var query = cte.Query;
+        
+        // Initialize with empty result set for self-reference
+        var emptyResult = CreateEmptyCteResultSet(cte, query);
+        _cteResults[cte.Name] = emptyResult;
+
+        // Execute the query iteratively
+        var allRows = new List<DataValue[]>();
+        int iteration = 0;
+        int previousRowCount = 0;
+
+        while (iteration < MaxIterations)
+        {
+            // Execute the CTE query (which may reference itself)
+            var cteOp = BuildSelectOperator(query);
+            var iterationResult = ResultSet.FromOperator(cteOp);
             cteOp.Dispose();
 
-            // Store the result for later reference
-            _cteResults[cte.Name] = resultSet;
-            _logger.Debug("Materialized CTE '{0}' with {1} rows", cte.Name, resultSet.RowCount);
+            // Collect new rows
+            int newRows = 0;
+            foreach (var row in iterationResult.Rows)
+            {
+                // Only add rows we haven't seen before
+                if (!RowExistsInList(row, allRows))
+                {
+                    allRows.Add(row);
+                    newRows++;
+                }
+            }
+
+            iteration++;
+            _logger.Trace("Recursive CTE '{0}' iteration {1}: {2} new rows", 
+                cte.Name, iteration, newRows);
+
+            // Update the CTE result for the next iteration
+            var updatedResult = CreateEmptyCteResultSet(cte, query);
+            foreach (var row in allRows)
+            {
+                updatedResult.Rows.Add(row);
+            }
+            _cteResults[cte.Name] = updatedResult;
+
+            // Stop if no new rows were produced
+            if (allRows.Count == previousRowCount)
+                break;
+
+            previousRowCount = allRows.Count;
         }
+
+        if (iteration >= MaxIterations)
+        {
+            _logger.Warning("Recursive CTE '{0}' hit maximum iteration limit ({1})", 
+                cte.Name, MaxIterations);
+        }
+
+        _logger.Debug("Materialized recursive CTE '{0}' with {1} rows in {2} iterations", 
+            cte.Name, allRows.Count, iteration);
+    }
+
+    /// <summary>
+    /// Creates an empty result set for a CTE with the proper columns.
+    /// </summary>
+    private static ResultSet CreateEmptyCteResultSet(CteDefinition cte, SelectStatement query)
+    {
+        var result = new ResultSet();
+        
+        // If columns are explicitly specified in the CTE definition, use those
+        if (cte.Columns.Count > 0)
+        {
+            foreach (var colName in cte.Columns)
+            {
+                result.Columns.Add(new ResultColumn { Name = colName, DataType = DataType.VarChar });
+            }
+        }
+        else
+        {
+            // Otherwise, derive from the query's SELECT columns
+            foreach (var col in query.Columns)
+            {
+                var name = col.Alias ?? (col.Expression as ColumnReference)?.ColumnName ?? "column";
+                result.Columns.Add(new ResultColumn { Name = name, DataType = DataType.VarChar });
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Checks if a row already exists in a list of rows.
+    /// </summary>
+    private static bool RowExistsInList(DataValue[] row, List<DataValue[]> rows)
+    {
+        foreach (var existingRow in rows)
+        {
+            if (existingRow.Length != row.Length)
+                continue;
+
+            bool matches = true;
+            for (int i = 0; i < row.Length; i++)
+            {
+                if (!existingRow[i].Equals(row[i]))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>

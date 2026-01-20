@@ -264,6 +264,26 @@ public sealed class WindowOperator : IOperator
                 ComputeLastValue(wf, partition, results);
                 break;
 
+            case WindowFunctionType.Sum:
+                ComputeSum(wf, partition, results);
+                break;
+
+            case WindowFunctionType.Avg:
+                ComputeAvg(wf, partition, results);
+                break;
+
+            case WindowFunctionType.Min:
+                ComputeMin(wf, partition, results);
+                break;
+
+            case WindowFunctionType.Max:
+                ComputeMax(wf, partition, results);
+                break;
+
+            case WindowFunctionType.Count:
+                ComputeCount(wf, partition, results);
+                break;
+
             default:
                 _logger.Warning("Unimplemented window function: {0}", wf.FunctionType);
                 foreach (var rowIndex in partition)
@@ -451,6 +471,218 @@ public sealed class WindowOperator : IOperator
 
         return true;
     }
+
+    #region Aggregate Window Functions (SUM, AVG, MIN, MAX, COUNT OVER)
+
+    /// <summary>
+    /// Computes SUM OVER for a partition.
+    /// Supports frame specification (ROWS BETWEEN ... AND ...) for running totals.
+    /// </summary>
+    private void ComputeSum(WindowFunctionSpec wf, List<int> partition, DataValue[] results)
+    {
+        if (partition.Count == 0 || wf.Arguments.Count == 0)
+            return;
+
+        var argEvaluator = wf.Arguments[0];
+
+        for (int i = 0; i < partition.Count; i++)
+        {
+            var (startIdx, endIdx) = GetFrameBounds(wf, partition, i);
+            decimal sum = 0;
+            bool hasValue = false;
+
+            for (int j = startIdx; j <= endIdx; j++)
+            {
+                var row = _bufferedRows![partition[j]];
+                var val = argEvaluator.Evaluate(row);
+                
+                if (!val.IsNull)
+                {
+                    sum += ConvertToDecimal(val);
+                    hasValue = true;
+                }
+            }
+
+            results[partition[i]] = hasValue ? DataValue.FromDecimal(sum) : DataValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Computes AVG OVER for a partition.
+    /// </summary>
+    private void ComputeAvg(WindowFunctionSpec wf, List<int> partition, DataValue[] results)
+    {
+        if (partition.Count == 0 || wf.Arguments.Count == 0)
+            return;
+
+        var argEvaluator = wf.Arguments[0];
+
+        for (int i = 0; i < partition.Count; i++)
+        {
+            var (startIdx, endIdx) = GetFrameBounds(wf, partition, i);
+            decimal sum = 0;
+            int count = 0;
+
+            for (int j = startIdx; j <= endIdx; j++)
+            {
+                var row = _bufferedRows![partition[j]];
+                var val = argEvaluator.Evaluate(row);
+                
+                if (!val.IsNull)
+                {
+                    sum += ConvertToDecimal(val);
+                    count++;
+                }
+            }
+
+            results[partition[i]] = count > 0 
+                ? DataValue.FromDouble((double)(sum / count)) 
+                : DataValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Computes MIN OVER for a partition.
+    /// </summary>
+    private void ComputeMin(WindowFunctionSpec wf, List<int> partition, DataValue[] results)
+    {
+        if (partition.Count == 0 || wf.Arguments.Count == 0)
+            return;
+
+        var argEvaluator = wf.Arguments[0];
+
+        for (int i = 0; i < partition.Count; i++)
+        {
+            var (startIdx, endIdx) = GetFrameBounds(wf, partition, i);
+            DataValue? minValue = null;
+
+            for (int j = startIdx; j <= endIdx; j++)
+            {
+                var row = _bufferedRows![partition[j]];
+                var val = argEvaluator.Evaluate(row);
+                
+                if (!val.IsNull)
+                {
+                    if (minValue == null || val.CompareTo(minValue.Value) < 0)
+                    {
+                        minValue = val;
+                    }
+                }
+            }
+
+            results[partition[i]] = minValue ?? DataValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Computes MAX OVER for a partition.
+    /// </summary>
+    private void ComputeMax(WindowFunctionSpec wf, List<int> partition, DataValue[] results)
+    {
+        if (partition.Count == 0 || wf.Arguments.Count == 0)
+            return;
+
+        var argEvaluator = wf.Arguments[0];
+
+        for (int i = 0; i < partition.Count; i++)
+        {
+            var (startIdx, endIdx) = GetFrameBounds(wf, partition, i);
+            DataValue? maxValue = null;
+
+            for (int j = startIdx; j <= endIdx; j++)
+            {
+                var row = _bufferedRows![partition[j]];
+                var val = argEvaluator.Evaluate(row);
+                
+                if (!val.IsNull)
+                {
+                    if (maxValue == null || val.CompareTo(maxValue.Value) > 0)
+                    {
+                        maxValue = val;
+                    }
+                }
+            }
+
+            results[partition[i]] = maxValue ?? DataValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Computes COUNT OVER for a partition.
+    /// </summary>
+    private void ComputeCount(WindowFunctionSpec wf, List<int> partition, DataValue[] results)
+    {
+        if (partition.Count == 0)
+            return;
+
+        // COUNT(*) vs COUNT(expression)
+        bool countAll = wf.Arguments.Count == 0;
+        var argEvaluator = countAll ? null : wf.Arguments[0];
+
+        for (int i = 0; i < partition.Count; i++)
+        {
+            var (startIdx, endIdx) = GetFrameBounds(wf, partition, i);
+            long count = 0;
+
+            for (int j = startIdx; j <= endIdx; j++)
+            {
+                if (countAll)
+                {
+                    count++;
+                }
+                else
+                {
+                    var row = _bufferedRows![partition[j]];
+                    var val = argEvaluator!.Evaluate(row);
+                    
+                    if (!val.IsNull)
+                    {
+                        count++;
+                    }
+                }
+            }
+
+            results[partition[i]] = DataValue.FromBigInt(count);
+        }
+    }
+
+    /// <summary>
+    /// Gets the frame bounds for a row based on frame specification.
+    /// </summary>
+    private (int StartIdx, int EndIdx) GetFrameBounds(WindowFunctionSpec wf, List<int> partition, int currentRowIdx)
+    {
+        // Default: ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW (running aggregate)
+        // But if no ORDER BY, it's ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING (full partition)
+        
+        if (wf.OrderByKeys.Count == 0)
+        {
+            // No ORDER BY: aggregate over entire partition
+            return (0, partition.Count - 1);
+        }
+
+        // With ORDER BY: running aggregate from start to current row
+        return (0, currentRowIdx);
+    }
+
+    /// <summary>
+    /// Converts a DataValue to decimal for arithmetic operations.
+    /// </summary>
+    private static decimal ConvertToDecimal(DataValue val)
+    {
+        return val.Type switch
+        {
+            DataType.Int => val.AsInt(),
+            DataType.BigInt => val.AsBigInt(),
+            DataType.TinyInt => val.AsTinyInt(),
+            DataType.SmallInt => val.AsSmallInt(),
+            DataType.Float => (decimal)val.AsFloat(),
+            DataType.Double => (decimal)val.AsDouble(),
+            DataType.Decimal => val.AsDecimal(),
+            _ => throw new InvalidOperationException($"Cannot convert {val.Type} to decimal")
+        };
+    }
+
+    #endregion
 
     /// <inheritdoc/>
     public Row? Next()

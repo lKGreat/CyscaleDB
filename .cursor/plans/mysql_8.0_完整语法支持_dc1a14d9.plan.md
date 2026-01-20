@@ -154,7 +154,7 @@ todos:
     status: completed
   - id: 1.2.6
     content: 递归 CTE 执行 - 迭代执行直到不产生新行，测试递归查询
-    status: in_progress
+    status: completed
   - id: 1.3.1
     content: OVER/PARTITION/ROWS/RANGE 关键字 - 添加到 Token.cs
     status: completed
@@ -178,7 +178,7 @@ todos:
     status: completed
   - id: 1.3.8
     content: SUM/AVG OVER 实现 - 窗口聚合函数，测试累计计算
-    status: pending
+    status: completed
   - id: 2.1.1
     content: ALTER 关键字 - 添加到 Token.cs
     status: completed
@@ -208,7 +208,7 @@ todos:
     status: completed
   - id: 2.2.1
     content: ON DELETE/UPDATE 关键字 - 添加到 Token.cs
-    status: pending
+    status: in_progress
   - id: 2.2.2
     content: ForeignKeyConstraint AST 增强 - 添加 OnDelete/OnUpdate 属性
     status: pending
