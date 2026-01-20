@@ -172,17 +172,27 @@ public sealed class Parser
             stmt.OrderBy = ParseOrderByList();
         }
 
-        // LIMIT clause
+        // LIMIT clause - supports both "LIMIT count [OFFSET offset]" and "LIMIT offset, count"
         if (Check(TokenType.LIMIT))
         {
             Advance();
-            stmt.Limit = ParseInteger();
+            var firstNum = ParseInteger();
 
-            // OFFSET clause
-            if (Check(TokenType.OFFSET))
+            if (Match(TokenType.Comma))
             {
-                Advance();
-                stmt.Offset = ParseInteger();
+                // MySQL syntax: LIMIT offset, count (offset comes first!)
+                stmt.Offset = firstNum;
+                stmt.Limit = ParseInteger();
+            }
+            else
+            {
+                stmt.Limit = firstNum;
+                // OFFSET clause
+                if (Check(TokenType.OFFSET))
+                {
+                    Advance();
+                    stmt.Offset = ParseInteger();
+                }
             }
         }
 
@@ -249,15 +259,26 @@ public sealed class Parser
             }
 
             // LIMIT clause (only allowed on the last UNION query)
+            // Supports both "LIMIT count [OFFSET offset]" and "LIMIT offset, count"
             if (Check(TokenType.LIMIT))
             {
                 Advance();
-                unionStmt.Limit = ParseInteger();
+                var firstNum = ParseInteger();
 
-                if (Check(TokenType.OFFSET))
+                if (Match(TokenType.Comma))
                 {
-                    Advance();
-                    unionStmt.Offset = ParseInteger();
+                    // MySQL syntax: LIMIT offset, count (offset comes first!)
+                    unionStmt.Offset = firstNum;
+                    unionStmt.Limit = ParseInteger();
+                }
+                else
+                {
+                    unionStmt.Limit = firstNum;
+                    if (Check(TokenType.OFFSET))
+                    {
+                        Advance();
+                        unionStmt.Offset = ParseInteger();
+                    }
                 }
             }
 
@@ -1696,6 +1717,13 @@ public sealed class Parser
                 Operator = UnaryOperator.Negate,
                 Operand = ParseUnaryExpression()
             };
+        }
+
+        // BINARY keyword for case-sensitive comparison - just pass through for compatibility
+        // CyscaleDB treats it as a no-op since we don't have collation-based comparisons
+        if (Match(TokenType.BINARY))
+        {
+            return ParseUnaryExpression();
         }
 
         return ParsePrimaryExpression();

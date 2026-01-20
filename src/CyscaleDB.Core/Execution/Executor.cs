@@ -1738,7 +1738,9 @@ public sealed class Executor
             "LENGTH" or "CHAR_LENGTH" or "CHARACTER_LENGTH" => BuildLengthFunction(func, schema),
             "CONCAT" => BuildConcatFunction(func, schema),
             "IFNULL" or "COALESCE" => BuildIfNullFunction(func, schema),
+            "ISNULL" => BuildIsNullFunction(func, schema),
             "IF" => BuildIfFunction(func, schema),
+            "FIELD" => BuildFieldFunction(func, schema),
             _ when IsAggregateFunction(funcName) => 
                 // Aggregates in non-GROUP BY context - return constant for now
                 new ConstantEvaluator(DataValue.Null),
@@ -1789,6 +1791,27 @@ public sealed class Executor
         var trueVal = BuildExpression(func.Arguments[1], schema);
         var falseVal = BuildExpression(func.Arguments[2], schema);
         return new IfEvaluator(condition, trueVal, falseVal);
+    }
+
+    private IExpressionEvaluator BuildIsNullFunction(FunctionCall func, TableSchema schema)
+    {
+        // ISNULL(expr) returns 1 if expr is NULL, 0 otherwise
+        if (func.Arguments.Count < 1)
+            throw new CyscaleException("ISNULL requires 1 argument");
+
+        var expr = BuildExpression(func.Arguments[0], schema);
+        return new IsNullFunctionEvaluator(expr);
+    }
+
+    private IExpressionEvaluator BuildFieldFunction(FunctionCall func, TableSchema schema)
+    {
+        // FIELD(str, str1, str2, ...) returns index position of str in str1,str2,... list (1-based, 0 if not found)
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException("FIELD requires at least 2 arguments");
+
+        var search = BuildExpression(func.Arguments[0], schema);
+        var list = func.Arguments.Skip(1).Select(a => BuildExpression(a, schema)).ToList();
+        return new FieldFunctionEvaluator(search, list);
     }
 
     private IExpressionEvaluator BuildExpressionWithJoin(Expression expr, TableSchema leftSchema, TableSchema rightSchema, TableSchema combinedSchema)
@@ -2216,6 +2239,59 @@ internal sealed class IfEvaluator : IExpressionEvaluator
         var cond = _condition.Evaluate(row);
         var isTrue = !cond.IsNull && cond.Type == DataType.Boolean && cond.AsBoolean();
         return isTrue ? _trueValue.Evaluate(row) : _falseValue.Evaluate(row);
+    }
+}
+
+/// <summary>
+/// Evaluates ISNULL function - returns 1 if expr is NULL, 0 otherwise.
+/// Note: This is different from IFNULL(expr, default) which replaces NULL values.
+/// </summary>
+internal sealed class IsNullFunctionEvaluator : IExpressionEvaluator
+{
+    private readonly IExpressionEvaluator _expression;
+
+    public IsNullFunctionEvaluator(IExpressionEvaluator expression)
+    {
+        _expression = expression;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        var val = _expression.Evaluate(row);
+        return DataValue.FromInt(val.IsNull ? 1 : 0);
+    }
+}
+
+/// <summary>
+/// Evaluates FIELD function - returns index position (1-based) of search value in list, or 0 if not found.
+/// </summary>
+internal sealed class FieldFunctionEvaluator : IExpressionEvaluator
+{
+    private readonly IExpressionEvaluator _search;
+    private readonly List<IExpressionEvaluator> _list;
+
+    public FieldFunctionEvaluator(IExpressionEvaluator search, List<IExpressionEvaluator> list)
+    {
+        _search = search;
+        _list = list;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        var searchVal = _search.Evaluate(row);
+        if (searchVal.IsNull)
+            return DataValue.FromInt(0);
+
+        var searchStr = searchVal.AsString();
+        for (int i = 0; i < _list.Count; i++)
+        {
+            var listVal = _list[i].Evaluate(row);
+            if (!listVal.IsNull && string.Equals(searchStr, listVal.AsString(), StringComparison.OrdinalIgnoreCase))
+            {
+                return DataValue.FromInt(i + 1); // 1-based index
+            }
+        }
+        return DataValue.FromInt(0);
     }
 }
 

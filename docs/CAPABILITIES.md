@@ -46,6 +46,13 @@
 | COLUMNS | ✅ | 列信息 |
 | STATISTICS | ✅ | 索引统计 |
 | ENGINES | ✅ | 存储引擎信息 |
+| VIEWS | ✅ | 视图定义 |
+| TRIGGERS | ✅ | 触发器定义 (空表桩) |
+| ROUTINES | ✅ | 存储过程 (空表桩) |
+| PARAMETERS | ✅ | 存储过程参数 (空表桩) |
+| FILES | ✅ | 表空间文件 (空表桩) |
+| KEY_COLUMN_USAGE | ✅ | 外键信息 (空表桩) |
+| REFERENTIAL_CONSTRAINTS | ✅ | 外键约束 (空表桩) |
 
 ---
 
@@ -91,6 +98,7 @@
 | ORDER BY | ✅ | `SELECT * FROM users ORDER BY created_at DESC` |
 | LIMIT | ✅ | `SELECT * FROM users LIMIT 10` |
 | OFFSET | ✅ | `SELECT * FROM users LIMIT 10 OFFSET 20` |
+| LIMIT offset,count | ✅ | `SELECT * FROM users LIMIT 20, 10` (MySQL语法) |
 
 ### 聚合函数
 
@@ -135,6 +143,8 @@
 | IF(cond, true_val, false_val) | ✅ | 条件判断 |
 | IFNULL(expr, default) | ✅ | NULL 替换 |
 | COALESCE(expr, default) | ✅ | 同 IFNULL |
+| ISNULL(expr) | ✅ | 判断是否为NULL (返回1或0) |
+| FIELD(str, str1, str2, ...) | ✅ | 返回str在列表中的位置 (1-based) |
 
 ### 系统信息函数
 
@@ -225,6 +235,14 @@
 | 默认端口 | 3306 | |
 | 认证 | ⚠️ | MVP阶段跳过密码验证 |
 | 多语句支持 | ✅ | 支持用分号分隔的多条SQL语句 |
+
+### MySQL 客户端兼容性
+
+| 特性 | 状态 | 说明 |
+|------|------|------|
+| BINARY 关键字 | ✅ | 解析支持，作为透传处理 (无排序规则区分) |
+| LIMIT offset,count | ✅ | 支持MySQL简写语法 |
+| information_schema | ✅ | 支持常用元数据表 |
 
 ---
 

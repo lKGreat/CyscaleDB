@@ -208,6 +208,9 @@ public enum TokenType
     // Aggregate function keywords
     SEPARATOR,          // SEPARATOR (for GROUP_CONCAT)
 
+    // Comparison/cast keywords
+    BINARY,             // BINARY (for case-sensitive comparison)
+
     // System variable prefix
     AtAt,               // @@
 }
@@ -344,6 +347,9 @@ public static class Keywords
 
         // Aggregate function keywords
         ["SEPARATOR"] = TokenType.SEPARATOR,
+
+        // Comparison/cast keywords
+        ["BINARY"] = TokenType.BINARY,
     };
 
     /// <summary>

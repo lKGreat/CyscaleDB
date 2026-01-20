@@ -30,7 +30,9 @@ public sealed class InformationSchemaProvider
         "PARAMETERS",
         "FILES",
         "KEY_COLUMN_USAGE",
-        "REFERENTIAL_CONSTRAINTS"
+        "REFERENTIAL_CONSTRAINTS",
+        "VIEWS",
+        "TRIGGERS"
     ];
 
     public InformationSchemaProvider(Catalog catalog)
@@ -63,6 +65,8 @@ public sealed class InformationSchemaProvider
             "FILES" => GetFiles(),
             "KEY_COLUMN_USAGE" => GetKeyColumnUsage(filterSchema, filterTable),
             "REFERENTIAL_CONSTRAINTS" => GetReferentialConstraints(filterSchema, filterTable),
+            "VIEWS" => GetViews(filterSchema, filterTable),
+            "TRIGGERS" => GetTriggers(filterSchema, filterTable),
             _ => throw new CyscaleException($"Unknown information_schema table: {tableName}")
         };
     }
@@ -84,6 +88,8 @@ public sealed class InformationSchemaProvider
             "FILES" => CreateFilesSchema(),
             "KEY_COLUMN_USAGE" => CreateKeyColumnUsageSchema(),
             "REFERENTIAL_CONSTRAINTS" => CreateReferentialConstraintsSchema(),
+            "VIEWS" => CreateViewsSchema(),
+            "TRIGGERS" => CreateTriggersSchema(),
             _ => throw new CyscaleException($"Unknown information_schema table: {tableName}")
         };
     }
@@ -506,6 +512,98 @@ public sealed class InformationSchemaProvider
     {
         // Return empty result - CyscaleDB doesn't track foreign keys yet
         return ResultSet.FromSchema(CreateReferentialConstraintsSchema());
+    }
+
+    #endregion
+
+    #region VIEWS (View definitions)
+
+    private static TableSchema CreateViewsSchema()
+    {
+        return new TableSchema(0, DatabaseName, "VIEWS",
+        [
+            new ColumnDefinition("TABLE_CATALOG", DataType.VarChar, 64),
+            new ColumnDefinition("TABLE_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("TABLE_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("VIEW_DEFINITION", DataType.Text),
+            new ColumnDefinition("CHECK_OPTION", DataType.VarChar, 8),
+            new ColumnDefinition("IS_UPDATABLE", DataType.VarChar, 3),
+            new ColumnDefinition("DEFINER", DataType.VarChar, 288),
+            new ColumnDefinition("SECURITY_TYPE", DataType.VarChar, 7),
+            new ColumnDefinition("CHARACTER_SET_CLIENT", DataType.VarChar, 32),
+            new ColumnDefinition("COLLATION_CONNECTION", DataType.VarChar, 32)
+        ]);
+    }
+
+    private ResultSet GetViews(string? filterSchema, string? filterTable)
+    {
+        var result = ResultSet.FromSchema(CreateViewsSchema());
+
+        foreach (var db in _catalog.Databases)
+        {
+            if (filterSchema != null && !db.Name.Equals(filterSchema, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            foreach (var view in db.Views)
+            {
+                if (filterTable != null && !view.ViewName.Equals(filterTable, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                result.Rows.Add([
+                    DataValue.FromVarChar("def"),
+                    DataValue.FromVarChar(db.Name),
+                    DataValue.FromVarChar(view.ViewName),
+                    DataValue.FromVarChar(view.Definition),
+                    DataValue.FromVarChar("NONE"),
+                    DataValue.FromVarChar("NO"),
+                    DataValue.FromVarChar("root@localhost"),
+                    DataValue.FromVarChar("DEFINER"),
+                    DataValue.FromVarChar("utf8mb4"),
+                    DataValue.FromVarChar("utf8mb4_general_ci")
+                ]);
+            }
+        }
+
+        return result;
+    }
+
+    #endregion
+
+    #region TRIGGERS (Trigger definitions - stub)
+
+    private static TableSchema CreateTriggersSchema()
+    {
+        return new TableSchema(0, DatabaseName, "TRIGGERS",
+        [
+            new ColumnDefinition("TRIGGER_CATALOG", DataType.VarChar, 64),
+            new ColumnDefinition("TRIGGER_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("TRIGGER_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("EVENT_MANIPULATION", DataType.VarChar, 6),
+            new ColumnDefinition("EVENT_OBJECT_CATALOG", DataType.VarChar, 64),
+            new ColumnDefinition("EVENT_OBJECT_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("EVENT_OBJECT_TABLE", DataType.VarChar, 64),
+            new ColumnDefinition("ACTION_ORDER", DataType.Int),
+            new ColumnDefinition("ACTION_CONDITION", DataType.Text),
+            new ColumnDefinition("ACTION_STATEMENT", DataType.Text),
+            new ColumnDefinition("ACTION_ORIENTATION", DataType.VarChar, 9),
+            new ColumnDefinition("ACTION_TIMING", DataType.VarChar, 6),
+            new ColumnDefinition("ACTION_REFERENCE_OLD_TABLE", DataType.VarChar, 64),
+            new ColumnDefinition("ACTION_REFERENCE_NEW_TABLE", DataType.VarChar, 64),
+            new ColumnDefinition("ACTION_REFERENCE_OLD_ROW", DataType.VarChar, 3),
+            new ColumnDefinition("ACTION_REFERENCE_NEW_ROW", DataType.VarChar, 3),
+            new ColumnDefinition("CREATED", DataType.DateTime),
+            new ColumnDefinition("SQL_MODE", DataType.VarChar, 8192),
+            new ColumnDefinition("DEFINER", DataType.VarChar, 288),
+            new ColumnDefinition("CHARACTER_SET_CLIENT", DataType.VarChar, 32),
+            new ColumnDefinition("COLLATION_CONNECTION", DataType.VarChar, 32),
+            new ColumnDefinition("DATABASE_COLLATION", DataType.VarChar, 32)
+        ]);
+    }
+
+    private ResultSet GetTriggers(string? filterSchema, string? filterTable)
+    {
+        // Return empty result - CyscaleDB doesn't support triggers yet
+        return ResultSet.FromSchema(CreateTriggersSchema());
     }
 
     #endregion
