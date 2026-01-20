@@ -76,7 +76,7 @@ todos:
     status: completed
   - id: 0.7.3
     content: NextKeyLock 实现 - 组合记录锁和间隙锁，测试临键锁
-    status: pending
+    status: in_progress
   - id: 0.7.4
     content: 意向锁实现 - 表级 IS/IX 锁，测试意向锁兼容性
     status: pending

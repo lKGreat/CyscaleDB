@@ -38,6 +38,22 @@ public enum RecordLockType : byte
 }
 
 /// <summary>
+/// Lock mode for record-level locking.
+/// </summary>
+public enum RecordLockMode : byte
+{
+    /// <summary>
+    /// Shared lock (S) - for reading.
+    /// </summary>
+    Shared = 0,
+
+    /// <summary>
+    /// Exclusive lock (X) - for writing.
+    /// </summary>
+    Exclusive = 1
+}
+
+/// <summary>
 /// Represents a lock on an index record.
 /// This is used for row-level locking in InnoDB-style MVCC.
 /// </summary>
@@ -367,6 +383,320 @@ public sealed class RecordLockManager
                 waitingLock.Grant();
                 _logger.Debug("Granted waiting lock: {0}", waitingLock);
             }
+        }
+    }
+}
+
+/// <summary>
+/// Represents a next-key lock that combines a record lock and a gap lock.
+/// In InnoDB, a next-key lock locks:
+/// 1. The index record (record lock)
+/// 2. The gap before the index record (gap lock)
+/// 
+/// This is the default lock type for REPEATABLE READ isolation level.
+/// It prevents phantom reads by locking the gap where new rows could be inserted.
+/// </summary>
+public sealed class NextKeyLock
+{
+    /// <summary>
+    /// The record lock component (locks the actual record).
+    /// </summary>
+    public RecordLock RecordLock { get; }
+
+    /// <summary>
+    /// The gap lock component (locks the gap before the record).
+    /// </summary>
+    public GapLock GapLock { get; }
+
+    /// <summary>
+    /// The database name.
+    /// </summary>
+    public string DatabaseName => RecordLock.DatabaseName;
+
+    /// <summary>
+    /// The table name.
+    /// </summary>
+    public string TableName => RecordLock.TableName;
+
+    /// <summary>
+    /// The index name.
+    /// </summary>
+    public string IndexName => RecordLock.IndexName;
+
+    /// <summary>
+    /// The transaction holding this lock.
+    /// </summary>
+    public long TransactionId => RecordLock.TransactionId;
+
+    /// <summary>
+    /// The lock mode (Shared or Exclusive).
+    /// </summary>
+    public RecordLockMode Mode { get; }
+
+    /// <summary>
+    /// When this lock was acquired.
+    /// </summary>
+    public DateTime AcquiredAt { get; }
+
+    /// <summary>
+    /// Creates a new next-key lock.
+    /// </summary>
+    /// <param name="databaseName">Database name</param>
+    /// <param name="tableName">Table name</param>
+    /// <param name="indexName">Index name</param>
+    /// <param name="previousKey">The key before the locked record (lower bound of gap)</param>
+    /// <param name="key">The key being locked (upper bound of gap, includes record)</param>
+    /// <param name="transactionId">Transaction ID</param>
+    /// <param name="mode">Lock mode (Shared or Exclusive)</param>
+    public NextKeyLock(
+        string databaseName,
+        string tableName,
+        string indexName,
+        CompositeKey? previousKey,
+        CompositeKey key,
+        long transactionId,
+        RecordLockMode mode = RecordLockMode.Exclusive)
+    {
+        // Create the record lock component
+        RecordLock = new RecordLock(
+            databaseName, tableName, indexName, key, transactionId,
+            mode == RecordLockMode.Shared ? RecordLockType.Shared : RecordLockType.Exclusive);
+
+        // Create the gap lock component (locks the gap before the record)
+        GapLock = new GapLock(
+            databaseName, tableName, indexName,
+            previousKey, key, transactionId,
+            isNextKeyLock: true);
+
+        Mode = mode;
+        AcquiredAt = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Creates a next-key lock from existing record and gap locks.
+    /// </summary>
+    public NextKeyLock(RecordLock recordLock, GapLock gapLock, RecordLockMode mode)
+    {
+        RecordLock = recordLock ?? throw new ArgumentNullException(nameof(recordLock));
+        GapLock = gapLock ?? throw new ArgumentNullException(nameof(gapLock));
+        Mode = mode;
+        AcquiredAt = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Checks if this next-key lock conflicts with another next-key lock.
+    /// </summary>
+    public bool ConflictsWith(NextKeyLock other)
+    {
+        // Same transaction doesn't conflict with itself
+        if (TransactionId == other.TransactionId)
+            return false;
+
+        // Check record lock conflict
+        if (RecordLock.ConflictsWith(other.RecordLock))
+            return true;
+
+        // Gap locks don't conflict with each other (only prevent inserts)
+        return false;
+    }
+
+    /// <summary>
+    /// Checks if this next-key lock would block an insert.
+    /// </summary>
+    public bool BlocksInsert(CompositeKey insertKey, long insertTransactionId)
+    {
+        // Same transaction doesn't block itself
+        if (TransactionId == insertTransactionId)
+            return false;
+
+        // Check if the gap lock blocks the insert
+        return GapLock.BlocksInsert(insertKey, insertTransactionId);
+    }
+
+    /// <summary>
+    /// Gets a unique identifier for this lock.
+    /// </summary>
+    public string GetLockId()
+    {
+        return $"{DatabaseName}.{TableName}.{IndexName}:NK({RecordLock.Key})";
+    }
+
+    public override string ToString()
+    {
+        return $"NextKeyLock({Mode}) on {GetLockId()} by Tx{TransactionId}";
+    }
+}
+
+/// <summary>
+/// Manages next-key locks for preventing phantom reads.
+/// </summary>
+public sealed class NextKeyLockManager
+{
+    private readonly RecordLockManager _recordLockManager;
+    private readonly GapLockManager _gapLockManager;
+    private readonly Dictionary<long, List<NextKeyLock>> _locksByTransaction = [];
+    private readonly object _lock = new();
+    private readonly Logger _logger;
+
+    public NextKeyLockManager(RecordLockManager? recordLockManager = null, GapLockManager? gapLockManager = null)
+    {
+        _recordLockManager = recordLockManager ?? new RecordLockManager();
+        _gapLockManager = gapLockManager ?? new GapLockManager();
+        _logger = LogManager.Default.GetLogger<NextKeyLockManager>();
+    }
+
+    /// <summary>
+    /// Gets the underlying record lock manager.
+    /// </summary>
+    public RecordLockManager RecordLockManager => _recordLockManager;
+
+    /// <summary>
+    /// Gets the underlying gap lock manager.
+    /// </summary>
+    public GapLockManager GapLockManager => _gapLockManager;
+
+    /// <summary>
+    /// Acquires a next-key lock (record + gap before it).
+    /// </summary>
+    /// <param name="databaseName">Database name</param>
+    /// <param name="tableName">Table name</param>
+    /// <param name="indexName">Index name</param>
+    /// <param name="previousKey">The key before the locked record (null for first record)</param>
+    /// <param name="key">The key being locked</param>
+    /// <param name="transactionId">Transaction ID</param>
+    /// <param name="mode">Lock mode</param>
+    /// <returns>The acquired next-key lock</returns>
+    public NextKeyLock AcquireNextKeyLock(
+        string databaseName,
+        string tableName,
+        string indexName,
+        CompositeKey? previousKey,
+        CompositeKey key,
+        long transactionId,
+        RecordLockMode mode = RecordLockMode.Exclusive)
+    {
+        lock (_lock)
+        {
+            // Acquire the record lock
+            var recordLockType = mode == RecordLockMode.Shared 
+                ? RecordLockType.Shared 
+                : RecordLockType.Exclusive;
+            
+            var recordLock = _recordLockManager.AcquireLock(
+                databaseName, tableName, indexName, key, transactionId, recordLockType);
+
+            // Acquire the gap lock
+            var gapLock = _gapLockManager.AcquireNextKeyLock(
+                databaseName, tableName, indexName, previousKey, key, transactionId);
+
+            // Create and track the combined lock
+            var nextKeyLock = new NextKeyLock(recordLock!, gapLock, mode);
+
+            if (!_locksByTransaction.TryGetValue(transactionId, out var txLocks))
+            {
+                txLocks = [];
+                _locksByTransaction[transactionId] = txLocks;
+            }
+            txLocks.Add(nextKeyLock);
+
+            _logger.Debug("Acquired next-key lock: {0}", nextKeyLock);
+            return nextKeyLock;
+        }
+    }
+
+    /// <summary>
+    /// Acquires next-key locks for a range scan.
+    /// This is used for SELECT ... WHERE col BETWEEN x AND y FOR UPDATE.
+    /// </summary>
+    public List<NextKeyLock> AcquireRangeLocks(
+        string databaseName,
+        string tableName,
+        string indexName,
+        IEnumerable<CompositeKey> keys,
+        long transactionId,
+        RecordLockMode mode = RecordLockMode.Exclusive)
+    {
+        var locks = new List<NextKeyLock>();
+        CompositeKey? previousKey = null;
+
+        foreach (var key in keys)
+        {
+            var nkLock = AcquireNextKeyLock(
+                databaseName, tableName, indexName,
+                previousKey, key, transactionId, mode);
+            locks.Add(nkLock);
+            previousKey = key;
+        }
+
+        return locks;
+    }
+
+    /// <summary>
+    /// Checks if an insert would be blocked by any next-key lock.
+    /// </summary>
+    public bool IsInsertBlocked(
+        string databaseName,
+        string tableName,
+        string indexName,
+        CompositeKey key,
+        long transactionId)
+    {
+        // Delegate to gap lock manager
+        return _gapLockManager.IsInsertBlocked(databaseName, tableName, indexName, key, transactionId);
+    }
+
+    /// <summary>
+    /// Releases all locks held by a transaction.
+    /// </summary>
+    public void ReleaseTransactionLocks(long transactionId)
+    {
+        lock (_lock)
+        {
+            // Release from underlying managers
+            _recordLockManager.ReleaseTransactionLocks(transactionId);
+            _gapLockManager.ReleaseTransactionLocks(transactionId);
+
+            // Remove from our tracking
+            _locksByTransaction.Remove(transactionId);
+            _logger.Debug("Released all next-key locks for Tx{0}", transactionId);
+        }
+    }
+
+    /// <summary>
+    /// Releases a specific next-key lock.
+    /// </summary>
+    public void ReleaseLock(NextKeyLock nextKeyLock)
+    {
+        lock (_lock)
+        {
+            _recordLockManager.ReleaseLock(nextKeyLock.RecordLock);
+            _gapLockManager.ReleaseLock(nextKeyLock.GapLock);
+
+            if (_locksByTransaction.TryGetValue(nextKeyLock.TransactionId, out var txLocks))
+            {
+                txLocks.Remove(nextKeyLock);
+                if (txLocks.Count == 0)
+                {
+                    _locksByTransaction.Remove(nextKeyLock.TransactionId);
+                }
+            }
+
+            _logger.Debug("Released next-key lock: {0}", nextKeyLock);
+        }
+    }
+
+    /// <summary>
+    /// Gets all next-key locks held by a transaction.
+    /// </summary>
+    public IReadOnlyList<NextKeyLock> GetTransactionLocks(long transactionId)
+    {
+        lock (_lock)
+        {
+            if (_locksByTransaction.TryGetValue(transactionId, out var locks))
+            {
+                return locks.AsReadOnly();
+            }
+            return [];
         }
     }
 }
