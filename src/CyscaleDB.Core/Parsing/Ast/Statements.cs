@@ -71,7 +71,51 @@ public class SelectStatement : Statement
     /// </summary>
     public List<bool> UnionAllFlags { get; set; } = [];
 
+    /// <summary>
+    /// Locking mode for the SELECT statement (FOR UPDATE/FOR SHARE).
+    /// </summary>
+    public SelectLockMode LockMode { get; set; } = SelectLockMode.None;
+
+    /// <summary>
+    /// Tables to lock (for FOR UPDATE OF table1, table2).
+    /// If empty, locks all tables in the query.
+    /// </summary>
+    public List<string> LockTables { get; set; } = [];
+
+    /// <summary>
+    /// Whether to use NOWAIT (fail immediately if lock cannot be acquired).
+    /// </summary>
+    public bool NoWait { get; set; }
+
+    /// <summary>
+    /// Whether to use SKIP LOCKED (skip rows that are locked).
+    /// </summary>
+    public bool SkipLocked { get; set; }
+
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitSelectStatement(this);
+}
+
+/// <summary>
+/// Locking modes for SELECT statements.
+/// </summary>
+public enum SelectLockMode
+{
+    /// <summary>
+    /// No locking (normal SELECT for snapshot read).
+    /// </summary>
+    None = 0,
+
+    /// <summary>
+    /// FOR UPDATE - acquires exclusive locks on selected rows.
+    /// Prevents other transactions from reading (in some modes) or modifying the rows.
+    /// </summary>
+    ForUpdate = 1,
+
+    /// <summary>
+    /// FOR SHARE (or LOCK IN SHARE MODE) - acquires shared locks on selected rows.
+    /// Allows other transactions to read but not modify the rows.
+    /// </summary>
+    ForShare = 2
 }
 
 /// <summary>

@@ -228,6 +228,15 @@ public enum TokenType
     ELSE,
     END,
 
+    // Locking keywords
+    FOR,
+    SHARE,
+    NOWAIT,
+    SKIP,
+    LOCKED,
+    LOCK,
+    MODE,
+
     // System variable prefix
     AtAt,               // @@
 }
@@ -384,6 +393,15 @@ public static class Keywords
         ["THEN"] = TokenType.THEN,
         ["ELSE"] = TokenType.ELSE,
         ["END"] = TokenType.END,
+
+        // Locking keywords
+        ["FOR"] = TokenType.FOR,
+        ["SHARE"] = TokenType.SHARE,
+        ["NOWAIT"] = TokenType.NOWAIT,
+        ["SKIP"] = TokenType.SKIP,
+        ["LOCKED"] = TokenType.LOCKED,
+        ["LOCK"] = TokenType.LOCK,
+        ["MODE"] = TokenType.MODE,
     };
 
     /// <summary>

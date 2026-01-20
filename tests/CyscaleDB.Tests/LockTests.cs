@@ -1,5 +1,6 @@
 using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Storage.Index;
+using CyscaleDB.Core.Transactions;
 using Xunit;
 
 namespace CyscaleDB.Tests;
@@ -435,6 +436,255 @@ public class LockTests
         Assert.True(manager.IsInsertBlocked("testdb", "users", "PRIMARY", MakeKey(5), 101));
 
         Assert.False(manager.IsInsertBlocked("testdb", "users", "PRIMARY", MakeKey(15), 101));
+    }
+
+    #endregion
+
+    #region IntentLock Tests
+
+    [Fact]
+    public void IntentLock_Creation_SetsPropertiesCorrectly()
+    {
+        var intentLock = new IntentLock("testdb", "users", 100, LockMode.IntentShared);
+
+        Assert.Equal("testdb", intentLock.DatabaseName);
+        Assert.Equal("users", intentLock.TableName);
+        Assert.Equal(100, intentLock.TransactionId);
+        Assert.Equal(LockMode.IntentShared, intentLock.Mode);
+        Assert.False(intentLock.IsWaiting);
+    }
+
+    [Fact]
+    public void IntentLock_GetTableKey_ReturnsCorrectKey()
+    {
+        var intentLock = new IntentLock("testdb", "users", 100, LockMode.IntentShared);
+
+        Assert.Equal("testdb.users", intentLock.GetTableKey());
+    }
+
+    [Fact]
+    public void IntentLock_SameTransaction_DoesNotConflict()
+    {
+        var lock1 = new IntentLock("testdb", "users", 100, LockMode.Exclusive);
+        var lock2 = new IntentLock("testdb", "users", 100, LockMode.Exclusive);
+
+        Assert.False(lock1.ConflictsWith(lock2));
+    }
+
+    [Fact]
+    public void IntentLock_DifferentTable_DoesNotConflict()
+    {
+        var lock1 = new IntentLock("testdb", "users", 100, LockMode.Exclusive);
+        var lock2 = new IntentLock("testdb", "orders", 101, LockMode.Exclusive);
+
+        Assert.False(lock1.ConflictsWith(lock2));
+    }
+
+    [Theory]
+    // IS is compatible with IS, IX, S, SIX
+    [InlineData(LockMode.IntentShared, LockMode.IntentShared, true)]
+    [InlineData(LockMode.IntentShared, LockMode.IntentExclusive, true)]
+    [InlineData(LockMode.IntentShared, LockMode.Shared, true)]
+    [InlineData(LockMode.IntentShared, LockMode.SharedIntentExclusive, true)]
+    [InlineData(LockMode.IntentShared, LockMode.Exclusive, false)]
+    // IX is compatible with IS, IX
+    [InlineData(LockMode.IntentExclusive, LockMode.IntentShared, true)]
+    [InlineData(LockMode.IntentExclusive, LockMode.IntentExclusive, true)]
+    [InlineData(LockMode.IntentExclusive, LockMode.Shared, false)]
+    [InlineData(LockMode.IntentExclusive, LockMode.Exclusive, false)]
+    [InlineData(LockMode.IntentExclusive, LockMode.SharedIntentExclusive, false)]
+    // S is compatible with IS, S
+    [InlineData(LockMode.Shared, LockMode.IntentShared, true)]
+    [InlineData(LockMode.Shared, LockMode.Shared, true)]
+    [InlineData(LockMode.Shared, LockMode.IntentExclusive, false)]
+    [InlineData(LockMode.Shared, LockMode.Exclusive, false)]
+    [InlineData(LockMode.Shared, LockMode.SharedIntentExclusive, false)]
+    // X is compatible with nothing
+    [InlineData(LockMode.Exclusive, LockMode.IntentShared, false)]
+    [InlineData(LockMode.Exclusive, LockMode.IntentExclusive, false)]
+    [InlineData(LockMode.Exclusive, LockMode.Shared, false)]
+    [InlineData(LockMode.Exclusive, LockMode.Exclusive, false)]
+    // SIX is compatible with IS only
+    [InlineData(LockMode.SharedIntentExclusive, LockMode.IntentShared, true)]
+    [InlineData(LockMode.SharedIntentExclusive, LockMode.IntentExclusive, false)]
+    [InlineData(LockMode.SharedIntentExclusive, LockMode.Shared, false)]
+    [InlineData(LockMode.SharedIntentExclusive, LockMode.Exclusive, false)]
+    public void IntentLock_AreCompatible_ReturnsCorrectResult(LockMode mode1, LockMode mode2, bool expected)
+    {
+        Assert.Equal(expected, IntentLock.AreCompatible(mode1, mode2));
+    }
+
+    [Fact]
+    public void IntentLock_ConflictsWith_ExclusiveLocks()
+    {
+        var lock1 = new IntentLock("testdb", "users", 100, LockMode.Exclusive);
+        var lock2 = new IntentLock("testdb", "users", 101, LockMode.IntentShared);
+
+        Assert.True(lock1.ConflictsWith(lock2));
+        Assert.True(lock2.ConflictsWith(lock1));
+    }
+
+    [Fact]
+    public void IntentLock_NoConflict_IntentSharedLocks()
+    {
+        var lock1 = new IntentLock("testdb", "users", 100, LockMode.IntentShared);
+        var lock2 = new IntentLock("testdb", "users", 101, LockMode.IntentShared);
+
+        Assert.False(lock1.ConflictsWith(lock2));
+    }
+
+    #endregion
+
+    #region IntentLockManager Tests
+
+    [Fact]
+    public void IntentLockManager_AcquireIntentShared_Success()
+    {
+        var manager = new IntentLockManager();
+
+        var lock1 = manager.AcquireIntentShared("testdb", "users", 100);
+
+        Assert.NotNull(lock1);
+        Assert.Equal(LockMode.IntentShared, lock1.Mode);
+        Assert.False(lock1.IsWaiting);
+    }
+
+    [Fact]
+    public void IntentLockManager_AcquireIntentExclusive_Success()
+    {
+        var manager = new IntentLockManager();
+
+        var lock1 = manager.AcquireIntentExclusive("testdb", "users", 100);
+
+        Assert.NotNull(lock1);
+        Assert.Equal(LockMode.IntentExclusive, lock1.Mode);
+    }
+
+    [Fact]
+    public void IntentLockManager_MultipleIS_NoConflict()
+    {
+        var manager = new IntentLockManager();
+
+        var lock1 = manager.AcquireIntentShared("testdb", "users", 100);
+        var lock2 = manager.AcquireIntentShared("testdb", "users", 101);
+
+        Assert.NotNull(lock1);
+        Assert.NotNull(lock2);
+        Assert.False(lock1.IsWaiting);
+        Assert.False(lock2.IsWaiting);
+    }
+
+    [Fact]
+    public void IntentLockManager_MultipleIX_NoConflict()
+    {
+        var manager = new IntentLockManager();
+
+        var lock1 = manager.AcquireIntentExclusive("testdb", "users", 100);
+        var lock2 = manager.AcquireIntentExclusive("testdb", "users", 101);
+
+        Assert.NotNull(lock1);
+        Assert.NotNull(lock2);
+        Assert.False(lock1.IsWaiting);
+        Assert.False(lock2.IsWaiting);
+    }
+
+    [Fact]
+    public void IntentLockManager_ExclusiveBlocksOthers()
+    {
+        var manager = new IntentLockManager();
+
+        var lock1 = manager.AcquireExclusive("testdb", "users", 100);
+        var lock2 = manager.AcquireIntentShared("testdb", "users", 101);
+
+        Assert.NotNull(lock1);
+        Assert.NotNull(lock2);
+        Assert.False(lock1.IsWaiting);
+        Assert.True(lock2.IsWaiting); // Should be waiting due to conflict
+    }
+
+    [Fact]
+    public void IntentLockManager_SharedBlocksIX()
+    {
+        var manager = new IntentLockManager();
+
+        var lock1 = manager.AcquireShared("testdb", "users", 100);
+        var lock2 = manager.AcquireIntentExclusive("testdb", "users", 101);
+
+        Assert.NotNull(lock1);
+        Assert.NotNull(lock2);
+        Assert.False(lock1.IsWaiting);
+        Assert.True(lock2.IsWaiting); // IX conflicts with S
+    }
+
+    [Fact]
+    public void IntentLockManager_ReleaseTransactionLocks_ReleasesAll()
+    {
+        var manager = new IntentLockManager();
+
+        manager.AcquireIntentShared("testdb", "users", 100);
+        manager.AcquireIntentExclusive("testdb", "orders", 100);
+
+        Assert.Equal(2, manager.GetTransactionLocks(100).Count);
+
+        manager.ReleaseTransactionLocks(100);
+
+        Assert.Empty(manager.GetTransactionLocks(100));
+    }
+
+    [Fact]
+    public void IntentLockManager_GetTableLocks_ReturnsCorrectLocks()
+    {
+        var manager = new IntentLockManager();
+
+        manager.AcquireIntentShared("testdb", "users", 100);
+        manager.AcquireIntentExclusive("testdb", "users", 101);
+        manager.AcquireIntentShared("testdb", "orders", 102);
+
+        var userLocks = manager.GetTableLocks("testdb", "users");
+        Assert.Equal(2, userLocks.Count);
+
+        var orderLocks = manager.GetTableLocks("testdb", "orders");
+        Assert.Single(orderLocks);
+    }
+
+    [Fact]
+    public void IntentLockManager_WouldConflict_ReturnsCorrectResult()
+    {
+        var manager = new IntentLockManager();
+
+        manager.AcquireExclusive("testdb", "users", 100);
+
+        Assert.True(manager.WouldConflict("testdb", "users", 101, LockMode.IntentShared));
+        Assert.False(manager.WouldConflict("testdb", "orders", 101, LockMode.IntentShared));
+        Assert.False(manager.WouldConflict("testdb", "users", 100, LockMode.Exclusive)); // Same transaction
+    }
+
+    [Fact]
+    public void IntentLockManager_SameTransaction_ReusesExistingLock()
+    {
+        var manager = new IntentLockManager();
+
+        var lock1 = manager.AcquireIntentShared("testdb", "users", 100);
+        var lock2 = manager.AcquireIntentShared("testdb", "users", 100);
+
+        // Should return the same lock
+        Assert.Same(lock1, lock2);
+        Assert.Single(manager.GetTransactionLocks(100));
+    }
+
+    [Fact]
+    public void IntentLockManager_SameTransaction_UpgradesLock()
+    {
+        var manager = new IntentLockManager();
+
+        var lock1 = manager.AcquireIntentShared("testdb", "users", 100);
+        Assert.Equal(LockMode.IntentShared, lock1!.Mode);
+
+        var lock2 = manager.AcquireIntentExclusive("testdb", "users", 100);
+        Assert.Equal(LockMode.IntentExclusive, lock2!.Mode);
+
+        // Should have only one lock (the upgraded one)
+        Assert.Single(manager.GetTransactionLocks(100));
     }
 
     #endregion

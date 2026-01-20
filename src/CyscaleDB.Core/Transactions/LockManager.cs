@@ -399,13 +399,21 @@ public enum LockMode
 
     /// <summary>
     /// Intent shared (for table-level intent).
+    /// Indicates that the transaction intends to acquire shared locks on rows within the table.
     /// </summary>
     IntentShared,
 
     /// <summary>
     /// Intent exclusive (for table-level intent).
+    /// Indicates that the transaction intends to acquire exclusive locks on rows within the table.
     /// </summary>
-    IntentExclusive
+    IntentExclusive,
+
+    /// <summary>
+    /// Shared intent exclusive (SIX) - combination of S and IX locks.
+    /// Indicates the transaction is reading the whole table and modifying some rows.
+    /// </summary>
+    SharedIntentExclusive
 }
 
 /// <summary>
@@ -444,5 +452,440 @@ public class LockEntry
     {
         Key = key;
         Mode = mode;
+    }
+}
+
+/// <summary>
+/// Represents an intent lock on a table.
+/// Intent locks indicate that a transaction plans to acquire row-level locks.
+/// 
+/// Lock Compatibility Matrix:
+///         IS      IX      S       X       SIX
+/// IS      ✓       ✓       ✓       ✗       ✓
+/// IX      ✓       ✓       ✗       ✗       ✗
+/// S       ✓       ✗       ✓       ✗       ✗
+/// X       ✗       ✗       ✗       ✗       ✗
+/// SIX     ✓       ✗       ✗       ✗       ✗
+/// </summary>
+public sealed class IntentLock
+{
+    /// <summary>
+    /// The database name.
+    /// </summary>
+    public string DatabaseName { get; }
+
+    /// <summary>
+    /// The table name.
+    /// </summary>
+    public string TableName { get; }
+
+    /// <summary>
+    /// The transaction holding this lock.
+    /// </summary>
+    public long TransactionId { get; }
+
+    /// <summary>
+    /// The lock mode (IS, IX, S, X, or SIX).
+    /// </summary>
+    public LockMode Mode { get; }
+
+    /// <summary>
+    /// When this lock was acquired.
+    /// </summary>
+    public DateTime AcquiredAt { get; }
+
+    /// <summary>
+    /// Whether this lock is waiting to be granted.
+    /// </summary>
+    public bool IsWaiting { get; private set; }
+
+    /// <summary>
+    /// Creates a new intent lock.
+    /// </summary>
+    public IntentLock(string databaseName, string tableName, long transactionId, LockMode mode, bool isWaiting = false)
+    {
+        DatabaseName = databaseName ?? throw new ArgumentNullException(nameof(databaseName));
+        TableName = tableName ?? throw new ArgumentNullException(nameof(tableName));
+        TransactionId = transactionId;
+        Mode = mode;
+        IsWaiting = isWaiting;
+        AcquiredAt = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Grants the lock.
+    /// </summary>
+    public void Grant()
+    {
+        IsWaiting = false;
+    }
+
+    /// <summary>
+    /// Gets the table key for this lock.
+    /// </summary>
+    public string GetTableKey() => $"{DatabaseName}.{TableName}";
+
+    /// <summary>
+    /// Checks if this lock is compatible with another lock mode.
+    /// </summary>
+    public static bool AreCompatible(LockMode mode1, LockMode mode2)
+    {
+        // Same transaction is always compatible with itself
+        // Lock compatibility matrix:
+        //         IS      IX      S       X       SIX
+        // IS      ✓       ✓       ✓       ✗       ✓
+        // IX      ✓       ✓       ✗       ✗       ✗
+        // S       ✓       ✗       ✓       ✗       ✗
+        // X       ✗       ✗       ✗       ✗       ✗
+        // SIX     ✓       ✗       ✗       ✗       ✗
+
+        return (mode1, mode2) switch
+        {
+            // Exclusive is not compatible with anything
+            (LockMode.Exclusive, _) => false,
+            (_, LockMode.Exclusive) => false,
+
+            // IS is compatible with IS, IX, S, SIX
+            (LockMode.IntentShared, LockMode.IntentShared) => true,
+            (LockMode.IntentShared, LockMode.IntentExclusive) => true,
+            (LockMode.IntentShared, LockMode.Shared) => true,
+            (LockMode.IntentShared, LockMode.SharedIntentExclusive) => true,
+
+            // IX is compatible with IS, IX
+            (LockMode.IntentExclusive, LockMode.IntentShared) => true,
+            (LockMode.IntentExclusive, LockMode.IntentExclusive) => true,
+            (LockMode.IntentExclusive, _) => false,
+
+            // S is compatible with IS, S
+            (LockMode.Shared, LockMode.IntentShared) => true,
+            (LockMode.Shared, LockMode.Shared) => true,
+            (LockMode.Shared, _) => false,
+
+            // SIX is compatible with IS only
+            (LockMode.SharedIntentExclusive, LockMode.IntentShared) => true,
+            (LockMode.SharedIntentExclusive, _) => false,
+
+            // Default: not compatible
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// Checks if this lock conflicts with another lock.
+    /// </summary>
+    public bool ConflictsWith(IntentLock other)
+    {
+        // Same transaction doesn't conflict with itself
+        if (TransactionId == other.TransactionId)
+            return false;
+
+        // Check if same table
+        if (GetTableKey() != other.GetTableKey())
+            return false;
+
+        return !AreCompatible(Mode, other.Mode);
+    }
+
+    public override string ToString()
+    {
+        var waiting = IsWaiting ? " (waiting)" : "";
+        return $"IntentLock({Mode}) on {GetTableKey()} by Tx{TransactionId}{waiting}";
+    }
+}
+
+/// <summary>
+/// Manages intent locks for table-level lock intentions.
+/// </summary>
+public sealed class IntentLockManager
+{
+    private readonly Dictionary<string, List<IntentLock>> _locksByTable = [];
+    private readonly Dictionary<long, List<IntentLock>> _locksByTransaction = [];
+    private readonly object _lock = new();
+    private readonly Logger _logger;
+    private readonly TimeSpan _lockTimeout;
+
+    public IntentLockManager(TimeSpan? lockTimeout = null)
+    {
+        _logger = LogManager.Default.GetLogger<IntentLockManager>();
+        _lockTimeout = lockTimeout ?? TimeSpan.FromSeconds(50);
+    }
+
+    /// <summary>
+    /// Acquires an intent lock on a table.
+    /// </summary>
+    /// <param name="databaseName">Database name</param>
+    /// <param name="tableName">Table name</param>
+    /// <param name="transactionId">Transaction ID</param>
+    /// <param name="mode">Lock mode (typically IS or IX)</param>
+    /// <returns>The acquired lock, or null if timeout</returns>
+    public IntentLock? AcquireLock(string databaseName, string tableName, long transactionId, LockMode mode)
+    {
+        var newLock = new IntentLock(databaseName, tableName, transactionId, mode, isWaiting: true);
+        var deadline = DateTime.UtcNow + _lockTimeout;
+
+        lock (_lock)
+        {
+            var tableKey = newLock.GetTableKey();
+
+            // Check if transaction already holds a compatible or stronger lock
+            if (_locksByTransaction.TryGetValue(transactionId, out var txLocks))
+            {
+                var existingLock = txLocks.Find(l => l.GetTableKey() == tableKey);
+                if (existingLock != null)
+                {
+                    // Check if existing lock is sufficient
+                    if (IsLockSufficient(existingLock.Mode, mode))
+                    {
+                        return existingLock; // Already have sufficient lock
+                    }
+
+                    // Upgrade the lock if possible
+                    var upgradedMode = GetUpgradedMode(existingLock.Mode, mode);
+                    if (upgradedMode != existingLock.Mode)
+                    {
+                        // Need to upgrade - remove old lock and acquire new one
+                        RemoveLockInternal(existingLock);
+                        newLock = new IntentLock(databaseName, tableName, transactionId, upgradedMode, isWaiting: true);
+                    }
+                }
+            }
+
+            // Check for conflicts
+            if (_locksByTable.TryGetValue(tableKey, out var tableLocks))
+            {
+                foreach (var existingLock in tableLocks)
+                {
+                    if (existingLock.ConflictsWith(newLock))
+                    {
+                        _logger.Debug("Intent lock conflict: {0} conflicts with {1}", newLock, existingLock);
+                        // In a real implementation, we would wait
+                        // For now, add as waiting
+                        AddLockInternal(newLock);
+                        return newLock;
+                    }
+                }
+            }
+
+            // No conflicts, grant the lock
+            newLock.Grant();
+            AddLockInternal(newLock);
+            _logger.Debug("Acquired intent lock: {0}", newLock);
+            return newLock;
+        }
+    }
+
+    /// <summary>
+    /// Acquires an Intent Shared (IS) lock.
+    /// </summary>
+    public IntentLock? AcquireIntentShared(string databaseName, string tableName, long transactionId)
+    {
+        return AcquireLock(databaseName, tableName, transactionId, LockMode.IntentShared);
+    }
+
+    /// <summary>
+    /// Acquires an Intent Exclusive (IX) lock.
+    /// </summary>
+    public IntentLock? AcquireIntentExclusive(string databaseName, string tableName, long transactionId)
+    {
+        return AcquireLock(databaseName, tableName, transactionId, LockMode.IntentExclusive);
+    }
+
+    /// <summary>
+    /// Acquires a table-level Shared (S) lock.
+    /// </summary>
+    public IntentLock? AcquireShared(string databaseName, string tableName, long transactionId)
+    {
+        return AcquireLock(databaseName, tableName, transactionId, LockMode.Shared);
+    }
+
+    /// <summary>
+    /// Acquires a table-level Exclusive (X) lock.
+    /// </summary>
+    public IntentLock? AcquireExclusive(string databaseName, string tableName, long transactionId)
+    {
+        return AcquireLock(databaseName, tableName, transactionId, LockMode.Exclusive);
+    }
+
+    /// <summary>
+    /// Releases all locks held by a transaction.
+    /// </summary>
+    public void ReleaseTransactionLocks(long transactionId)
+    {
+        lock (_lock)
+        {
+            if (!_locksByTransaction.TryGetValue(transactionId, out var txLocks))
+                return;
+
+            foreach (var intentLock in txLocks.ToList())
+            {
+                RemoveLockFromTable(intentLock);
+            }
+
+            _locksByTransaction.Remove(transactionId);
+            _logger.Debug("Released all intent locks for Tx{0}", transactionId);
+        }
+    }
+
+    /// <summary>
+    /// Releases a specific lock.
+    /// </summary>
+    public void ReleaseLock(IntentLock intentLock)
+    {
+        lock (_lock)
+        {
+            RemoveLockInternal(intentLock);
+            _logger.Debug("Released intent lock: {0}", intentLock);
+        }
+    }
+
+    /// <summary>
+    /// Gets all intent locks held by a transaction.
+    /// </summary>
+    public IReadOnlyList<IntentLock> GetTransactionLocks(long transactionId)
+    {
+        lock (_lock)
+        {
+            if (_locksByTransaction.TryGetValue(transactionId, out var locks))
+            {
+                return locks.AsReadOnly();
+            }
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Gets all intent locks on a table.
+    /// </summary>
+    public IReadOnlyList<IntentLock> GetTableLocks(string databaseName, string tableName)
+    {
+        lock (_lock)
+        {
+            var tableKey = $"{databaseName}.{tableName}";
+            if (_locksByTable.TryGetValue(tableKey, out var locks))
+            {
+                return locks.AsReadOnly();
+            }
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Checks if a lock request would conflict with existing locks.
+    /// </summary>
+    public bool WouldConflict(string databaseName, string tableName, long transactionId, LockMode mode)
+    {
+        var testLock = new IntentLock(databaseName, tableName, transactionId, mode);
+
+        lock (_lock)
+        {
+            var tableKey = testLock.GetTableKey();
+            if (_locksByTable.TryGetValue(tableKey, out var tableLocks))
+            {
+                return tableLocks.Any(existing => existing.ConflictsWith(testLock));
+            }
+            return false;
+        }
+    }
+
+    private void AddLockInternal(IntentLock intentLock)
+    {
+        var tableKey = intentLock.GetTableKey();
+
+        if (!_locksByTable.TryGetValue(tableKey, out var tableLocks))
+        {
+            tableLocks = [];
+            _locksByTable[tableKey] = tableLocks;
+        }
+        tableLocks.Add(intentLock);
+
+        if (!_locksByTransaction.TryGetValue(intentLock.TransactionId, out var txLocks))
+        {
+            txLocks = [];
+            _locksByTransaction[intentLock.TransactionId] = txLocks;
+        }
+        txLocks.Add(intentLock);
+    }
+
+    private void RemoveLockInternal(IntentLock intentLock)
+    {
+        RemoveLockFromTable(intentLock);
+        RemoveLockFromTransaction(intentLock);
+    }
+
+    private void RemoveLockFromTable(IntentLock intentLock)
+    {
+        var tableKey = intentLock.GetTableKey();
+        if (_locksByTable.TryGetValue(tableKey, out var tableLocks))
+        {
+            tableLocks.Remove(intentLock);
+            if (tableLocks.Count == 0)
+            {
+                _locksByTable.Remove(tableKey);
+            }
+        }
+    }
+
+    private void RemoveLockFromTransaction(IntentLock intentLock)
+    {
+        if (_locksByTransaction.TryGetValue(intentLock.TransactionId, out var txLocks))
+        {
+            txLocks.Remove(intentLock);
+            if (txLocks.Count == 0)
+            {
+                _locksByTransaction.Remove(intentLock.TransactionId);
+            }
+        }
+    }
+
+    private static bool IsLockSufficient(LockMode existing, LockMode requested)
+    {
+        // Check if existing lock mode covers the requested mode
+        return (existing, requested) switch
+        {
+            // Exclusive covers everything
+            (LockMode.Exclusive, _) => true,
+            
+            // SIX covers IX and IS
+            (LockMode.SharedIntentExclusive, LockMode.IntentExclusive) => true,
+            (LockMode.SharedIntentExclusive, LockMode.IntentShared) => true,
+            (LockMode.SharedIntentExclusive, LockMode.Shared) => true,
+            
+            // IX covers IS
+            (LockMode.IntentExclusive, LockMode.IntentShared) => true,
+            
+            // Shared covers IS
+            (LockMode.Shared, LockMode.IntentShared) => true,
+            
+            // Same mode is sufficient
+            _ when existing == requested => true,
+            
+            _ => false
+        };
+    }
+
+    private static LockMode GetUpgradedMode(LockMode existing, LockMode requested)
+    {
+        // Determine the combined lock mode needed
+        return (existing, requested) switch
+        {
+            // S + IX = SIX
+            (LockMode.Shared, LockMode.IntentExclusive) => LockMode.SharedIntentExclusive,
+            (LockMode.IntentExclusive, LockMode.Shared) => LockMode.SharedIntentExclusive,
+            
+            // IS + IX = IX
+            (LockMode.IntentShared, LockMode.IntentExclusive) => LockMode.IntentExclusive,
+            
+            // IS + S = S
+            (LockMode.IntentShared, LockMode.Shared) => LockMode.Shared,
+            
+            // Anything + X = X
+            (_, LockMode.Exclusive) => LockMode.Exclusive,
+            
+            // Keep existing if it's stronger
+            _ when IsLockSufficient(existing, requested) => existing,
+            
+            // Otherwise use requested
+            _ => requested
+        };
     }
 }

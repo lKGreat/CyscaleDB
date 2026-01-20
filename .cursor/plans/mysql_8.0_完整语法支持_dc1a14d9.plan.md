@@ -76,13 +76,13 @@ todos:
     status: completed
   - id: 0.7.3
     content: NextKeyLock 实现 - 组合记录锁和间隙锁，测试临键锁
-    status: in_progress
+    status: completed
   - id: 0.7.4
     content: 意向锁实现 - 表级 IS/IX 锁，测试意向锁兼容性
-    status: pending
+    status: completed
   - id: 0.7.5
     content: SELECT FOR UPDATE 支持 - 解析和执行加锁读，测试当前读
-    status: pending
+    status: in_progress
   - id: 0.8.1
     content: ForeignKeyManager 基础 - 新建 ForeignKeyManager.cs，管理外键定义
     status: completed

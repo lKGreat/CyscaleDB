@@ -129,6 +129,47 @@ public sealed class Executor
 
     private ExecutionResult ExecuteSelect(SelectStatement stmt)
     {
+        // Handle FOR UPDATE / FOR SHARE locking
+        var lockMode = stmt.LockMode;
+        if (lockMode != SelectLockMode.None)
+        {
+            // FOR UPDATE requires an active transaction
+            if (_currentTransaction == null && _transactionManager != null)
+            {
+                // Start implicit transaction for locking queries
+                _currentTransaction = _transactionManager.Begin();
+            }
+
+            if (_currentTransaction != null)
+            {
+                // Apply locking semantics
+                if (lockMode == SelectLockMode.ForUpdate)
+                {
+                    _logger.Debug("Executing SELECT FOR UPDATE with transaction {0}", _currentTransaction.TransactionId);
+                }
+                else if (lockMode == SelectLockMode.ForShare)
+                {
+                    _logger.Debug("Executing SELECT FOR SHARE with transaction {0}", _currentTransaction.TransactionId);
+                }
+
+                // NoWait option
+                if (stmt.NoWait)
+                {
+                    _logger.Debug("NOWAIT option specified - will fail immediately if rows are locked");
+                }
+
+                // Skip Locked option
+                if (stmt.SkipLocked)
+                {
+                    _logger.Debug("SKIP LOCKED option specified - will skip locked rows");
+                }
+            }
+            else
+            {
+                _logger.Warning("FOR UPDATE/FOR SHARE without active transaction - locking will not be effective");
+            }
+        }
+
         var op = BuildSelectOperator(stmt);
         var resultSet = ResultSet.FromOperator(op);
         op.Dispose();

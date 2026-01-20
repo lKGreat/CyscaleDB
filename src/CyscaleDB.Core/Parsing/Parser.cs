@@ -196,6 +196,9 @@ public sealed class Parser
             }
         }
 
+        // FOR UPDATE / FOR SHARE clause
+        ParseLockingClause(stmt);
+
         // UNION clauses
         while (Check(TokenType.UNION))
         {
@@ -286,6 +289,66 @@ public sealed class Parser
         }
 
         return stmt;
+    }
+
+    /// <summary>
+    /// Parses FOR UPDATE / FOR SHARE locking clause.
+    /// Syntax:
+    ///   FOR UPDATE [OF table_list] [NOWAIT | SKIP LOCKED]
+    ///   FOR SHARE [OF table_list] [NOWAIT | SKIP LOCKED]
+    ///   LOCK IN SHARE MODE
+    /// </summary>
+    private void ParseLockingClause(SelectStatement stmt)
+    {
+        // MySQL/MariaDB syntax: LOCK IN SHARE MODE (legacy)
+        if (Check(TokenType.LOCK))
+        {
+            Advance();
+            Expect(TokenType.IN);
+            Expect(TokenType.SHARE);
+            Expect(TokenType.MODE);
+            stmt.LockMode = SelectLockMode.ForShare;
+            return;
+        }
+
+        // Standard syntax: FOR UPDATE / FOR SHARE
+        if (!Check(TokenType.FOR))
+            return;
+
+        Advance(); // consume FOR
+
+        if (Match(TokenType.UPDATE))
+        {
+            stmt.LockMode = SelectLockMode.ForUpdate;
+        }
+        else if (Match(TokenType.SHARE))
+        {
+            stmt.LockMode = SelectLockMode.ForShare;
+        }
+        else
+        {
+            throw Error("Expected UPDATE or SHARE after FOR");
+        }
+
+        // Optional: OF table_list
+        if (MatchIdentifier("OF"))
+        {
+            do
+            {
+                stmt.LockTables.Add(ExpectIdentifier());
+            } while (Match(TokenType.Comma));
+        }
+
+        // Optional: NOWAIT or SKIP LOCKED
+        if (Match(TokenType.NOWAIT))
+        {
+            stmt.NoWait = true;
+        }
+        else if (Match(TokenType.SKIP))
+        {
+            Expect(TokenType.LOCKED);
+            stmt.SkipLocked = true;
+        }
     }
 
     private List<SelectColumn> ParseSelectColumns()

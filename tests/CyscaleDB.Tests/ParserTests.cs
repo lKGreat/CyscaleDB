@@ -430,6 +430,84 @@ public class ParserTests
         Assert.Equal("users", stmt.Columns[0].TableQualifier);
     }
 
+    [Fact]
+    public void Parse_SelectForUpdate_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT * FROM users WHERE id = 1 FOR UPDATE");
+        var stmt = parser.Parse() as SelectStatement;
+        
+        Assert.NotNull(stmt);
+        Assert.Equal(SelectLockMode.ForUpdate, stmt.LockMode);
+        Assert.False(stmt.NoWait);
+        Assert.False(stmt.SkipLocked);
+        Assert.Empty(stmt.LockTables);
+    }
+
+    [Fact]
+    public void Parse_SelectForShare_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT * FROM users WHERE id = 1 FOR SHARE");
+        var stmt = parser.Parse() as SelectStatement;
+        
+        Assert.NotNull(stmt);
+        Assert.Equal(SelectLockMode.ForShare, stmt.LockMode);
+    }
+
+    [Fact]
+    public void Parse_SelectLockInShareMode_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT * FROM users WHERE id = 1 LOCK IN SHARE MODE");
+        var stmt = parser.Parse() as SelectStatement;
+        
+        Assert.NotNull(stmt);
+        Assert.Equal(SelectLockMode.ForShare, stmt.LockMode);
+    }
+
+    [Fact]
+    public void Parse_SelectForUpdateNowait_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT * FROM users WHERE id = 1 FOR UPDATE NOWAIT");
+        var stmt = parser.Parse() as SelectStatement;
+        
+        Assert.NotNull(stmt);
+        Assert.Equal(SelectLockMode.ForUpdate, stmt.LockMode);
+        Assert.True(stmt.NoWait);
+    }
+
+    [Fact]
+    public void Parse_SelectForUpdateSkipLocked_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT * FROM users WHERE id = 1 FOR UPDATE SKIP LOCKED");
+        var stmt = parser.Parse() as SelectStatement;
+        
+        Assert.NotNull(stmt);
+        Assert.Equal(SelectLockMode.ForUpdate, stmt.LockMode);
+        Assert.True(stmt.SkipLocked);
+    }
+
+    [Fact]
+    public void Parse_SelectForUpdateOfTable_ReturnsCorrectAst()
+    {
+        var parser = new Parser("SELECT * FROM users u JOIN orders o ON u.id = o.user_id FOR UPDATE OF users, orders");
+        var stmt = parser.Parse() as SelectStatement;
+        
+        Assert.NotNull(stmt);
+        Assert.Equal(SelectLockMode.ForUpdate, stmt.LockMode);
+        Assert.Equal(2, stmt.LockTables.Count);
+        Assert.Contains("users", stmt.LockTables);
+        Assert.Contains("orders", stmt.LockTables);
+    }
+
+    [Fact]
+    public void Parse_SelectWithoutForUpdate_HasNoLock()
+    {
+        var parser = new Parser("SELECT * FROM users");
+        var stmt = parser.Parse() as SelectStatement;
+        
+        Assert.NotNull(stmt);
+        Assert.Equal(SelectLockMode.None, stmt.LockMode);
+    }
+
     #endregion
 
     #region UPDATE Tests
