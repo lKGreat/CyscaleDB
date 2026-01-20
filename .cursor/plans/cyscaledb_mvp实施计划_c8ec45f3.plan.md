@@ -36,7 +36,7 @@ todos:
       - phase4-executor
   - id: phase8-testing
     content: "Phase 8: 集成测试、MySQL客户端兼容性测试、Bug修复"
-    status: pending
+    status: in_progress
     dependencies:
       - phase5-transaction
       - phase6-protocol
