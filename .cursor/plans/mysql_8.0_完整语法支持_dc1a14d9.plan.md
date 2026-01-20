@@ -106,10 +106,10 @@ todos:
     status: completed
   - id: 0.6.1
     content: BufferPool LRU 优化 - Young/Old 区域分离，测试热点数据保留
-    status: in_progress
+    status: completed
   - id: 0.6.2
     content: FlushList 脏页管理 - 新建 FlushList.cs，测试脏页刷盘
-    status: pending
+    status: in_progress
   - id: 0.6.3
     content: 预读实现 - 线性预读，测试顺序扫描性能
     status: pending
