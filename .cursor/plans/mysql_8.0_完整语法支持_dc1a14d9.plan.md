@@ -82,31 +82,31 @@ todos:
     status: completed
   - id: 0.7.5
     content: SELECT FOR UPDATE 支持 - 解析和执行加锁读，测试当前读
-    status: in_progress
+    status: completed
   - id: 0.8.1
     content: ForeignKeyManager 基础 - 新建 ForeignKeyManager.cs，管理外键定义
     status: completed
   - id: 0.8.2
     content: 外键 RESTRICT 检查 - INSERT/UPDATE/DELETE 前检查，测试约束拒绝
-    status: pending
+    status: completed
   - id: 0.8.3
     content: 外键 CASCADE DELETE - 删除时级联删除子表，测试级联删除
-    status: pending
+    status: completed
   - id: 0.8.4
     content: 外键 CASCADE UPDATE - 更新时级联更新子表，测试级联更新
-    status: pending
+    status: completed
   - id: 0.8.5
     content: 外键 SET NULL - 删除/更新时子表设为 NULL，测试 SET NULL
-    status: pending
+    status: completed
   - id: 0.3.1
     content: MiniTransaction 结构 - 新建 MiniTransaction.cs，原子页面操作
-    status: pending
+    status: completed
   - id: 0.3.2
     content: DoublewriteBuffer - 新建，防止部分写，测试崩溃恢复
-    status: pending
+    status: completed
   - id: 0.6.1
     content: BufferPool LRU 优化 - Young/Old 区域分离，测试热点数据保留
-    status: pending
+    status: in_progress
   - id: 0.6.2
     content: FlushList 脏页管理 - 新建 FlushList.cs，测试脏页刷盘
     status: pending
@@ -133,79 +133,79 @@ todos:
     status: completed
   - id: 1.1.4
     content: Searched CASE 解析 - CASE WHEN cond THEN result，测试解析
-    status: pending
+    status: completed
   - id: 1.1.5
     content: CASE 表达式执行 - Executor 中求值 CASE，测试执行结果
-    status: pending
+    status: completed
   - id: 1.2.1
     content: WITH/RECURSIVE 关键字 - 添加到 Token.cs，测试词法分析
-    status: pending
+    status: completed
   - id: 1.2.2
     content: WithClause/CteDefinition AST - 新建 AST 节点
-    status: pending
+    status: completed
   - id: 1.2.3
     content: 非递归 CTE 解析 - WITH cte AS (SELECT...)，测试解析
-    status: pending
+    status: completed
   - id: 1.2.4
     content: 非递归 CTE 执行 - 物化 CTE 结果，测试查询
-    status: pending
+    status: completed
   - id: 1.2.5
     content: 递归 CTE 解析 - WITH RECURSIVE cte AS (...)，测试解析
-    status: pending
+    status: completed
   - id: 1.2.6
     content: 递归 CTE 执行 - 迭代执行直到不产生新行，测试递归查询
     status: pending
   - id: 1.3.1
     content: OVER/PARTITION/ROWS/RANGE 关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 1.3.2
     content: WindowSpec AST - 新建窗口规范 AST 节点
-    status: pending
+    status: completed
   - id: 1.3.3
     content: OVER 子句解析 - func() OVER (PARTITION BY ... ORDER BY ...)，测试解析
-    status: pending
+    status: completed
   - id: 1.3.4
     content: WindowOperator 基础 - 新建算子，分区和排序数据
-    status: pending
+    status: completed
   - id: 1.3.5
     content: ROW_NUMBER 实现 - 测试行号计算
-    status: pending
+    status: completed
   - id: 1.3.6
     content: RANK/DENSE_RANK 实现 - 测试排名计算
-    status: pending
+    status: completed
   - id: 1.3.7
     content: LAG/LEAD 实现 - 测试前后行访问
-    status: pending
+    status: completed
   - id: 1.3.8
     content: SUM/AVG OVER 实现 - 窗口聚合函数，测试累计计算
     status: pending
   - id: 2.1.1
     content: ALTER 关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 2.1.2
     content: AlterTableStatement AST - 新建 AST 节点
-    status: pending
+    status: completed
   - id: 2.1.3
     content: ALTER TABLE ADD COLUMN 解析 - 测试解析
-    status: pending
+    status: completed
   - id: 2.1.4
     content: ALTER TABLE ADD COLUMN 执行 - 测试添加列
-    status: pending
+    status: completed
   - id: 2.1.5
     content: ALTER TABLE DROP COLUMN 解析执行 - 测试删除列
-    status: pending
+    status: completed
   - id: 2.1.6
     content: ALTER TABLE MODIFY COLUMN 解析执行 - 测试修改列
-    status: pending
+    status: completed
   - id: 2.1.7
     content: ALTER TABLE ADD INDEX 解析执行 - 测试添加索引
-    status: pending
+    status: completed
   - id: 2.1.8
     content: ALTER TABLE DROP INDEX 解析执行 - 测试删除索引
-    status: pending
+    status: completed
   - id: 2.1.9
     content: ALTER TABLE RENAME 解析执行 - 测试重命名表
-    status: pending
+    status: completed
   - id: 2.2.1
     content: ON DELETE/UPDATE 关键字 - 添加到 Token.cs
     status: pending

@@ -148,6 +148,11 @@ public static class Constants
     public const string CheckpointFileName = "checkpoint.meta";
 
     /// <summary>
+    /// The name of the doublewrite buffer file.
+    /// </summary>
+    public const string DoublewriteFileName = "doublewrite.dblwr";
+
+    /// <summary>
     /// Maximum WAL file size before rotation (16MB).
     /// </summary>
     public const long MaxWalFileSize = 16 * 1024 * 1024;

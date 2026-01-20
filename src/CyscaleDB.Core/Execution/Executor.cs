@@ -18,6 +18,7 @@ public sealed class Executor
     private readonly Catalog _catalog;
     private readonly TransactionManager? _transactionManager;
     private readonly RecordLockManager _recordLockManager;
+    private readonly ForeignKeyManager _foreignKeyManager;
     private readonly Logger _logger;
     private string _currentDatabase;
     private Transaction? _currentTransaction;
@@ -55,18 +56,29 @@ public sealed class Executor
     public bool InTransaction => _currentTransaction != null;
 
     public Executor(Catalog catalog, string? defaultDatabase = null)
-        : this(catalog, null, defaultDatabase)
+        : this(catalog, null, null, defaultDatabase)
     {
     }
 
     public Executor(Catalog catalog, TransactionManager? transactionManager, string? defaultDatabase = null)
+        : this(catalog, transactionManager, null, defaultDatabase)
+    {
+    }
+
+    public Executor(Catalog catalog, TransactionManager? transactionManager, ForeignKeyManager? foreignKeyManager, string? defaultDatabase = null)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _transactionManager = transactionManager;
+        _foreignKeyManager = foreignKeyManager ?? new ForeignKeyManager();
         _recordLockManager = new RecordLockManager();
         _logger = LogManager.Default.GetLogger<Executor>();
         _currentDatabase = defaultDatabase ?? Constants.DefaultDatabaseName;
     }
+
+    /// <summary>
+    /// Gets the foreign key manager for this executor.
+    /// </summary>
+    public ForeignKeyManager ForeignKeyManager => _foreignKeyManager;
 
     /// <summary>
     /// Executes a SQL string. Supports multiple statements separated by semicolons.
@@ -710,6 +722,15 @@ public sealed class Executor
             }
 
             var row = new Row(schema, values);
+
+            // Validate foreign key constraints on the new row
+            _foreignKeyManager.ValidateInsert(
+                dbName,
+                stmt.TableName,
+                row,
+                schema,
+                ReferencedRowExists);
+
             table.InsertRow(row);
             insertedCount++;
         }
@@ -720,6 +741,123 @@ public sealed class Executor
 
         _logger.Debug("Inserted {0} rows into {1}", insertedCount, stmt.TableName);
         return ExecutionResult.Modification(insertedCount, lastId);
+    }
+
+    /// <summary>
+    /// Checks if a referenced row exists in the target table.
+    /// Used for foreign key validation.
+    /// </summary>
+    private bool ReferencedRowExists(string dbName, string tableName, DataValue[] keyValues)
+    {
+        var refTable = _catalog.GetTable(dbName, tableName);
+        if (refTable == null)
+            return false;
+
+        var refSchema = refTable.Schema;
+        
+        // Find primary key columns
+        var pkColumns = refSchema.Columns.Where(c => c.IsPrimaryKey).ToList();
+        if (pkColumns.Count == 0)
+        {
+            // If no PK defined, look for unique index columns
+            // For simplicity, just check all rows
+            return CheckRowExists(refTable, refSchema, keyValues);
+        }
+
+        // Try index lookup first (if clustered index exists)
+        return CheckRowExists(refTable, refSchema, keyValues);
+    }
+
+    /// <summary>
+    /// Checks if a row with the given key values exists.
+    /// </summary>
+    private static bool CheckRowExists(Table table, TableSchema schema, DataValue[] keyValues)
+    {
+        // Get primary key column ordinals
+        var pkColumns = schema.Columns.Where(c => c.IsPrimaryKey).ToList();
+        
+        foreach (var row in table.ScanTable())
+        {
+            bool matches = true;
+            
+            if (pkColumns.Count > 0 && pkColumns.Count == keyValues.Length)
+            {
+                // Match against primary key
+                for (int i = 0; i < pkColumns.Count; i++)
+                {
+                    var rowValue = row.Values[pkColumns[i].OrdinalPosition];
+                    if (!rowValue.Equals(keyValues[i]))
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                // Generic match - check first N columns
+                for (int i = 0; i < keyValues.Length && i < row.Values.Length; i++)
+                {
+                    if (!row.Values[i].Equals(keyValues[i]))
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+            }
+            
+            if (matches)
+                return true;
+        }
+        
+        return false;
+    }
+
+    /// <summary>
+    /// Checks if any rows reference the given values in a child table.
+    /// Used for foreign key validation on DELETE/UPDATE.
+    /// </summary>
+    private bool ReferencingRowsExist(string dbName, string tableName, IReadOnlyList<string> fkColumns, DataValue[] keyValues)
+    {
+        var childTable = _catalog.GetTable(dbName, tableName);
+        if (childTable == null)
+            return false;
+
+        var childSchema = childTable.Schema;
+
+        foreach (var row in childTable.ScanTable())
+        {
+            bool matches = true;
+            for (int i = 0; i < fkColumns.Count; i++)
+            {
+                var colOrdinal = childSchema.GetColumnOrdinal(fkColumns[i]);
+                if (colOrdinal < 0)
+                {
+                    matches = false;
+                    break;
+                }
+
+                var rowValue = row.Values[colOrdinal];
+                
+                // NULL FK values don't match (NULL != anything)
+                if (rowValue.IsNull)
+                {
+                    matches = false;
+                    break;
+                }
+
+                if (!rowValue.Equals(keyValues[i]))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+                return true;
+        }
+
+        return false;
     }
 
     private ExecutionResult ExecuteUpdate(UpdateStatement stmt)
@@ -740,7 +878,28 @@ public sealed class Executor
             predicate = BuildExpression(stmt.Where, schema);
         }
 
-        // Scan and update matching rows
+        // Get columns being updated
+        var updatingColumns = stmt.SetClauses.Select(s => s.ColumnName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Check if any referenced columns (from FK constraints referencing this table) are being updated
+        var fksReferencingThisTable = _foreignKeyManager.GetForeignKeysReferencingTable(dbName, stmt.TableName);
+        bool updatingReferencedColumns = false;
+        foreach (var fk in fksReferencingThisTable)
+        {
+            foreach (var refCol in fk.ReferencedColumns)
+            {
+                if (updatingColumns.Contains(refCol))
+                {
+                    updatingReferencedColumns = true;
+                    break;
+                }
+            }
+            if (updatingReferencedColumns) break;
+        }
+
+        // Collect rows to update and their new values (validate FK before any updates)
+        var rowsToUpdate = new List<(RowId RowId, Row OldRow, Row NewRow)>();
+
         foreach (var row in table.ScanTable())
         {
             // Check predicate
@@ -763,7 +922,75 @@ public sealed class Executor
                 newRow.Values[ordinal] = newValue;
             }
 
-            if (table.UpdateRow(row.RowId, newRow))
+            rowsToUpdate.Add((row.RowId, row, newRow));
+        }
+
+        // Phase 1: Validate FK constraints and collect cascade actions
+        var allCascadeUpdates = new List<(string DbName, string TableName, ForeignKeyInfo Fk, DataValue[] OldParentKeyValues, DataValue[] NewParentKeyValues)>();
+        var allCascadeSetNulls = new List<(string DbName, string TableName, ForeignKeyInfo Fk, DataValue[] ParentKeyValues)>();
+
+        foreach (var (_, oldRow, newRow) in rowsToUpdate)
+        {
+            // Only check if this update would orphan child rows if we're updating referenced columns
+            if (updatingReferencedColumns)
+            {
+                var cascadeActions = _foreignKeyManager.ValidateDeleteOrUpdate(
+                    dbName,
+                    stmt.TableName,
+                    oldRow,
+                    schema,
+                    ReferencingRowsExist,
+                    isDelete: false);
+
+                // Collect cascade actions for later execution
+                foreach (var (fk, action) in cascadeActions)
+                {
+                    // Get the old and new referenced column values from the parent row
+                    var oldParentKeyValues = new DataValue[fk.ReferencedColumns.Count];
+                    var newParentKeyValues = new DataValue[fk.ReferencedColumns.Count];
+                    for (int i = 0; i < fk.ReferencedColumns.Count; i++)
+                    {
+                        var colOrdinal = schema.GetColumnOrdinal(fk.ReferencedColumns[i]);
+                        oldParentKeyValues[i] = oldRow.Values[colOrdinal];
+                        newParentKeyValues[i] = newRow.Values[colOrdinal];
+                    }
+
+                    if (action == ForeignKeyAction.Cascade)
+                    {
+                        allCascadeUpdates.Add((fk.DatabaseName, fk.TableName, fk, oldParentKeyValues, newParentKeyValues));
+                    }
+                    else if (action == ForeignKeyAction.SetNull)
+                    {
+                        allCascadeSetNulls.Add((fk.DatabaseName, fk.TableName, fk, oldParentKeyValues));
+                    }
+                }
+            }
+
+            // Validate that new FK values exist in referenced tables
+            _foreignKeyManager.ValidateInsert(
+                dbName,
+                stmt.TableName,
+                newRow,
+                schema,
+                ReferencedRowExists);
+        }
+
+        // Phase 2: Execute cascade SET NULL operations first
+        foreach (var (childDbName, childTableName, fk, parentKeyValues) in allCascadeSetNulls)
+        {
+            ExecuteCascadeSetNull(childDbName, childTableName, fk, parentKeyValues);
+        }
+
+        // Phase 3: Execute cascade UPDATE operations
+        foreach (var (childDbName, childTableName, fk, oldParentKeyValues, newParentKeyValues) in allCascadeUpdates)
+        {
+            ExecuteCascadeUpdate(childDbName, childTableName, fk, oldParentKeyValues, newParentKeyValues);
+        }
+
+        // Phase 4: Perform the actual updates on the parent table
+        foreach (var (rowId, _, newRow) in rowsToUpdate)
+        {
+            if (table.UpdateRow(rowId, newRow))
             {
                 updatedCount++;
             }
@@ -793,8 +1020,8 @@ public sealed class Executor
             predicate = BuildExpression(stmt.Where, schema);
         }
 
-        // Collect row IDs to delete (can't modify while iterating)
-        var rowsToDelete = new List<RowId>();
+        // Collect rows to delete with their data (can't modify while iterating)
+        var rowsToDelete = new List<(RowId RowId, Row Row)>();
 
         foreach (var row in table.ScanTable())
         {
@@ -806,11 +1033,60 @@ public sealed class Executor
                     continue;
             }
 
-            rowsToDelete.Add(row.RowId);
+            rowsToDelete.Add((row.RowId, row));
         }
 
-        // Delete collected rows
-        foreach (var rowId in rowsToDelete)
+        // Phase 1: Validate FK constraints and collect cascade actions
+        var allCascadeDeletes = new List<(string DbName, string TableName, ForeignKeyInfo Fk, DataValue[] ParentKeyValues)>();
+        var allCascadeSetNulls = new List<(string DbName, string TableName, ForeignKeyInfo Fk, DataValue[] ParentKeyValues)>();
+
+        foreach (var (_, row) in rowsToDelete)
+        {
+            // Check if this delete would orphan any child rows
+            var cascadeActions = _foreignKeyManager.ValidateDeleteOrUpdate(
+                dbName,
+                stmt.TableName,
+                row,
+                schema,
+                ReferencingRowsExist,
+                isDelete: true);
+
+            // Collect cascade actions for later execution
+            foreach (var (fk, action) in cascadeActions)
+            {
+                // Get the referenced column values from the parent row
+                var parentKeyValues = new DataValue[fk.ReferencedColumns.Count];
+                for (int i = 0; i < fk.ReferencedColumns.Count; i++)
+                {
+                    var colOrdinal = schema.GetColumnOrdinal(fk.ReferencedColumns[i]);
+                    parentKeyValues[i] = row.Values[colOrdinal];
+                }
+
+                if (action == ForeignKeyAction.Cascade)
+                {
+                    allCascadeDeletes.Add((fk.DatabaseName, fk.TableName, fk, parentKeyValues));
+                }
+                else if (action == ForeignKeyAction.SetNull)
+                {
+                    allCascadeSetNulls.Add((fk.DatabaseName, fk.TableName, fk, parentKeyValues));
+                }
+            }
+        }
+
+        // Phase 2: Execute cascade SET NULL operations first
+        foreach (var (childDbName, childTableName, fk, parentKeyValues) in allCascadeSetNulls)
+        {
+            ExecuteCascadeSetNull(childDbName, childTableName, fk, parentKeyValues);
+        }
+
+        // Phase 3: Execute cascade DELETE operations
+        foreach (var (childDbName, childTableName, fk, parentKeyValues) in allCascadeDeletes)
+        {
+            ExecuteCascadeDelete(childDbName, childTableName, fk, parentKeyValues);
+        }
+
+        // Phase 4: Perform the actual deletes on the parent table
+        foreach (var (rowId, _) in rowsToDelete)
         {
             if (table.DeleteRow(rowId))
             {
@@ -822,6 +1098,239 @@ public sealed class Executor
 
         _logger.Debug("Deleted {0} rows from {1}", deletedCount, stmt.TableName);
         return ExecutionResult.Modification(deletedCount);
+    }
+
+    /// <summary>
+    /// Executes cascade DELETE on child table rows that reference the deleted parent.
+    /// </summary>
+    private void ExecuteCascadeDelete(string dbName, string tableName, ForeignKeyInfo fk, DataValue[] parentKeyValues)
+    {
+        var childTable = _catalog.GetTable(dbName, tableName);
+        if (childTable == null)
+            return;
+
+        var childSchema = childTable.Schema;
+
+        // Find and delete all child rows that match the parent key
+        var rowsToDelete = new List<(RowId RowId, Row Row)>();
+
+        foreach (var row in childTable.ScanTable())
+        {
+            bool matches = true;
+            for (int i = 0; i < fk.Columns.Count; i++)
+            {
+                var colOrdinal = childSchema.GetColumnOrdinal(fk.Columns[i]);
+                if (colOrdinal < 0)
+                {
+                    matches = false;
+                    break;
+                }
+
+                var rowValue = row.Values[colOrdinal];
+                if (rowValue.IsNull || !rowValue.Equals(parentKeyValues[i]))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                rowsToDelete.Add((row.RowId, row));
+            }
+        }
+
+        // Before deleting, check for grandchildren (recursive cascade)
+        foreach (var (_, row) in rowsToDelete)
+        {
+            var grandchildCascades = _foreignKeyManager.ValidateDeleteOrUpdate(
+                dbName,
+                tableName,
+                row,
+                childSchema,
+                ReferencingRowsExist,
+                isDelete: true);
+
+            // Handle grandchildren cascades
+            foreach (var (grandchildFk, action) in grandchildCascades)
+            {
+                var grandchildKeyValues = new DataValue[grandchildFk.ReferencedColumns.Count];
+                for (int i = 0; i < grandchildFk.ReferencedColumns.Count; i++)
+                {
+                    var colOrdinal = childSchema.GetColumnOrdinal(grandchildFk.ReferencedColumns[i]);
+                    grandchildKeyValues[i] = row.Values[colOrdinal];
+                }
+
+                if (action == ForeignKeyAction.Cascade)
+                {
+                    ExecuteCascadeDelete(grandchildFk.DatabaseName, grandchildFk.TableName, grandchildFk, grandchildKeyValues);
+                }
+                else if (action == ForeignKeyAction.SetNull)
+                {
+                    ExecuteCascadeSetNull(grandchildFk.DatabaseName, grandchildFk.TableName, grandchildFk, grandchildKeyValues);
+                }
+            }
+        }
+
+        // Now delete the child rows
+        foreach (var (rowId, _) in rowsToDelete)
+        {
+            childTable.DeleteRow(rowId);
+        }
+
+        childTable.Flush();
+        _logger.Debug("Cascade deleted {0} rows from {1}.{2}", rowsToDelete.Count, dbName, tableName);
+    }
+
+    /// <summary>
+    /// Executes cascade UPDATE on child table rows when parent key values change.
+    /// </summary>
+    private void ExecuteCascadeUpdate(string dbName, string tableName, ForeignKeyInfo fk, DataValue[] oldParentKeyValues, DataValue[] newParentKeyValues)
+    {
+        var childTable = _catalog.GetTable(dbName, tableName);
+        if (childTable == null)
+            return;
+
+        var childSchema = childTable.Schema;
+
+        // Find and update all child rows that match the old parent key
+        var rowsToUpdate = new List<(RowId RowId, Row Row)>();
+
+        foreach (var row in childTable.ScanTable())
+        {
+            bool matches = true;
+            for (int i = 0; i < fk.Columns.Count; i++)
+            {
+                var colOrdinal = childSchema.GetColumnOrdinal(fk.Columns[i]);
+                if (colOrdinal < 0)
+                {
+                    matches = false;
+                    break;
+                }
+
+                var rowValue = row.Values[colOrdinal];
+                if (rowValue.IsNull || !rowValue.Equals(oldParentKeyValues[i]))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                rowsToUpdate.Add((row.RowId, row));
+            }
+        }
+
+        // Update FK columns to new parent key values
+        foreach (var (rowId, row) in rowsToUpdate)
+        {
+            var newRow = row.Clone();
+            for (int i = 0; i < fk.Columns.Count; i++)
+            {
+                var colOrdinal = childSchema.GetColumnOrdinal(fk.Columns[i]);
+                if (colOrdinal >= 0)
+                {
+                    newRow.Values[colOrdinal] = newParentKeyValues[i];
+                }
+            }
+
+            // Before updating, check for grandchildren cascade
+            var grandchildCascades = _foreignKeyManager.ValidateDeleteOrUpdate(
+                dbName,
+                tableName,
+                row,
+                childSchema,
+                ReferencingRowsExist,
+                isDelete: false);
+
+            // Handle grandchildren cascades recursively
+            foreach (var (grandchildFk, action) in grandchildCascades)
+            {
+                // Get old and new key values for the grandchild FK
+                var oldGrandchildKeyValues = new DataValue[grandchildFk.ReferencedColumns.Count];
+                var newGrandchildKeyValues = new DataValue[grandchildFk.ReferencedColumns.Count];
+                for (int j = 0; j < grandchildFk.ReferencedColumns.Count; j++)
+                {
+                    var colOrdinal = childSchema.GetColumnOrdinal(grandchildFk.ReferencedColumns[j]);
+                    oldGrandchildKeyValues[j] = row.Values[colOrdinal];
+                    newGrandchildKeyValues[j] = newRow.Values[colOrdinal];
+                }
+
+                if (action == ForeignKeyAction.Cascade)
+                {
+                    ExecuteCascadeUpdate(grandchildFk.DatabaseName, grandchildFk.TableName, grandchildFk, oldGrandchildKeyValues, newGrandchildKeyValues);
+                }
+                else if (action == ForeignKeyAction.SetNull)
+                {
+                    ExecuteCascadeSetNull(grandchildFk.DatabaseName, grandchildFk.TableName, grandchildFk, oldGrandchildKeyValues);
+                }
+            }
+
+            childTable.UpdateRow(rowId, newRow);
+        }
+
+        childTable.Flush();
+        _logger.Debug("Cascade updated {0} rows in {1}.{2}", rowsToUpdate.Count, dbName, tableName);
+    }
+
+    /// <summary>
+    /// Executes cascade SET NULL on child table rows that reference the deleted/updated parent.
+    /// </summary>
+    private void ExecuteCascadeSetNull(string dbName, string tableName, ForeignKeyInfo fk, DataValue[] parentKeyValues)
+    {
+        var childTable = _catalog.GetTable(dbName, tableName);
+        if (childTable == null)
+            return;
+
+        var childSchema = childTable.Schema;
+
+        // Find and update all child rows that match the parent key
+        var rowsToUpdate = new List<(RowId RowId, Row Row)>();
+
+        foreach (var row in childTable.ScanTable())
+        {
+            bool matches = true;
+            for (int i = 0; i < fk.Columns.Count; i++)
+            {
+                var colOrdinal = childSchema.GetColumnOrdinal(fk.Columns[i]);
+                if (colOrdinal < 0)
+                {
+                    matches = false;
+                    break;
+                }
+
+                var rowValue = row.Values[colOrdinal];
+                if (rowValue.IsNull || !rowValue.Equals(parentKeyValues[i]))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                rowsToUpdate.Add((row.RowId, row));
+            }
+        }
+
+        // Set FK columns to NULL
+        foreach (var (rowId, row) in rowsToUpdate)
+        {
+            var newRow = row.Clone();
+            for (int i = 0; i < fk.Columns.Count; i++)
+            {
+                var colOrdinal = childSchema.GetColumnOrdinal(fk.Columns[i]);
+                if (colOrdinal >= 0)
+                {
+                    newRow.Values[colOrdinal] = DataValue.Null;
+                }
+            }
+            childTable.UpdateRow(rowId, newRow);
+        }
+
+        childTable.Flush();
+        _logger.Debug("Cascade SET NULL on {0} rows in {1}.{2}", rowsToUpdate.Count, dbName, tableName);
     }
 
     #endregion
