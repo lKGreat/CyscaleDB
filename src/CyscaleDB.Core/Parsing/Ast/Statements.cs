@@ -805,3 +805,206 @@ public class RollbackStatement : Statement
 }
 
 #endregion
+
+#region SET Statements
+
+/// <summary>
+/// Scope for SET statement variables.
+/// </summary>
+public enum SetScope
+{
+    Session,
+    Global
+}
+
+/// <summary>
+/// Represents a variable assignment in a SET statement.
+/// </summary>
+public class SetVariable
+{
+    /// <summary>
+    /// The variable name.
+    /// </summary>
+    public string Name { get; set; } = null!;
+
+    /// <summary>
+    /// The value expression.
+    /// </summary>
+    public Expression Value { get; set; } = null!;
+
+    /// <summary>
+    /// The scope for this variable (SESSION or GLOBAL).
+    /// </summary>
+    public SetScope Scope { get; set; } = SetScope.Session;
+}
+
+/// <summary>
+/// Represents a SET statement.
+/// </summary>
+public class SetStatement : Statement
+{
+    /// <summary>
+    /// The variables to set.
+    /// </summary>
+    public List<SetVariable> Variables { get; set; } = [];
+
+    /// <summary>
+    /// For SET NAMES charset [COLLATE collation].
+    /// </summary>
+    public bool IsSetNames { get; set; }
+
+    /// <summary>
+    /// The charset for SET NAMES.
+    /// </summary>
+    public string? Charset { get; set; }
+
+    /// <summary>
+    /// The collation for SET NAMES.
+    /// </summary>
+    public string? Collation { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitSetStatement(this);
+}
+
+#endregion
+
+#region Extended SHOW Statements
+
+/// <summary>
+/// Represents a SHOW VARIABLES statement.
+/// </summary>
+public class ShowVariablesStatement : Statement
+{
+    /// <summary>
+    /// Whether to show GLOBAL or SESSION variables.
+    /// </summary>
+    public SetScope Scope { get; set; } = SetScope.Session;
+
+    /// <summary>
+    /// LIKE pattern for filtering.
+    /// </summary>
+    public string? LikePattern { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowVariablesStatement(this);
+}
+
+/// <summary>
+/// Represents a SHOW STATUS statement.
+/// </summary>
+public class ShowStatusStatement : Statement
+{
+    /// <summary>
+    /// Whether to show GLOBAL or SESSION status.
+    /// </summary>
+    public SetScope Scope { get; set; } = SetScope.Session;
+
+    /// <summary>
+    /// LIKE pattern for filtering.
+    /// </summary>
+    public string? LikePattern { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowStatusStatement(this);
+}
+
+/// <summary>
+/// Represents a SHOW CREATE TABLE statement.
+/// </summary>
+public class ShowCreateTableStatement : Statement
+{
+    /// <summary>
+    /// The table name.
+    /// </summary>
+    public string TableName { get; set; } = null!;
+
+    /// <summary>
+    /// The database name (optional).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowCreateTableStatement(this);
+}
+
+/// <summary>
+/// Represents a SHOW COLUMNS/SHOW FIELDS statement.
+/// </summary>
+public class ShowColumnsStatement : Statement
+{
+    /// <summary>
+    /// The table name.
+    /// </summary>
+    public string TableName { get; set; } = null!;
+
+    /// <summary>
+    /// The database name (optional).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// LIKE pattern for filtering.
+    /// </summary>
+    public string? LikePattern { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowColumnsStatement(this);
+}
+
+/// <summary>
+/// Represents a SHOW INDEX/SHOW INDEXES/SHOW KEYS statement.
+/// </summary>
+public class ShowIndexStatement : Statement
+{
+    /// <summary>
+    /// The table name.
+    /// </summary>
+    public string TableName { get; set; } = null!;
+
+    /// <summary>
+    /// The database name (optional).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowIndexStatement(this);
+}
+
+/// <summary>
+/// Represents a SHOW WARNINGS statement.
+/// </summary>
+public class ShowWarningsStatement : Statement
+{
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowWarningsStatement(this);
+}
+
+/// <summary>
+/// Represents a SHOW ERRORS statement.
+/// </summary>
+public class ShowErrorsStatement : Statement
+{
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowErrorsStatement(this);
+}
+
+/// <summary>
+/// Represents a SHOW COLLATION statement.
+/// </summary>
+public class ShowCollationStatement : Statement
+{
+    /// <summary>
+    /// LIKE pattern for filtering.
+    /// </summary>
+    public string? LikePattern { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowCollationStatement(this);
+}
+
+/// <summary>
+/// Represents a SHOW CHARSET/CHARACTER SET statement.
+/// </summary>
+public class ShowCharsetStatement : Statement
+{
+    /// <summary>
+    /// LIKE pattern for filtering.
+    /// </summary>
+    public string? LikePattern { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowCharsetStatement(this);
+}
+
+#endregion

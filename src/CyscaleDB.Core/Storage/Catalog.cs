@@ -386,6 +386,169 @@ public sealed class Catalog : IDisposable
         }
     }
 
+    #region View Operations
+
+    /// <summary>
+    /// Creates a new view in the specified database.
+    /// </summary>
+    public ViewInfo CreateView(string databaseName, string viewName, string definition, IEnumerable<string>? columnNames = null, bool orReplace = false)
+    {
+        _lock.EnterWriteLock();
+        try
+        {
+            if (!_databases.TryGetValue(databaseName, out var db))
+                throw new DatabaseNotFoundException(databaseName);
+
+            // Check if view exists
+            if (db.HasView(viewName))
+            {
+                if (orReplace)
+                {
+                    db.RemoveView(viewName);
+                }
+                else
+                {
+                    throw new ViewExistsException(viewName);
+                }
+            }
+
+            // Check if a table with the same name exists
+            if (db.HasTable(viewName))
+                throw new CyscaleException($"A table with name '{viewName}' already exists", ErrorCode.ViewExists);
+
+            var viewId = db.GetNextViewId();
+            var view = new ViewInfo(viewId, viewName, databaseName, definition, columnNames, orReplace);
+
+            if (orReplace)
+            {
+                db.AddOrReplaceView(view);
+            }
+            else
+            {
+                db.AddView(view);
+            }
+
+            SaveCatalog();
+
+            _logger.Info("Created view: {0}.{1}", databaseName, viewName);
+            return view;
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Drops a view from the specified database.
+    /// </summary>
+    public bool DropView(string databaseName, string viewName, bool ifExists = false)
+    {
+        _lock.EnterWriteLock();
+        try
+        {
+            if (!_databases.TryGetValue(databaseName, out var db))
+            {
+                if (ifExists) return false;
+                throw new DatabaseNotFoundException(databaseName);
+            }
+
+            if (!db.HasView(viewName))
+            {
+                if (ifExists) return false;
+                throw new ViewNotFoundException(viewName);
+            }
+
+            db.RemoveView(viewName);
+            SaveCatalog();
+
+            _logger.Info("Dropped view: {0}.{1}", databaseName, viewName);
+            return true;
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Gets a view by name.
+    /// </summary>
+    public ViewInfo? GetView(string databaseName, string viewName)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            if (!_databases.TryGetValue(databaseName, out var db))
+                return null;
+
+            return db.GetView(viewName);
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Lists all views in a database.
+    /// </summary>
+    public IReadOnlyList<string> ListViews(string databaseName)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            if (!_databases.TryGetValue(databaseName, out var db))
+                throw new DatabaseNotFoundException(databaseName);
+
+            return db.Views.Select(v => v.ViewName).ToList();
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Checks if a name is a table (not a view).
+    /// </summary>
+    public bool IsTable(string databaseName, string name)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            if (!_databases.TryGetValue(databaseName, out var db))
+                return false;
+
+            return db.HasTable(name);
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Checks if a name is a view.
+    /// </summary>
+    public bool IsView(string databaseName, string name)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            if (!_databases.TryGetValue(databaseName, out var db))
+                return false;
+
+            return db.HasView(name);
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    #endregion
+
     /// <summary>
     /// Flushes all data to disk.
     /// </summary>

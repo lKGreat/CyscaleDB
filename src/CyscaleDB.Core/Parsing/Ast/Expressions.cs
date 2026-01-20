@@ -266,3 +266,21 @@ public class LikeExpression : Expression
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitLikeExpression(this);
 }
+
+/// <summary>
+/// System variable expression (e.g., @@version, @@sql_mode).
+/// </summary>
+public class SystemVariableExpression : Expression
+{
+    /// <summary>
+    /// The variable name (without @@ prefix).
+    /// </summary>
+    public string VariableName { get; set; } = null!;
+
+    /// <summary>
+    /// The scope (GLOBAL or SESSION). Defaults to SESSION.
+    /// </summary>
+    public SetScope Scope { get; set; } = SetScope.Session;
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitSystemVariableExpression(this);
+}

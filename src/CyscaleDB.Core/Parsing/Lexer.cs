@@ -80,8 +80,20 @@ public sealed class Lexer
             '>' => ScanGreaterThan(),
             '!' => ScanExclamation(),
             '`' => ScanBacktickIdentifier(),
+            '@' => ScanAtSign(),
             _ => MakeToken(TokenType.Invalid, c.ToString())
         };
+    }
+
+    private Token ScanAtSign()
+    {
+        // Check for @@ (system variable)
+        if (Match('@'))
+        {
+            return MakeToken(TokenType.AtAt, "@@");
+        }
+        // Single @ is invalid for now (user variables not supported)
+        return MakeToken(TokenType.Invalid, "@");
     }
 
     /// <summary>

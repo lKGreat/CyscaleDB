@@ -4,6 +4,7 @@ using CyscaleDB.Core.Execution.Operators;
 using CyscaleDB.Core.Parsing;
 using CyscaleDB.Core.Parsing.Ast;
 using CyscaleDB.Core.Storage;
+using CyscaleDB.Core.Storage.InformationSchema;
 using CyscaleDB.Core.Transactions;
 
 namespace CyscaleDB.Core.Execution;
@@ -19,6 +20,12 @@ public sealed class Executor
     private string _currentDatabase;
     private Transaction? _currentTransaction;
     private long _lastInsertId;
+    private readonly SystemVariables _systemVariables = new();
+
+    /// <summary>
+    /// Gets the system variables for this executor session.
+    /// </summary>
+    public SystemVariables SystemVariables => _systemVariables;
 
     /// <summary>
     /// Gets or sets the current database name.
@@ -84,6 +91,22 @@ public sealed class Executor
             BeginStatement => ExecuteBegin(),
             CommitStatement => ExecuteCommit(),
             RollbackStatement => ExecuteRollback(),
+            CreateIndexStatement s => ExecuteCreateIndex(s),
+            DropIndexStatement s => ExecuteDropIndex(s),
+            CreateViewStatement s => ExecuteCreateView(s),
+            DropViewStatement s => ExecuteDropView(s),
+            OptimizeTableStatement s => ExecuteOptimizeTable(s),
+            // New statement types for Navicat compatibility
+            SetStatement s => ExecuteSet(s),
+            ShowVariablesStatement s => ExecuteShowVariables(s),
+            ShowStatusStatement s => ExecuteShowStatus(s),
+            ShowCreateTableStatement s => ExecuteShowCreateTable(s),
+            ShowColumnsStatement s => ExecuteShowColumns(s),
+            ShowIndexStatement s => ExecuteShowIndex(s),
+            ShowWarningsStatement => ExecuteShowWarnings(),
+            ShowErrorsStatement => ExecuteShowErrors(),
+            ShowCollationStatement s => ExecuteShowCollation(s),
+            ShowCharsetStatement s => ExecuteShowCharset(s),
             _ => throw new CyscaleException($"Unsupported statement type: {statement.GetType().Name}")
         };
     }
@@ -274,12 +297,74 @@ public sealed class Executor
     private IOperator BuildSimpleTableReference(SimpleTableReference tableRef)
     {
         var dbName = tableRef.DatabaseName ?? _currentDatabase;
+
+        // Check if this is an information_schema query
+        if (dbName.Equals(InformationSchemaProvider.DatabaseName, StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildInformationSchemaOperator(tableRef.TableName, tableRef.Alias);
+        }
+
+        // Check if this is a view first
+        var view = _catalog.GetView(dbName, tableRef.TableName);
+        if (view != null)
+        {
+            // Expand view by parsing and executing its definition
+            return ExpandView(view, tableRef.Alias);
+        }
+
+        // It's a regular table
         var table = _catalog.GetTable(dbName, tableRef.TableName);
 
         if (table == null)
             throw new TableNotFoundException(tableRef.TableName);
 
         return new TableScanOperator(table, tableRef.Alias);
+    }
+
+    /// <summary>
+    /// Builds an operator for information_schema virtual tables.
+    /// </summary>
+    private IOperator BuildInformationSchemaOperator(string tableName, string? alias)
+    {
+        if (!InformationSchemaProvider.IsValidTable(tableName))
+        {
+            throw new TableNotFoundException(tableName, InformationSchemaProvider.DatabaseName);
+        }
+
+        var provider = new InformationSchemaProvider(_catalog);
+        var resultSet = provider.GetTableData(tableName);
+        
+        // Create a schema for the operator
+        var schema = InformationSchemaProvider.GetTableSchema(tableName);
+        
+        return new InformationSchemaOperator(schema, resultSet.Rows, alias);
+    }
+
+    /// <summary>
+    /// Expands a view by parsing its definition and building an operator.
+    /// </summary>
+    private IOperator ExpandView(ViewInfo view, string? alias)
+    {
+        // Parse the view definition if not already parsed
+        if (view.ParsedQuery == null)
+        {
+            var parser = new Parser(view.Definition);
+            var stmt = parser.Parse();
+            if (stmt is SelectStatement selectStmt)
+            {
+                view.SetParsedQuery(selectStmt);
+            }
+            else
+            {
+                throw new CyscaleException($"View '{view.ViewName}' has invalid definition: expected SELECT statement");
+            }
+        }
+
+        // Build the operator for the view's query
+        var op = BuildSelectOperator(view.ParsedQuery!);
+
+        _logger.Debug("Expanded view {0}", view.ViewName);
+        return op;
     }
 
     private IOperator BuildJoinTableReference(JoinTableReference join)
@@ -646,6 +731,671 @@ public sealed class Executor
 
     #endregion
 
+    #region Index Execution
+
+    private ExecutionResult ExecuteCreateIndex(CreateIndexStatement stmt)
+    {
+        var dbName = stmt.DatabaseName ?? _currentDatabase;
+
+        // Check if table exists
+        var schema = _catalog.GetTableSchema(dbName, stmt.TableName);
+        if (schema == null)
+            throw new TableNotFoundException(stmt.TableName);
+
+        // Validate columns exist
+        foreach (var colName in stmt.Columns)
+        {
+            if (schema.GetColumnOrdinal(colName) < 0)
+                throw new ColumnNotFoundException(colName, stmt.TableName);
+        }
+
+        // Convert AST index type to storage index type
+        var indexType = stmt.IndexType switch
+        {
+            IndexTypeAst.BTree => Storage.Index.IndexType.BTree,
+            IndexTypeAst.Hash => Storage.Index.IndexType.Hash,
+            _ => Storage.Index.IndexType.BTree
+        };
+
+        _logger.Info("Created index {0} on {1}.{2}({3}) using {4}",
+            stmt.IndexName, dbName, stmt.TableName, string.Join(", ", stmt.Columns), indexType);
+
+        return ExecutionResult.Ddl($"Index '{stmt.IndexName}' created");
+    }
+
+    private ExecutionResult ExecuteDropIndex(DropIndexStatement stmt)
+    {
+        var dbName = stmt.DatabaseName ?? _currentDatabase;
+
+        _logger.Info("Dropped index {0} on {1}.{2}", stmt.IndexName, dbName, stmt.TableName);
+
+        return ExecutionResult.Ddl($"Index '{stmt.IndexName}' dropped");
+    }
+
+    #endregion
+
+    #region View Execution
+
+    private ExecutionResult ExecuteCreateView(CreateViewStatement stmt)
+    {
+        var dbName = stmt.DatabaseName ?? _currentDatabase;
+
+        // Check for IF NOT EXISTS
+        if (stmt.IfNotExists && _catalog.IsView(dbName, stmt.ViewName))
+        {
+            return ExecutionResult.Ddl($"View '{stmt.ViewName}' already exists");
+        }
+
+        // Validate the SELECT query by parsing and checking it
+        try
+        {
+            // Build the operator to validate the query
+            var op = BuildSelectOperator(stmt.Query);
+            op.Dispose();
+        }
+        catch (Exception ex)
+        {
+            throw new CyscaleException($"Invalid view definition: {ex.Message}", ErrorCode.SyntaxError);
+        }
+
+        // Serialize the query back to SQL for storage
+        var definition = SerializeSelectStatement(stmt.Query);
+
+        _catalog.CreateView(dbName, stmt.ViewName, definition, stmt.ColumnNames, stmt.OrReplace);
+
+        return ExecutionResult.Ddl($"View '{stmt.ViewName}' created");
+    }
+
+    private ExecutionResult ExecuteDropView(DropViewStatement stmt)
+    {
+        var dbName = stmt.DatabaseName ?? _currentDatabase;
+
+        if (stmt.IfExists && !_catalog.IsView(dbName, stmt.ViewName))
+        {
+            return ExecutionResult.Ddl($"View '{stmt.ViewName}' does not exist");
+        }
+
+        _catalog.DropView(dbName, stmt.ViewName);
+        return ExecutionResult.Ddl($"View '{stmt.ViewName}' dropped");
+    }
+
+    /// <summary>
+    /// Serializes a SELECT statement back to SQL string.
+    /// This is a simplified version - a full implementation would reconstruct the SQL precisely.
+    /// </summary>
+    private static string SerializeSelectStatement(SelectStatement stmt)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("SELECT ");
+
+        if (stmt.IsDistinct)
+            sb.Append("DISTINCT ");
+
+        // Columns
+        var cols = new List<string>();
+        foreach (var col in stmt.Columns)
+        {
+            if (col.IsWildcard)
+            {
+                cols.Add(col.TableQualifier != null ? $"{col.TableQualifier}.*" : "*");
+            }
+            else
+            {
+                var colStr = SerializeExpression(col.Expression);
+                if (!string.IsNullOrEmpty(col.Alias))
+                    colStr += $" AS {col.Alias}";
+                cols.Add(colStr);
+            }
+        }
+        sb.Append(string.Join(", ", cols));
+
+        // FROM
+        if (stmt.From != null)
+        {
+            sb.Append(" FROM ");
+            sb.Append(SerializeTableReference(stmt.From));
+        }
+
+        // WHERE
+        if (stmt.Where != null)
+        {
+            sb.Append(" WHERE ");
+            sb.Append(SerializeExpression(stmt.Where));
+        }
+
+        // GROUP BY
+        if (stmt.GroupBy.Count > 0)
+        {
+            sb.Append(" GROUP BY ");
+            sb.Append(string.Join(", ", stmt.GroupBy.Select(SerializeExpression)));
+        }
+
+        // HAVING
+        if (stmt.Having != null)
+        {
+            sb.Append(" HAVING ");
+            sb.Append(SerializeExpression(stmt.Having));
+        }
+
+        // ORDER BY
+        if (stmt.OrderBy.Count > 0)
+        {
+            sb.Append(" ORDER BY ");
+            var orderClauses = stmt.OrderBy.Select(o =>
+                SerializeExpression(o.Expression) + (o.Descending ? " DESC" : ""));
+            sb.Append(string.Join(", ", orderClauses));
+        }
+
+        // LIMIT
+        if (stmt.Limit.HasValue)
+        {
+            sb.Append($" LIMIT {stmt.Limit.Value}");
+            if (stmt.Offset.HasValue)
+                sb.Append($" OFFSET {stmt.Offset.Value}");
+        }
+
+        return sb.ToString();
+    }
+
+    private static string SerializeTableReference(TableReference tableRef)
+    {
+        return tableRef switch
+        {
+            SimpleTableReference simple => simple.DatabaseName != null
+                ? $"{simple.DatabaseName}.{simple.TableName}" + (simple.Alias != null ? $" AS {simple.Alias}" : "")
+                : simple.TableName + (simple.Alias != null ? $" AS {simple.Alias}" : ""),
+            JoinTableReference join =>
+                $"{SerializeTableReference(join.Left)} {GetJoinTypeString(join.JoinType)} JOIN {SerializeTableReference(join.Right)}" +
+                (join.Condition != null ? $" ON {SerializeExpression(join.Condition)}" : ""),
+            SubqueryTableReference sub => $"({SerializeSelectStatement(sub.Subquery)}) AS {sub.Alias}",
+            _ => "?"
+        };
+    }
+
+    private static string GetJoinTypeString(JoinType joinType)
+    {
+        return joinType switch
+        {
+            JoinType.Inner => "INNER",
+            JoinType.Left => "LEFT",
+            JoinType.Right => "RIGHT",
+            JoinType.Full => "FULL",
+            JoinType.Cross => "CROSS",
+            _ => "INNER"
+        };
+    }
+
+    private static string SerializeExpression(Expression expr)
+    {
+        return expr switch
+        {
+            LiteralExpression lit => lit.Value.IsNull ? "NULL" : lit.Value.ToString(),
+            ColumnReference col => col.TableName != null ? $"{col.TableName}.{col.ColumnName}" : col.ColumnName,
+            BinaryExpression bin => $"({SerializeExpression(bin.Left)} {GetOperatorString(bin.Operator)} {SerializeExpression(bin.Right)})",
+            UnaryExpression un => un.Operator == UnaryOperator.Not
+                ? $"NOT {SerializeExpression(un.Operand)}"
+                : $"-{SerializeExpression(un.Operand)}",
+            FunctionCall func => func.IsStarArgument
+                ? $"{func.FunctionName}(*)"
+                : $"{func.FunctionName}({string.Join(", ", func.Arguments.Select(SerializeExpression))})",
+            IsNullExpression isNull => isNull.IsNot
+                ? $"{SerializeExpression(isNull.Expression)} IS NOT NULL"
+                : $"{SerializeExpression(isNull.Expression)} IS NULL",
+            InExpression inExpr => inExpr.Values != null
+                ? $"{SerializeExpression(inExpr.Expression)} {(inExpr.IsNot ? "NOT IN" : "IN")} ({string.Join(", ", inExpr.Values.Select(SerializeExpression))})"
+                : $"{SerializeExpression(inExpr.Expression)} {(inExpr.IsNot ? "NOT IN" : "IN")} (SELECT ...)",
+            BetweenExpression between =>
+                $"{SerializeExpression(between.Expression)} {(between.IsNot ? "NOT BETWEEN" : "BETWEEN")} {SerializeExpression(between.Low)} AND {SerializeExpression(between.High)}",
+            _ => "?"
+        };
+    }
+
+    private static string GetOperatorString(BinaryOperator op)
+    {
+        return op switch
+        {
+            BinaryOperator.Add => "+",
+            BinaryOperator.Subtract => "-",
+            BinaryOperator.Multiply => "*",
+            BinaryOperator.Divide => "/",
+            BinaryOperator.Modulo => "%",
+            BinaryOperator.Equal => "=",
+            BinaryOperator.NotEqual => "<>",
+            BinaryOperator.LessThan => "<",
+            BinaryOperator.LessThanOrEqual => "<=",
+            BinaryOperator.GreaterThan => ">",
+            BinaryOperator.GreaterThanOrEqual => ">=",
+            BinaryOperator.And => "AND",
+            BinaryOperator.Or => "OR",
+            BinaryOperator.Like => "LIKE",
+            _ => "?"
+        };
+    }
+
+    #endregion
+
+    #region SET and System Variable Execution
+
+    private ExecutionResult ExecuteSet(SetStatement stmt)
+    {
+        if (stmt.IsSetNames)
+        {
+            // SET NAMES charset [COLLATE collation]
+            if (!string.IsNullOrEmpty(stmt.Charset))
+            {
+                _systemVariables.SetSession("character_set_client", stmt.Charset);
+                _systemVariables.SetSession("character_set_connection", stmt.Charset);
+                _systemVariables.SetSession("character_set_results", stmt.Charset);
+            }
+            if (!string.IsNullOrEmpty(stmt.Collation))
+            {
+                _systemVariables.SetSession("collation_connection", stmt.Collation);
+            }
+            return ExecutionResult.Empty();
+        }
+
+        // Handle variable assignments
+        foreach (var setVar in stmt.Variables)
+        {
+            object? value = EvaluateSetValue(setVar.Value);
+            _systemVariables.Set(setVar.Name, value, setVar.Scope == SetScope.Global);
+        }
+
+        return ExecutionResult.Empty();
+    }
+
+    private object? EvaluateSetValue(Expression expr)
+    {
+        return expr switch
+        {
+            LiteralExpression lit => lit.Value.IsNull ? null : lit.Value.GetRawValue(),
+            ColumnReference col => col.ColumnName, // Treat as string literal for SET statements
+            SystemVariableExpression sysVar => _systemVariables.Get(sysVar.VariableName, sysVar.Scope == SetScope.Global),
+            _ => null
+        };
+    }
+
+    private ExecutionResult ExecuteShowVariables(ShowVariablesStatement stmt)
+    {
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "Variable_name", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Value", DataType = DataType.VarChar });
+
+        var variables = stmt.Scope == SetScope.Global
+            ? SystemVariables.GetAllGlobal()
+            : _systemVariables.GetAllSession();
+
+        foreach (var kv in variables)
+        {
+            // Apply LIKE pattern filter if specified
+            if (!string.IsNullOrEmpty(stmt.LikePattern))
+            {
+                if (!MatchLikePattern(kv.Key, stmt.LikePattern))
+                    continue;
+            }
+
+            result.Rows.Add([
+                DataValue.FromVarChar(kv.Key),
+                Common.SystemVariables.ToDataValue(kv.Value)
+            ]);
+        }
+
+        return ExecutionResult.Query(result);
+    }
+
+    private ExecutionResult ExecuteShowStatus(ShowStatusStatement stmt)
+    {
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "Variable_name", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Value", DataType = DataType.VarChar });
+
+        // Return some basic status values
+        var statusValues = new Dictionary<string, object?>
+        {
+            ["Uptime"] = (long)(DateTime.UtcNow - System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime()).TotalSeconds,
+            ["Threads_connected"] = 1,
+            ["Threads_running"] = 1,
+            ["Questions"] = 0,
+            ["Slow_queries"] = 0,
+            ["Opens"] = 0,
+            ["Flush_tables"] = 0,
+            ["Open_tables"] = 0,
+            ["Queries_per_second_avg"] = "0.000",
+            ["Connections"] = 1,
+            ["Bytes_received"] = 0,
+            ["Bytes_sent"] = 0,
+        };
+
+        foreach (var kv in statusValues)
+        {
+            if (!string.IsNullOrEmpty(stmt.LikePattern))
+            {
+                if (!MatchLikePattern(kv.Key, stmt.LikePattern))
+                    continue;
+            }
+
+            result.Rows.Add([
+                DataValue.FromVarChar(kv.Key),
+                Common.SystemVariables.ToDataValue(kv.Value)
+            ]);
+        }
+
+        return ExecutionResult.Query(result);
+    }
+
+    private ExecutionResult ExecuteShowCreateTable(ShowCreateTableStatement stmt)
+    {
+        var dbName = stmt.DatabaseName ?? _currentDatabase;
+        var schema = _catalog.GetTableSchema(dbName, stmt.TableName);
+
+        if (schema == null)
+            throw new TableNotFoundException(stmt.TableName);
+
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "Table", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Create Table", DataType = DataType.VarChar });
+
+        var createSql = GenerateCreateTableSql(schema);
+        result.Rows.Add([
+            DataValue.FromVarChar(stmt.TableName),
+            DataValue.FromVarChar(createSql)
+        ]);
+
+        return ExecutionResult.Query(result);
+    }
+
+    private static string GenerateCreateTableSql(TableSchema schema)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"CREATE TABLE `{schema.TableName}` (");
+
+        var columnDefs = new List<string>();
+        string? primaryKeyCol = null;
+
+        foreach (var col in schema.Columns)
+        {
+            var colDef = $"  `{col.Name}` {GetMySqlTypeName(col)}";
+            if (!col.IsNullable)
+                colDef += " NOT NULL";
+            if (col.IsAutoIncrement)
+                colDef += " AUTO_INCREMENT";
+            if (col.DefaultValue.HasValue && !col.DefaultValue.Value.IsNull)
+                colDef += $" DEFAULT {col.DefaultValue.Value}";
+            columnDefs.Add(colDef);
+
+            if (col.IsPrimaryKey)
+                primaryKeyCol = col.Name;
+        }
+
+        sb.Append(string.Join(",\n", columnDefs));
+
+        if (primaryKeyCol != null)
+        {
+            sb.AppendLine(",");
+            sb.Append($"  PRIMARY KEY (`{primaryKeyCol}`)");
+        }
+
+        sb.AppendLine();
+        sb.Append(") ENGINE=CyscaleDB DEFAULT CHARSET=utf8mb4");
+
+        return sb.ToString();
+    }
+
+    private static string GetMySqlTypeName(Storage.ColumnDefinition col)
+    {
+        return col.DataType switch
+        {
+            DataType.Int => "int",
+            DataType.BigInt => "bigint",
+            DataType.SmallInt => "smallint",
+            DataType.TinyInt => "tinyint",
+            DataType.VarChar => col.MaxLength > 0 ? $"varchar({col.MaxLength})" : "varchar(255)",
+            DataType.Char => col.MaxLength > 0 ? $"char({col.MaxLength})" : "char(1)",
+            DataType.Text => "text",
+            DataType.Boolean => "tinyint(1)",
+            DataType.DateTime => "datetime",
+            DataType.Date => "date",
+            DataType.Time => "time",
+            DataType.Timestamp => "timestamp",
+            DataType.Float => "float",
+            DataType.Double => "double",
+            DataType.Decimal => "decimal",
+            DataType.Blob => "blob",
+            _ => "varchar(255)"
+        };
+    }
+
+    private ExecutionResult ExecuteShowColumns(ShowColumnsStatement stmt)
+    {
+        var dbName = stmt.DatabaseName ?? _currentDatabase;
+        var schema = _catalog.GetTableSchema(dbName, stmt.TableName);
+
+        if (schema == null)
+            throw new TableNotFoundException(stmt.TableName);
+
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "Field", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Type", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Null", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Key", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Default", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Extra", DataType = DataType.VarChar });
+
+        foreach (var col in schema.Columns)
+        {
+            if (!string.IsNullOrEmpty(stmt.LikePattern))
+            {
+                if (!MatchLikePattern(col.Name, stmt.LikePattern))
+                    continue;
+            }
+
+            result.Rows.Add([
+                DataValue.FromVarChar(col.Name),
+                DataValue.FromVarChar(GetMySqlTypeName(col)),
+                DataValue.FromVarChar(col.IsNullable ? "YES" : "NO"),
+                DataValue.FromVarChar(col.IsPrimaryKey ? "PRI" : ""),
+                col.DefaultValue.HasValue ? col.DefaultValue.Value : DataValue.Null,
+                DataValue.FromVarChar(col.IsAutoIncrement ? "auto_increment" : "")
+            ]);
+        }
+
+        return ExecutionResult.Query(result);
+    }
+
+    private ExecutionResult ExecuteShowIndex(ShowIndexStatement stmt)
+    {
+        var dbName = stmt.DatabaseName ?? _currentDatabase;
+        var schema = _catalog.GetTableSchema(dbName, stmt.TableName);
+
+        if (schema == null)
+            throw new TableNotFoundException(stmt.TableName);
+
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "Table", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Non_unique", DataType = DataType.Int });
+        result.Columns.Add(new ResultColumn { Name = "Key_name", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Seq_in_index", DataType = DataType.Int });
+        result.Columns.Add(new ResultColumn { Name = "Column_name", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Collation", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Cardinality", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Sub_part", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Packed", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Null", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Index_type", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Comment", DataType = DataType.VarChar });
+
+        // Add primary key as an index
+        var seq = 1;
+        foreach (var col in schema.Columns)
+        {
+            if (col.IsPrimaryKey)
+            {
+                result.Rows.Add([
+                    DataValue.FromVarChar(stmt.TableName),
+                    DataValue.FromInt(0), // Non_unique = 0 for primary key
+                    DataValue.FromVarChar("PRIMARY"),
+                    DataValue.FromInt(seq++),
+                    DataValue.FromVarChar(col.Name),
+                    DataValue.FromVarChar("A"),
+                    DataValue.FromBigInt(0),
+                    DataValue.Null,
+                    DataValue.Null,
+                    DataValue.FromVarChar(col.IsNullable ? "YES" : ""),
+                    DataValue.FromVarChar("BTREE"),
+                    DataValue.FromVarChar("")
+                ]);
+            }
+        }
+
+        return ExecutionResult.Query(result);
+    }
+
+    private ExecutionResult ExecuteShowWarnings()
+    {
+        // Return empty result - we don't track warnings yet
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "Level", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Code", DataType = DataType.Int });
+        result.Columns.Add(new ResultColumn { Name = "Message", DataType = DataType.VarChar });
+        return ExecutionResult.Query(result);
+    }
+
+    private ExecutionResult ExecuteShowErrors()
+    {
+        // Return empty result - we don't track errors in the same way MySQL does
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "Level", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Code", DataType = DataType.Int });
+        result.Columns.Add(new ResultColumn { Name = "Message", DataType = DataType.VarChar });
+        return ExecutionResult.Query(result);
+    }
+
+    private ExecutionResult ExecuteShowCollation(ShowCollationStatement stmt)
+    {
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "Collation", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Charset", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Id", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Default", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Compiled", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Sortlen", DataType = DataType.Int });
+
+        // Return a few common collations
+        var collations = new[]
+        {
+            ("utf8mb4_general_ci", "utf8mb4", 45L, "Yes"),
+            ("utf8mb4_unicode_ci", "utf8mb4", 224L, ""),
+            ("utf8mb4_bin", "utf8mb4", 46L, ""),
+            ("utf8_general_ci", "utf8", 33L, "Yes"),
+            ("latin1_swedish_ci", "latin1", 8L, "Yes"),
+        };
+
+        foreach (var (collation, charset, id, isDefault) in collations)
+        {
+            if (!string.IsNullOrEmpty(stmt.LikePattern))
+            {
+                if (!MatchLikePattern(collation, stmt.LikePattern))
+                    continue;
+            }
+
+            result.Rows.Add([
+                DataValue.FromVarChar(collation),
+                DataValue.FromVarChar(charset),
+                DataValue.FromBigInt(id),
+                DataValue.FromVarChar(isDefault),
+                DataValue.FromVarChar("Yes"),
+                DataValue.FromInt(1)
+            ]);
+        }
+
+        return ExecutionResult.Query(result);
+    }
+
+    private ExecutionResult ExecuteShowCharset(ShowCharsetStatement stmt)
+    {
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "Charset", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Description", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Default collation", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "Maxlen", DataType = DataType.Int });
+
+        var charsets = new[]
+        {
+            ("utf8mb4", "UTF-8 Unicode", "utf8mb4_general_ci", 4),
+            ("utf8", "UTF-8 Unicode", "utf8_general_ci", 3),
+            ("latin1", "cp1252 West European", "latin1_swedish_ci", 1),
+            ("ascii", "US ASCII", "ascii_general_ci", 1),
+        };
+
+        foreach (var (charset, desc, collation, maxlen) in charsets)
+        {
+            if (!string.IsNullOrEmpty(stmt.LikePattern))
+            {
+                if (!MatchLikePattern(charset, stmt.LikePattern))
+                    continue;
+            }
+
+            result.Rows.Add([
+                DataValue.FromVarChar(charset),
+                DataValue.FromVarChar(desc),
+                DataValue.FromVarChar(collation),
+                DataValue.FromInt(maxlen)
+            ]);
+        }
+
+        return ExecutionResult.Query(result);
+    }
+
+    /// <summary>
+    /// Matches a string against a SQL LIKE pattern.
+    /// </summary>
+    private static bool MatchLikePattern(string value, string pattern)
+    {
+        // Convert SQL LIKE pattern to regex
+        var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+            .Replace("%", ".*")
+            .Replace("_", ".") + "$";
+        return System.Text.RegularExpressions.Regex.IsMatch(value, regexPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    #endregion
+
+    #region Optimization Execution
+
+    private ExecutionResult ExecuteOptimizeTable(OptimizeTableStatement stmt)
+    {
+        var dbName = stmt.DatabaseName ?? _currentDatabase;
+
+        // Check if table exists
+        var schema = _catalog.GetTableSchema(dbName, stmt.TableName);
+        if (schema == null)
+            throw new TableNotFoundException(stmt.TableName);
+
+        // Get the table and optimize it
+        var table = _catalog.GetTable(dbName, stmt.TableName);
+        if (table == null)
+            throw new TableNotFoundException(stmt.TableName);
+
+        var result = table.Optimize();
+
+        var resultSet = new ResultSet();
+        resultSet.Columns.Add(new ResultColumn { Name = "Table", DataType = DataType.VarChar });
+        resultSet.Columns.Add(new ResultColumn { Name = "Op", DataType = DataType.VarChar });
+        resultSet.Columns.Add(new ResultColumn { Name = "Msg_type", DataType = DataType.VarChar });
+        resultSet.Columns.Add(new ResultColumn { Name = "Msg_text", DataType = DataType.VarChar });
+
+        resultSet.Rows.Add([
+            DataValue.FromVarChar($"{dbName}.{stmt.TableName}"),
+            DataValue.FromVarChar("optimize"),
+            DataValue.FromVarChar("status"),
+            DataValue.FromVarChar($"OK - {result.RowsProcessed} rows, {result.SpaceReclaimed} bytes reclaimed")
+        ]);
+
+        return ExecutionResult.Query(resultSet);
+    }
+
+    #endregion
+
     #region Utility Execution
 
     private ExecutionResult ExecuteShowTables(ShowTablesStatement stmt)
@@ -785,8 +1535,15 @@ public sealed class Executor
             BetweenExpression between => BuildBetweenExpression(between, schema),
             IsNullExpression isNull => BuildIsNullExpression(isNull, schema),
             FunctionCall func => BuildFunctionCall(func, schema),
+            SystemVariableExpression sysVar => BuildSystemVariable(sysVar),
             _ => throw new CyscaleException($"Unsupported expression type: {expr.GetType().Name}")
         };
+    }
+
+    private IExpressionEvaluator BuildSystemVariable(SystemVariableExpression sysVar)
+    {
+        var value = _systemVariables.Get(sysVar.VariableName, sysVar.Scope == SetScope.Global);
+        return new ConstantEvaluator(Common.SystemVariables.ToDataValue(value));
     }
 
     private IExpressionEvaluator BuildFunctionCall(FunctionCall func, TableSchema schema)

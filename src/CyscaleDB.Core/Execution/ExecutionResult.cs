@@ -162,6 +162,27 @@ public class ResultSet
 
         return result;
     }
+
+    /// <summary>
+    /// Creates a result set from a table schema (with empty rows).
+    /// </summary>
+    public static ResultSet FromSchema(TableSchema schema)
+    {
+        var result = new ResultSet();
+
+        foreach (var col in schema.Columns)
+        {
+            result.Columns.Add(new ResultColumn
+            {
+                Name = col.Name,
+                DataType = col.DataType,
+                TableName = schema.TableName,
+                DatabaseName = schema.DatabaseName
+            });
+        }
+
+        return result;
+    }
 }
 
 /// <summary>

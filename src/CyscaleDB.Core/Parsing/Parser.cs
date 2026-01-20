@@ -77,9 +77,12 @@ public sealed class Parser
             TokenType.SHOW => ParseShowStatement(),
             TokenType.DESCRIBE => ParseDescribeStatement(),
             TokenType.BEGIN => ParseBeginStatement(),
+            TokenType.START => ParseStartStatement(),
             TokenType.COMMIT => ParseCommitStatement(),
             TokenType.ROLLBACK => ParseRollbackStatement(),
             TokenType.OPTIMIZE => ParseOptimizeStatement(),
+            TokenType.SET => ParseSetStatement(),
+            TokenType.KILL => ParseKillStatement(),
             _ => throw Error($"Unexpected token at start of statement: {_currentToken.Value}")
         };
     }
@@ -969,6 +972,17 @@ public sealed class Parser
     {
         Expect(TokenType.SHOW);
 
+        // Check for GLOBAL or SESSION scope
+        var scope = SetScope.Session;
+        if (Match(TokenType.GLOBAL))
+        {
+            scope = SetScope.Global;
+        }
+        else if (Match(TokenType.SESSION))
+        {
+            scope = SetScope.Session;
+        }
+
         if (Check(TokenType.TABLES))
         {
             Advance();
@@ -984,8 +998,183 @@ public sealed class Parser
             Advance();
             return new ShowDatabasesStatement();
         }
+        else if (Check(TokenType.VARIABLES))
+        {
+            Advance();
+            var stmt = new ShowVariablesStatement { Scope = scope };
+            if (Match(TokenType.LIKE))
+            {
+                stmt.LikePattern = ExpectString();
+            }
+            return stmt;
+        }
+        else if (Check(TokenType.STATUS))
+        {
+            Advance();
+            var stmt = new ShowStatusStatement { Scope = scope };
+            if (Match(TokenType.LIKE))
+            {
+                stmt.LikePattern = ExpectString();
+            }
+            return stmt;
+        }
+        else if (Check(TokenType.CREATE))
+        {
+            Advance();
+            if (Match(TokenType.TABLE))
+            {
+                var stmt = new ShowCreateTableStatement();
+                stmt.TableName = ExpectIdentifier();
+                if (Match(TokenType.Dot))
+                {
+                    stmt.DatabaseName = stmt.TableName;
+                    stmt.TableName = ExpectIdentifier();
+                }
+                return stmt;
+            }
+            else if (Match(TokenType.DATABASE))
+            {
+                // SHOW CREATE DATABASE - return as ShowDatabasesStatement for compatibility
+                ExpectIdentifier(); // Consume database name
+                return new ShowDatabasesStatement();
+            }
+            throw Error($"Expected TABLE or DATABASE after SHOW CREATE, got: {_currentToken.Value}");
+        }
+        else if (Check(TokenType.COLUMNS) || MatchIdentifier("FIELDS"))
+        {
+            if (Check(TokenType.COLUMNS)) Advance();
+            Expect(TokenType.FROM);
+            var stmt = new ShowColumnsStatement();
+            stmt.TableName = ExpectIdentifier();
+            if (Match(TokenType.Dot))
+            {
+                stmt.DatabaseName = stmt.TableName;
+                stmt.TableName = ExpectIdentifier();
+            }
+            if (Match(TokenType.FROM))
+            {
+                stmt.DatabaseName = ExpectIdentifier();
+            }
+            if (Match(TokenType.LIKE))
+            {
+                stmt.LikePattern = ExpectString();
+            }
+            return stmt;
+        }
+        else if (Check(TokenType.INDEX) || MatchIdentifier("INDEXES") || MatchIdentifier("KEYS"))
+        {
+            if (Check(TokenType.INDEX)) Advance();
+            Expect(TokenType.FROM);
+            var stmt = new ShowIndexStatement();
+            stmt.TableName = ExpectIdentifier();
+            if (Match(TokenType.Dot))
+            {
+                stmt.DatabaseName = stmt.TableName;
+                stmt.TableName = ExpectIdentifier();
+            }
+            if (Match(TokenType.FROM))
+            {
+                stmt.DatabaseName = ExpectIdentifier();
+            }
+            return stmt;
+        }
+        else if (Check(TokenType.WARNINGS))
+        {
+            Advance();
+            return new ShowWarningsStatement();
+        }
+        else if (Check(TokenType.ERRORS))
+        {
+            Advance();
+            return new ShowErrorsStatement();
+        }
+        else if (Check(TokenType.COLLATION))
+        {
+            Advance();
+            var stmt = new ShowCollationStatement();
+            if (Match(TokenType.LIKE))
+            {
+                stmt.LikePattern = ExpectString();
+            }
+            return stmt;
+        }
+        else if (Check(TokenType.CHARSET) || MatchIdentifier("CHARACTER"))
+        {
+            if (Check(TokenType.CHARSET))
+            {
+                Advance();
+            }
+            else
+            {
+                // CHARACTER SET
+                Expect(TokenType.SET);
+            }
+            var stmt = new ShowCharsetStatement();
+            if (Match(TokenType.LIKE))
+            {
+                stmt.LikePattern = ExpectString();
+            }
+            return stmt;
+        }
+        // Handle SHOW FULL TABLES, SHOW FULL COLUMNS, etc.
+        else if (MatchIdentifier("FULL"))
+        {
+            if (Check(TokenType.TABLES))
+            {
+                Advance();
+                var stmt = new ShowTablesStatement();
+                if (Match(TokenType.FROM))
+                {
+                    stmt.DatabaseName = ExpectIdentifier();
+                }
+                return stmt;
+            }
+            else if (Check(TokenType.COLUMNS) || MatchIdentifier("FIELDS"))
+            {
+                if (Check(TokenType.COLUMNS)) Advance();
+                Expect(TokenType.FROM);
+                var stmt = new ShowColumnsStatement();
+                stmt.TableName = ExpectIdentifier();
+                if (Match(TokenType.Dot))
+                {
+                    stmt.DatabaseName = stmt.TableName;
+                    stmt.TableName = ExpectIdentifier();
+                }
+                if (Match(TokenType.FROM))
+                {
+                    stmt.DatabaseName = ExpectIdentifier();
+                }
+                return stmt;
+            }
+        }
+        // SHOW PROCESSLIST - return empty for compatibility
+        else if (MatchIdentifier("PROCESSLIST"))
+        {
+            return new ShowStatusStatement();
+        }
+        // SHOW ENGINE - return empty for compatibility
+        else if (MatchIdentifier("ENGINE") || MatchIdentifier("ENGINES"))
+        {
+            // Skip remaining tokens until end of statement
+            while (!Check(TokenType.Semicolon) && !Check(TokenType.EOF))
+            {
+                Advance();
+            }
+            return new ShowStatusStatement();
+        }
 
-        throw Error($"Expected TABLES or DATABASES after SHOW, got: {_currentToken.Value}");
+        throw Error($"Unexpected token after SHOW: {_currentToken.Value}");
+    }
+
+    private string ExpectString()
+    {
+        if (!Check(TokenType.StringLiteral))
+        {
+            throw Error($"Expected string literal, got: {_currentToken.Value}");
+        }
+        var value = _currentToken.Value;
+        Advance();
+        return value;
     }
 
     private DescribeStatement ParseDescribeStatement()
@@ -1023,6 +1212,145 @@ public sealed class Parser
     {
         Expect(TokenType.ROLLBACK);
         return new RollbackStatement();
+    }
+
+    private BeginStatement ParseStartStatement()
+    {
+        Expect(TokenType.START);
+        Expect(TokenType.TRANSACTION);
+        return new BeginStatement();
+    }
+
+    #endregion
+
+    #region SET Statement
+
+    private SetStatement ParseSetStatement()
+    {
+        Expect(TokenType.SET);
+        var stmt = new SetStatement();
+
+        // Check for SET NAMES
+        if (Check(TokenType.NAMES))
+        {
+            Advance();
+            stmt.IsSetNames = true;
+            stmt.Charset = ExpectIdentifierOrKeyword();
+            
+            // Optional COLLATE clause
+            if (Match(TokenType.COLLATION) || MatchIdentifier("COLLATE"))
+            {
+                stmt.Collation = ExpectIdentifierOrKeyword();
+            }
+            return stmt;
+        }
+
+        // Check for SET CHARSET
+        if (Check(TokenType.CHARSET))
+        {
+            Advance();
+            stmt.IsSetNames = true;
+            stmt.Charset = ExpectIdentifierOrKeyword();
+            return stmt;
+        }
+
+        // Parse variable assignments: SET var = value [, var = value ...]
+        do
+        {
+            var setVar = new SetVariable();
+
+            // Check for GLOBAL or SESSION scope
+            if (Match(TokenType.GLOBAL))
+            {
+                setVar.Scope = SetScope.Global;
+            }
+            else if (Match(TokenType.SESSION))
+            {
+                setVar.Scope = SetScope.Session;
+            }
+
+            // Check for @@global. or @@session. prefix
+            if (Check(TokenType.AtAt))
+            {
+                Advance();
+                var varName = ExpectIdentifierOrKeyword();
+                
+                if (varName.Equals("global", StringComparison.OrdinalIgnoreCase) && Match(TokenType.Dot))
+                {
+                    setVar.Scope = SetScope.Global;
+                    setVar.Name = ExpectIdentifierOrKeyword();
+                }
+                else if (varName.Equals("session", StringComparison.OrdinalIgnoreCase) && Match(TokenType.Dot))
+                {
+                    setVar.Scope = SetScope.Session;
+                    setVar.Name = ExpectIdentifierOrKeyword();
+                }
+                else
+                {
+                    setVar.Name = varName;
+                }
+            }
+            else
+            {
+                setVar.Name = ExpectIdentifierOrKeyword();
+            }
+
+            Expect(TokenType.Equal);
+            setVar.Value = ParseExpression();
+            stmt.Variables.Add(setVar);
+        } while (Match(TokenType.Comma));
+
+        return stmt;
+    }
+
+    private Statement ParseKillStatement()
+    {
+        Expect(TokenType.KILL);
+        // Skip the connection ID - we don't actually support killing connections
+        if (Check(TokenType.IntegerLiteral))
+        {
+            Advance();
+        }
+        // Return a no-op statement (just acknowledge the command)
+        return new SetStatement { Variables = [] };
+    }
+
+    /// <summary>
+    /// Expects an identifier or treats a keyword as an identifier.
+    /// Used for variable names which might be reserved words.
+    /// </summary>
+    private string ExpectIdentifierOrKeyword()
+    {
+        // Accept identifier
+        if (Check(TokenType.Identifier))
+        {
+            var value = _currentToken.Value;
+            Advance();
+            return value;
+        }
+
+        // Accept keywords as identifiers (for variable names like 'sql_mode', 'autocommit', etc.)
+        if (_currentToken.Type >= TokenType.SELECT)
+        {
+            var value = _currentToken.Value;
+            Advance();
+            return value;
+        }
+
+        throw Error($"Expected identifier, got: {_currentToken.Value}");
+    }
+
+    /// <summary>
+    /// Matches an identifier with a specific value (case-insensitive).
+    /// </summary>
+    private bool MatchIdentifier(string value)
+    {
+        if (Check(TokenType.Identifier) && _currentToken.Value.Equals(value, StringComparison.OrdinalIgnoreCase))
+        {
+            Advance();
+            return true;
+        }
+        return false;
     }
 
     #endregion
@@ -1307,6 +1635,28 @@ public sealed class Parser
             var value = _currentToken.Value;
             Advance();
             return new LiteralExpression { Value = DataValue.FromVarChar(value) };
+        }
+
+        // System variable (@@variable_name)
+        if (Check(TokenType.AtAt))
+        {
+            Advance();
+            var varName = ExpectIdentifierOrKeyword();
+            var scope = SetScope.Session;
+
+            // Check for @@global.xxx or @@session.xxx
+            if (varName.Equals("global", StringComparison.OrdinalIgnoreCase) && Match(TokenType.Dot))
+            {
+                scope = SetScope.Global;
+                varName = ExpectIdentifierOrKeyword();
+            }
+            else if (varName.Equals("session", StringComparison.OrdinalIgnoreCase) && Match(TokenType.Dot))
+            {
+                scope = SetScope.Session;
+                varName = ExpectIdentifierOrKeyword();
+            }
+
+            return new SystemVariableExpression { VariableName = varName, Scope = scope };
         }
 
         // Identifier (column or function call)

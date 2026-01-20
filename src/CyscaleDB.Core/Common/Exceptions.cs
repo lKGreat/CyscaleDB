@@ -58,11 +58,19 @@ public class SqlSyntaxException : CyscaleException
 public class TableNotFoundException : CyscaleException
 {
     public string TableName { get; }
+    public string? DatabaseName { get; }
 
     public TableNotFoundException(string tableName)
         : base($"Table '{tableName}' does not exist", ErrorCode.TableNotFound)
     {
         TableName = tableName;
+    }
+
+    public TableNotFoundException(string tableName, string databaseName)
+        : base($"Table '{databaseName}.{tableName}' does not exist", ErrorCode.TableNotFound)
+    {
+        TableName = tableName;
+        DatabaseName = databaseName;
     }
 }
 

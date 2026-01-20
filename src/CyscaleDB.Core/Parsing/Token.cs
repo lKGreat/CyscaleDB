@@ -188,6 +188,24 @@ public enum TokenType
 
     // Optimization keywords
     OPTIMIZE,
+
+    // SET statement keywords
+    NAMES,
+    GLOBAL,
+    SESSION,
+    VARIABLES,
+    STATUS,
+    COLUMNS,
+    WARNINGS,
+    ERRORS,
+    START,
+    TRANSACTION,
+    KILL,
+    CHARSET,
+    COLLATION,
+
+    // System variable prefix
+    AtAt,               // @@
 }
 
 /// <summary>
@@ -303,6 +321,21 @@ public static class Keywords
 
         // Optimization keywords
         ["OPTIMIZE"] = TokenType.OPTIMIZE,
+
+        // SET statement keywords
+        ["NAMES"] = TokenType.NAMES,
+        ["GLOBAL"] = TokenType.GLOBAL,
+        ["SESSION"] = TokenType.SESSION,
+        ["VARIABLES"] = TokenType.VARIABLES,
+        ["STATUS"] = TokenType.STATUS,
+        ["COLUMNS"] = TokenType.COLUMNS,
+        ["WARNINGS"] = TokenType.WARNINGS,
+        ["ERRORS"] = TokenType.ERRORS,
+        ["START"] = TokenType.START,
+        ["TRANSACTION"] = TokenType.TRANSACTION,
+        ["KILL"] = TokenType.KILL,
+        ["CHARSET"] = TokenType.CHARSET,
+        ["COLLATION"] = TokenType.COLLATION,
     };
 
     /// <summary>

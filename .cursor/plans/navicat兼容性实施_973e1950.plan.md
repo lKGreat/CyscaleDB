@@ -4,19 +4,19 @@ overview: 为 CyscaleDB 添加 Navicat 客户端连接所需的功能支持，�
 todos:
   - id: set-statement
     content: 实现 SET 语句支持（SET NAMES, SET autocommit 等）
-    status: in_progress
+    status: completed
   - id: system-variables
     content: 实现 @@variable 系统变量查询支持
-    status: pending
+    status: completed
   - id: show-extended
     content: 扩展 SHOW 语句（VARIABLES, CREATE TABLE, COLUMNS, INDEX）
-    status: pending
+    status: completed
   - id: information-schema
     content: 实现 information_schema 系统数据库
-    status: pending
+    status: completed
   - id: user-auth
     content: 实现基础用户认证系统
-    status: pending
+    status: in_progress
 ---
 
 # Navicat MySQL 客户端兼容性实施计划

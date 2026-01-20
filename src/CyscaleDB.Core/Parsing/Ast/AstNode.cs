@@ -37,6 +37,20 @@ public interface IAstVisitor<T>
     T VisitDropViewStatement(DropViewStatement node);
     T VisitOptimizeTableStatement(OptimizeTableStatement node);
     
+    // SET statement
+    T VisitSetStatement(SetStatement node);
+    
+    // Extended SHOW statements
+    T VisitShowVariablesStatement(ShowVariablesStatement node);
+    T VisitShowStatusStatement(ShowStatusStatement node);
+    T VisitShowCreateTableStatement(ShowCreateTableStatement node);
+    T VisitShowColumnsStatement(ShowColumnsStatement node);
+    T VisitShowIndexStatement(ShowIndexStatement node);
+    T VisitShowWarningsStatement(ShowWarningsStatement node);
+    T VisitShowErrorsStatement(ShowErrorsStatement node);
+    T VisitShowCollationStatement(ShowCollationStatement node);
+    T VisitShowCharsetStatement(ShowCharsetStatement node);
+    
     T VisitBinaryExpression(BinaryExpression node);
     T VisitUnaryExpression(UnaryExpression node);
     T VisitLiteralExpression(LiteralExpression node);
@@ -49,4 +63,5 @@ public interface IAstVisitor<T>
     T VisitLikeExpression(LikeExpression node);
     T VisitExistsExpression(ExistsExpression node);
     T VisitColumnDefinitionNode(ColumnDefinitionNode node);
+    T VisitSystemVariableExpression(SystemVariableExpression node);
 }
