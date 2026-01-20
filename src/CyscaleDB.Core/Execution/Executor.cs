@@ -218,7 +218,7 @@ public sealed class Executor
     {
         return name.ToUpperInvariant() switch
         {
-            "COUNT" or "SUM" or "AVG" or "MIN" or "MAX" => true,
+            "COUNT" or "SUM" or "AVG" or "MIN" or "MAX" or "GROUP_CONCAT" => true,
             _ => false
         };
     }
@@ -275,6 +275,7 @@ public sealed class Executor
                     "AVG" => AggregateType.Avg,
                     "MIN" => AggregateType.Min,
                     "MAX" => AggregateType.Max,
+                    "GROUP_CONCAT" => AggregateType.GroupConcat,
                     _ => throw new CyscaleException($"Unknown aggregate function: {func.FunctionName}")
                 };
 
@@ -288,11 +289,17 @@ public sealed class Executor
                 {
                     AggregateType.CountAll or AggregateType.Count => DataType.BigInt,
                     AggregateType.Avg => DataType.Double,
+                    AggregateType.GroupConcat => DataType.Text,
                     _ => func.Arguments.Count > 0 ? InferDataType(func.Arguments[0], input.Schema) : DataType.BigInt
                 };
 
                 var name = col.Alias ?? $"{func.FunctionName}(*)";
-                aggregates.Add(new AggregateSpec(aggType, argExpr, name, outputType));
+                
+                // Extract separator for GROUP_CONCAT (default is comma)
+                var separator = func.Separator ?? ",";
+                var isDistinct = func.IsDistinct;
+                
+                aggregates.Add(new AggregateSpec(aggType, argExpr, name, outputType, separator, isDistinct));
             }
         }
 

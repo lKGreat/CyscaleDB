@@ -14,7 +14,8 @@ public enum AggregateType
     Sum,
     Avg,
     Min,
-    Max
+    Max,
+    GroupConcat
 }
 
 /// <summary>
@@ -26,13 +27,23 @@ public class AggregateSpec
     public IExpressionEvaluator? Expression { get; }
     public string OutputName { get; }
     public DataType OutputType { get; }
+    /// <summary>
+    /// Separator string for GROUP_CONCAT (default is comma).
+    /// </summary>
+    public string Separator { get; }
+    /// <summary>
+    /// Whether DISTINCT is applied to the aggregate.
+    /// </summary>
+    public bool IsDistinct { get; }
 
-    public AggregateSpec(AggregateType type, IExpressionEvaluator? expression, string outputName, DataType outputType)
+    public AggregateSpec(AggregateType type, IExpressionEvaluator? expression, string outputName, DataType outputType, string separator = ",", bool isDistinct = false)
     {
         Type = type;
         Expression = expression;
         OutputName = outputName;
         OutputType = outputType;
+        Separator = separator;
+        IsDistinct = isDistinct;
     }
 }
 
@@ -222,6 +233,7 @@ public sealed class GroupByOperator : OperatorBase
             AggregateType.Avg => ComputeAvg(agg, rows),
             AggregateType.Min => ComputeMin(agg, rows),
             AggregateType.Max => ComputeMax(agg, rows),
+            AggregateType.GroupConcat => ComputeGroupConcat(agg, rows),
             _ => DataValue.Null
         };
     }
@@ -334,6 +346,40 @@ public sealed class GroupByOperator : OperatorBase
         }
 
         return max ?? DataValue.Null;
+    }
+
+    private DataValue ComputeGroupConcat(AggregateSpec agg, List<Row> rows)
+    {
+        if (agg.Expression == null || rows.Count == 0)
+            return DataValue.Null;
+
+        var values = new List<string>();
+        var seenValues = agg.IsDistinct ? new HashSet<string>(StringComparer.Ordinal) : null;
+
+        foreach (var row in rows)
+        {
+            var val = agg.Expression.Evaluate(row);
+            if (!val.IsNull)
+            {
+                var str = val.AsString();
+                if (agg.IsDistinct)
+                {
+                    if (seenValues!.Add(str))
+                    {
+                        values.Add(str);
+                    }
+                }
+                else
+                {
+                    values.Add(str);
+                }
+            }
+        }
+
+        if (values.Count == 0)
+            return DataValue.Null;
+
+        return DataValue.FromVarChar(string.Join(agg.Separator, values));
     }
 
     private static decimal ConvertToDecimal(DataValue val)
