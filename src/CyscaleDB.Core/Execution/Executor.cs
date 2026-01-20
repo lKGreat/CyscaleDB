@@ -1414,16 +1414,89 @@ public sealed class Executor
     {
         var dbName = stmt.DatabaseName ?? _currentDatabase;
         var tables = _catalog.ListTables(dbName);
+        var views = _catalog.ListViews(dbName);
 
         var result = new ResultSet();
         result.Columns.Add(new ResultColumn { Name = $"Tables_in_{dbName}", DataType = DataType.VarChar });
+        
+        // SHOW FULL TABLES adds a Table_type column
+        if (stmt.IsFull)
+        {
+            result.Columns.Add(new ResultColumn { Name = "Table_type", DataType = DataType.VarChar });
+        }
 
+        // Add tables
         foreach (var tableName in tables)
         {
-            result.Rows.Add([DataValue.FromVarChar(tableName)]);
+            // Apply LIKE pattern filter if specified
+            if (stmt.LikePattern != null && !MatchesLikePattern(tableName, stmt.LikePattern))
+                continue;
+                
+            var row = new List<DataValue> { DataValue.FromVarChar(tableName) };
+            if (stmt.IsFull)
+            {
+                row.Add(DataValue.FromVarChar("BASE TABLE"));
+            }
+            
+            // Apply WHERE filter if specified
+            if (stmt.Where != null)
+            {
+                var context = new Dictionary<string, DataValue>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [$"Tables_in_{dbName}"] = DataValue.FromVarChar(tableName),
+                    ["Table_type"] = DataValue.FromVarChar("BASE TABLE")
+                };
+                var whereResult = EvaluateExpression(stmt.Where, context);
+                if (!IsTruthy(whereResult))
+                    continue;
+            }
+            
+            result.Rows.Add(row.ToArray());
+        }
+
+        // Add views
+        foreach (var viewName in views)
+        {
+            // Apply LIKE pattern filter if specified
+            if (stmt.LikePattern != null && !MatchesLikePattern(viewName, stmt.LikePattern))
+                continue;
+                
+            var row = new List<DataValue> { DataValue.FromVarChar(viewName) };
+            if (stmt.IsFull)
+            {
+                row.Add(DataValue.FromVarChar("VIEW"));
+            }
+            
+            // Apply WHERE filter if specified
+            if (stmt.Where != null)
+            {
+                var context = new Dictionary<string, DataValue>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [$"Tables_in_{dbName}"] = DataValue.FromVarChar(viewName),
+                    ["Table_type"] = DataValue.FromVarChar("VIEW")
+                };
+                var whereResult = EvaluateExpression(stmt.Where, context);
+                if (!IsTruthy(whereResult))
+                    continue;
+            }
+            
+            result.Rows.Add(row.ToArray());
         }
 
         return ExecutionResult.Query(result);
+    }
+    
+    /// <summary>
+    /// Simple LIKE pattern matching (supports % and _ wildcards).
+    /// </summary>
+    private static bool MatchesLikePattern(string value, string pattern)
+    {
+        // Convert LIKE pattern to regex
+        var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+            .Replace("%", ".*")
+            .Replace("_", ".") + "$";
+        return System.Text.RegularExpressions.Regex.IsMatch(value, regexPattern, 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     }
 
     private ExecutionResult ExecuteShowDatabases(ShowDatabasesStatement stmt)
@@ -1807,6 +1880,52 @@ public sealed class Executor
             _ => DataValue.Null
         };
     }
+    
+    /// <summary>
+    /// Evaluates an expression against a simple dictionary context.
+    /// Used for SHOW statements with WHERE clauses.
+    /// </summary>
+    private DataValue EvaluateExpression(Expression expr, Dictionary<string, DataValue> context)
+    {
+        return expr switch
+        {
+            LiteralExpression lit => lit.Value,
+            ColumnReference col => context.TryGetValue(col.ColumnName, out var val) ? val : DataValue.Null,
+            BinaryExpression bin => EvaluateBinaryExpression(bin, context),
+            UnaryExpression un => EvaluateUnaryExpression(un, context),
+            _ => DataValue.Null
+        };
+    }
+    
+    private DataValue EvaluateBinaryExpression(BinaryExpression bin, Dictionary<string, DataValue> context)
+    {
+        var left = EvaluateExpression(bin.Left, context);
+        var right = EvaluateExpression(bin.Right, context);
+        
+        return bin.Operator switch
+        {
+            BinaryOperator.Equal => DataValue.FromBoolean(left.Equals(right)),
+            BinaryOperator.NotEqual => DataValue.FromBoolean(!left.Equals(right)),
+            BinaryOperator.LessThan => DataValue.FromBoolean(left.CompareTo(right) < 0),
+            BinaryOperator.LessThanOrEqual => DataValue.FromBoolean(left.CompareTo(right) <= 0),
+            BinaryOperator.GreaterThan => DataValue.FromBoolean(left.CompareTo(right) > 0),
+            BinaryOperator.GreaterThanOrEqual => DataValue.FromBoolean(left.CompareTo(right) >= 0),
+            BinaryOperator.And => DataValue.FromBoolean(IsTruthy(left) && IsTruthy(right)),
+            BinaryOperator.Or => DataValue.FromBoolean(IsTruthy(left) || IsTruthy(right)),
+            _ => DataValue.Null
+        };
+    }
+    
+    private DataValue EvaluateUnaryExpression(UnaryExpression un, Dictionary<string, DataValue> context)
+    {
+        var operand = EvaluateExpression(un.Operand, context);
+        return un.Operator switch
+        {
+            Parsing.Ast.UnaryOperator.Not => DataValue.FromBoolean(!IsTruthy(operand)),
+            Parsing.Ast.UnaryOperator.Negate => NegateValue(operand),
+            _ => DataValue.Null
+        };
+    }
 
     private static DataValue NegateValue(DataValue val)
     {
@@ -1818,6 +1937,24 @@ public sealed class Executor
             DataType.Double => DataValue.FromDouble(-val.AsDouble()),
             DataType.Decimal => DataValue.FromDecimal(-val.AsDecimal()),
             _ => throw new CyscaleException($"Cannot negate value of type {val.Type}")
+        };
+    }
+    
+    /// <summary>
+    /// Checks if a DataValue is truthy (non-null, non-zero, non-empty, or boolean true).
+    /// </summary>
+    private static bool IsTruthy(DataValue val)
+    {
+        if (val.IsNull) return false;
+        return val.Type switch
+        {
+            DataType.Boolean => val.AsBoolean(),
+            DataType.Int => val.AsInt() != 0,
+            DataType.BigInt => val.AsBigInt() != 0,
+            DataType.TinyInt => val.AsTinyInt() != 0,
+            DataType.SmallInt => val.AsSmallInt() != 0,
+            DataType.VarChar or DataType.Char or DataType.Text => !string.IsNullOrEmpty(val.AsString()),
+            _ => true // Non-null values of other types are truthy
         };
     }
 

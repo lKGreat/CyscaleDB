@@ -592,6 +592,21 @@ public class UseDatabaseStatement : Statement
 public class ShowTablesStatement : Statement
 {
     public string? DatabaseName { get; set; }
+    
+    /// <summary>
+    /// Whether FULL keyword was specified (SHOW FULL TABLES).
+    /// </summary>
+    public bool IsFull { get; set; }
+    
+    /// <summary>
+    /// Optional WHERE clause filter (e.g., SHOW TABLES WHERE Table_type != 'VIEW').
+    /// </summary>
+    public Expression? Where { get; set; }
+    
+    /// <summary>
+    /// Optional LIKE pattern (e.g., SHOW TABLES LIKE 'user%').
+    /// </summary>
+    public string? LikePattern { get; set; }
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowTablesStatement(this);
 }

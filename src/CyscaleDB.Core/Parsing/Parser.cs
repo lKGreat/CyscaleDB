@@ -1078,10 +1078,20 @@ public sealed class Parser
             if (Check(TokenType.TABLES))
             {
                 Advance();
-                var stmt = new ShowTablesStatement();
-                if (Match(TokenType.FROM))
+                var stmt = new ShowTablesStatement { IsFull = true };
+                if (Match(TokenType.FROM) || Match(TokenType.IN))
                 {
                     stmt.DatabaseName = ExpectIdentifier();
+                }
+                // Parse optional LIKE pattern
+                if (Match(TokenType.LIKE))
+                {
+                    stmt.LikePattern = ExpectString();
+                }
+                // Parse optional WHERE clause
+                else if (Match(TokenType.WHERE))
+                {
+                    stmt.Where = ParseExpression();
                 }
                 return stmt;
             }
@@ -1112,9 +1122,19 @@ public sealed class Parser
         {
             Advance();
             var stmt = new ShowTablesStatement();
-            if (Match(TokenType.FROM))
+            if (Match(TokenType.FROM) || Match(TokenType.IN))
             {
                 stmt.DatabaseName = ExpectIdentifier();
+            }
+            // Parse optional LIKE pattern
+            if (Match(TokenType.LIKE))
+            {
+                stmt.LikePattern = ExpectString();
+            }
+            // Parse optional WHERE clause
+            else if (Match(TokenType.WHERE))
+            {
+                stmt.Where = ParseExpression();
             }
             return stmt;
         }

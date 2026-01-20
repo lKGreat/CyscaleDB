@@ -27,6 +27,7 @@ public sealed class InformationSchemaProvider
         "STATISTICS",
         "ENGINES",
         "ROUTINES",
+        "PARAMETERS",
         "FILES",
         "KEY_COLUMN_USAGE",
         "REFERENTIAL_CONSTRAINTS"
@@ -58,6 +59,7 @@ public sealed class InformationSchemaProvider
             "STATISTICS" => GetStatistics(filterSchema, filterTable),
             "ENGINES" => GetEngines(),
             "ROUTINES" => GetRoutines(filterSchema),
+            "PARAMETERS" => GetParameters(filterSchema),
             "FILES" => GetFiles(),
             "KEY_COLUMN_USAGE" => GetKeyColumnUsage(filterSchema, filterTable),
             "REFERENTIAL_CONSTRAINTS" => GetReferentialConstraints(filterSchema, filterTable),
@@ -78,6 +80,7 @@ public sealed class InformationSchemaProvider
             "STATISTICS" => CreateStatisticsSchema(),
             "ENGINES" => CreateEnginesSchema(),
             "ROUTINES" => CreateRoutinesSchema(),
+            "PARAMETERS" => CreateParametersSchema(),
             "FILES" => CreateFilesSchema(),
             "KEY_COLUMN_USAGE" => CreateKeyColumnUsageSchema(),
             "REFERENTIAL_CONSTRAINTS" => CreateReferentialConstraintsSchema(),
@@ -385,6 +388,39 @@ public sealed class InformationSchemaProvider
     {
         // Return empty result - CyscaleDB doesn't support stored procedures yet
         return ResultSet.FromSchema(CreateRoutinesSchema());
+    }
+
+    #endregion
+
+    #region PARAMETERS (Stored procedure parameters - stub)
+
+    private static TableSchema CreateParametersSchema()
+    {
+        return new TableSchema(0, DatabaseName, "PARAMETERS",
+        [
+            new ColumnDefinition("SPECIFIC_CATALOG", DataType.VarChar, 64),
+            new ColumnDefinition("SPECIFIC_SCHEMA", DataType.VarChar, 64),
+            new ColumnDefinition("SPECIFIC_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("ORDINAL_POSITION", DataType.Int),
+            new ColumnDefinition("PARAMETER_MODE", DataType.VarChar, 5),
+            new ColumnDefinition("PARAMETER_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("DATA_TYPE", DataType.VarChar, 64),
+            new ColumnDefinition("CHARACTER_MAXIMUM_LENGTH", DataType.BigInt),
+            new ColumnDefinition("CHARACTER_OCTET_LENGTH", DataType.BigInt),
+            new ColumnDefinition("NUMERIC_PRECISION", DataType.Int),
+            new ColumnDefinition("NUMERIC_SCALE", DataType.Int),
+            new ColumnDefinition("DATETIME_PRECISION", DataType.Int),
+            new ColumnDefinition("CHARACTER_SET_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("COLLATION_NAME", DataType.VarChar, 64),
+            new ColumnDefinition("DTD_IDENTIFIER", DataType.Text),
+            new ColumnDefinition("ROUTINE_TYPE", DataType.VarChar, 9)
+        ]);
+    }
+
+    private ResultSet GetParameters(string? filterSchema)
+    {
+        // Return empty result - CyscaleDB doesn't support stored procedures yet
+        return ResultSet.FromSchema(CreateParametersSchema());
     }
 
     #endregion
