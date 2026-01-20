@@ -1806,7 +1806,7 @@ public sealed class Parser
             func.Arguments = ParseExpressionList();
         }
 
-        // MySQL supports ORDER BY inside aggregate functions (e.g., COUNT(column ORDER BY column))
+        // MySQL supports ORDER BY inside aggregate functions (e.g., GROUP_CONCAT(column ORDER BY column))
         // This is a MySQL extension, not standard SQL
         if (Check(TokenType.ORDER))
         {
@@ -1815,6 +1815,18 @@ public sealed class Parser
             // Parse ORDER BY expression list (simplified - just parse expressions)
             // Note: This is a MySQL extension and may not be fully supported in execution
             func.OrderBy = ParseExpressionList();
+        }
+
+        // MySQL GROUP_CONCAT supports SEPARATOR clause (e.g., GROUP_CONCAT(column SEPARATOR ','))
+        if (Check(TokenType.SEPARATOR))
+        {
+            Advance();
+            if (!Check(TokenType.StringLiteral))
+            {
+                throw Error($"Expected string literal after SEPARATOR, got: {_currentToken.Value}");
+            }
+            func.Separator = _currentToken.Value;
+            Advance();
         }
 
         Expect(TokenType.RightParen);

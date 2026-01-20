@@ -146,6 +146,11 @@ public class FunctionCall : Expression
     /// </summary>
     public List<Expression>? OrderBy { get; set; }
 
+    /// <summary>
+    /// SEPARATOR string for GROUP_CONCAT function (e.g., GROUP_CONCAT(column SEPARATOR ',')).
+    /// </summary>
+    public string? Separator { get; set; }
+
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitFunctionCall(this);
 }
 

@@ -205,6 +205,9 @@ public enum TokenType
     CHARSET,
     COLLATION,
 
+    // Aggregate function keywords
+    SEPARATOR,          // SEPARATOR (for GROUP_CONCAT)
+
     // System variable prefix
     AtAt,               // @@
 }
@@ -338,6 +341,9 @@ public static class Keywords
         ["KILL"] = TokenType.KILL,
         ["CHARSET"] = TokenType.CHARSET,
         ["COLLATION"] = TokenType.COLLATION,
+
+        // Aggregate function keywords
+        ["SEPARATOR"] = TokenType.SEPARATOR,
     };
 
     /// <summary>
