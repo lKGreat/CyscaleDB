@@ -12,6 +12,9 @@ public sealed class Table : IDisposable
     private readonly BufferPool? _bufferPool;
     private readonly Logger _logger;
     private bool _disposed;
+    
+    // Lazy columns added during online DDL - maps column ordinal to default value
+    private readonly Dictionary<int, DataValue?> _lazyColumns = new();
 
     /// <summary>
     /// Gets the table schema.
@@ -35,6 +38,45 @@ public sealed class Table : IDisposable
         _pageManager = pageManager ?? throw new ArgumentNullException(nameof(pageManager));
         _bufferPool = bufferPool;
         _logger = LogManager.Default.GetLogger<Table>();
+    }
+
+    /// <summary>
+    /// Gets the lazy columns that were added during online DDL.
+    /// </summary>
+    public IReadOnlyDictionary<int, DataValue?> LazyColumns => _lazyColumns;
+
+    /// <summary>
+    /// Sets a column as lazy (for online ADD COLUMN).
+    /// Rows that were written before this column was added will return the default value.
+    /// </summary>
+    public void SetLazyColumn(int columnOrdinal, DataValue? defaultValue)
+    {
+        _lazyColumns[columnOrdinal] = defaultValue;
+        _logger.Trace("Set lazy column at ordinal {0} with default value", columnOrdinal);
+    }
+
+    /// <summary>
+    /// Clears a lazy column (after backfill is complete).
+    /// </summary>
+    public void ClearLazyColumn(int columnOrdinal)
+    {
+        _lazyColumns.Remove(columnOrdinal);
+    }
+
+    /// <summary>
+    /// Checks if a column is lazy.
+    /// </summary>
+    public bool IsLazyColumn(int columnOrdinal)
+    {
+        return _lazyColumns.ContainsKey(columnOrdinal);
+    }
+
+    /// <summary>
+    /// Gets the default value for a lazy column.
+    /// </summary>
+    public DataValue? GetLazyColumnDefault(int columnOrdinal)
+    {
+        return _lazyColumns.GetValueOrDefault(columnOrdinal);
     }
 
     /// <summary>

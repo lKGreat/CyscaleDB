@@ -258,6 +258,14 @@ public enum TokenType
     ANALYZE,            // ANALYZE TABLE
     FLUSH,              // FLUSH
 
+    // ALTER TABLE algorithm/lock options
+    ALGORITHM,          // ALGORITHM=INPLACE/COPY/DEFAULT
+    INPLACE,            // ALGORITHM=INPLACE
+    COPY,               // ALGORITHM=COPY
+    NONE,               // LOCK=NONE
+    SHARED,             // LOCK=SHARED
+    EXCLUSIVE,          // LOCK=EXCLUSIVE
+
     // System variable prefix
     AtAt,               // @@
 
@@ -338,6 +346,9 @@ public enum TokenType
     AGAINST,            // MATCH(...) AGAINST(...)
     FULLTEXT,           // FULLTEXT index
     EXPANSION,          // WITH QUERY EXPANSION
+
+    // ENUM/SET data types
+    ENUM,               // ENUM('a','b','c')
 }
 
 /// <summary>
@@ -521,6 +532,14 @@ public static class Keywords
         ["FLUSH"] = TokenType.FLUSH,
         ["MODE"] = TokenType.MODE,
 
+        // ALTER TABLE algorithm/lock options
+        ["ALGORITHM"] = TokenType.ALGORITHM,
+        ["INPLACE"] = TokenType.INPLACE,
+        ["COPY"] = TokenType.COPY,
+        ["NONE"] = TokenType.NONE,
+        ["SHARED"] = TokenType.SHARED,
+        ["EXCLUSIVE"] = TokenType.EXCLUSIVE,
+
         // CTE (Common Table Expression) keywords
         ["WITH"] = TokenType.WITH,
         ["RECURSIVE"] = TokenType.RECURSIVE,
@@ -599,6 +618,9 @@ public static class Keywords
         ["AGAINST"] = TokenType.AGAINST,
         ["FULLTEXT"] = TokenType.FULLTEXT,
         ["EXPANSION"] = TokenType.EXPANSION,
+
+        // ENUM/SET data types
+        ["ENUM"] = TokenType.ENUM,
     };
 
     /// <summary>

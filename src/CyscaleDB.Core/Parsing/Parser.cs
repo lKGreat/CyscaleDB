@@ -1170,10 +1170,13 @@ public sealed class Parser
     {
         var col = new ColumnDef();
         col.Name = ExpectIdentifier();
-        col.DataType = ParseDataType(out var length, out var precision, out var scale);
+        col.DataType = ParseDataType(out var length, out var precision, out var scale, 
+            out var enumValues, out var setValues);
         col.Length = length;
         col.Precision = precision;
         col.Scale = scale;
+        col.EnumValues = enumValues;
+        col.SetValues = setValues;
 
         // Column constraints
         while (true)
@@ -1216,9 +1219,17 @@ public sealed class Parser
 
     private DataType ParseDataType(out int? length, out int? precision, out int? scale)
     {
+        return ParseDataType(out length, out precision, out scale, out _, out _);
+    }
+
+    private DataType ParseDataType(out int? length, out int? precision, out int? scale, 
+        out List<string>? enumValues, out List<string>? setValues)
+    {
         length = null;
         precision = null;
         scale = null;
+        enumValues = null;
+        setValues = null;
 
         DataType dataType;
 
@@ -1245,31 +1256,67 @@ public sealed class Parser
             TokenType.BLOB => DataType.Blob,
             TokenType.JSON => DataType.Json,
             TokenType.GEOMETRY => DataType.Geometry,
+            TokenType.ENUM => DataType.Enum,
+            TokenType.SET => DataType.Set,
             _ => throw Error($"Expected data type, got: {token.Value}")
         };
 
-        // Parse length/precision/scale
+        // Parse length/precision/scale or ENUM/SET values
         if (Match(TokenType.LeftParen))
         {
-            var first = ParseInteger();
-
-            if (dataType == DataType.Decimal)
+            if (dataType == DataType.Enum)
             {
-                precision = first;
-                if (Match(TokenType.Comma))
-                {
-                    scale = ParseInteger();
-                }
+                // Parse ENUM('a', 'b', 'c')
+                enumValues = ParseEnumSetValues();
+            }
+            else if (dataType == DataType.Set)
+            {
+                // Parse SET('a', 'b', 'c')
+                setValues = ParseEnumSetValues();
             }
             else
             {
-                length = first;
+                var first = ParseInteger();
+
+                if (dataType == DataType.Decimal)
+                {
+                    precision = first;
+                    if (Match(TokenType.Comma))
+                    {
+                        scale = ParseInteger();
+                    }
+                }
+                else
+                {
+                    length = first;
+                }
             }
 
             Expect(TokenType.RightParen);
         }
 
         return dataType;
+    }
+
+    /// <summary>
+    /// Parses a list of string values for ENUM/SET types.
+    /// </summary>
+    private List<string> ParseEnumSetValues()
+    {
+        var values = new List<string>();
+        
+        do
+        {
+            var value = ExpectStringLiteral();
+            values.Add(value);
+        } while (Match(TokenType.Comma));
+
+        if (values.Count == 0)
+        {
+            throw Error("ENUM/SET requires at least one value");
+        }
+
+        return values;
     }
 
     private TableConstraint ParseTableConstraint()
@@ -1550,7 +1597,81 @@ public sealed class Parser
         }
         while (Match(TokenType.Comma));
 
+        // Parse optional ALGORITHM clause
+        if (Match(TokenType.Comma))
+        {
+            // Allow comma before ALGORITHM/LOCK
+        }
+        
+        if (Match(TokenType.ALGORITHM))
+        {
+            Expect(TokenType.Equal);
+            stmt.Algorithm = ParseAlterAlgorithm();
+        }
+
+        // Parse optional LOCK clause
+        if (Match(TokenType.Comma))
+        {
+            // Allow comma before LOCK
+        }
+        
+        if (Match(TokenType.LOCK))
+        {
+            Expect(TokenType.Equal);
+            stmt.Lock = ParseAlterLockMode();
+        }
+
         return stmt;
+    }
+
+    /// <summary>
+    /// Parses ALGORITHM=INPLACE/COPY/DEFAULT value.
+    /// </summary>
+    private AlterAlgorithm ParseAlterAlgorithm()
+    {
+        if (Match(TokenType.INPLACE))
+            return AlterAlgorithm.Inplace;
+        if (Match(TokenType.COPY))
+            return AlterAlgorithm.Copy;
+        if (Match(TokenType.DEFAULT))
+            return AlterAlgorithm.Default;
+        
+        // Also allow as identifiers for compatibility
+        var identifier = ExpectIdentifierOrKeyword();
+        return identifier.ToUpperInvariant() switch
+        {
+            "INPLACE" => AlterAlgorithm.Inplace,
+            "COPY" => AlterAlgorithm.Copy,
+            "DEFAULT" => AlterAlgorithm.Default,
+            "INSTANT" => AlterAlgorithm.Inplace, // Treat INSTANT as INPLACE
+            _ => throw Error($"Unknown ALGORITHM value: {identifier}")
+        };
+    }
+
+    /// <summary>
+    /// Parses LOCK=NONE/SHARED/EXCLUSIVE/DEFAULT value.
+    /// </summary>
+    private AlterLockMode ParseAlterLockMode()
+    {
+        if (Match(TokenType.NONE))
+            return AlterLockMode.None;
+        if (Match(TokenType.SHARED))
+            return AlterLockMode.Shared;
+        if (Match(TokenType.EXCLUSIVE))
+            return AlterLockMode.Exclusive;
+        if (Match(TokenType.DEFAULT))
+            return AlterLockMode.Default;
+        
+        // Also allow as identifiers for compatibility
+        var identifier = ExpectIdentifierOrKeyword();
+        return identifier.ToUpperInvariant() switch
+        {
+            "NONE" => AlterLockMode.None,
+            "SHARED" => AlterLockMode.Shared,
+            "EXCLUSIVE" => AlterLockMode.Exclusive,
+            "DEFAULT" => AlterLockMode.Default,
+            _ => throw Error($"Unknown LOCK value: {identifier}")
+        };
     }
 
     /// <summary>

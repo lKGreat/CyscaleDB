@@ -1224,8 +1224,15 @@ public sealed class Executor
             // Validate CHECK constraints on the new row
             ValidateCheckConstraints(dbName, stmt.TableName, row, schema);
 
-            table.InsertRow(row);
+            var rowId = table.InsertRow(row);
             insertedCount++;
+
+            // Log DML change if online DDL is in progress
+            if (_onlineDdlManager.IsOnlineDdlInProgress(dbName, stmt.TableName))
+            {
+                var dmlChange = DmlChange.CreateInsert(rowId, row.Serialize());
+                _onlineDdlManager.LogDmlChange(dbName, stmt.TableName, dmlChange);
+            }
 
             // Execute AFTER INSERT triggers
             ExecuteTriggers(stmt.TableName, TriggerTiming.After, TriggerEvent.Insert, null, row);
@@ -1524,6 +1531,8 @@ public sealed class Executor
         }
 
         // Phase 4: Perform the actual updates on the parent table
+        var isOnlineDdlInProgress = _onlineDdlManager.IsOnlineDdlInProgress(dbName, stmt.TableName);
+        
         foreach (var (rowId, oldRow, newRow) in rowsToUpdate)
         {
             // Execute BEFORE UPDATE triggers
@@ -1532,6 +1541,13 @@ public sealed class Executor
             if (table.UpdateRow(rowId, newRow))
             {
                 updatedCount++;
+
+                // Log DML change if online DDL is in progress
+                if (isOnlineDdlInProgress)
+                {
+                    var dmlChange = DmlChange.CreateUpdate(rowId, oldRow.Serialize(), newRow.Serialize());
+                    _onlineDdlManager.LogDmlChange(dbName, stmt.TableName, dmlChange);
+                }
 
                 // Execute AFTER UPDATE triggers
                 ExecuteTriggers(stmt.TableName, TriggerTiming.After, TriggerEvent.Update, oldRow, newRow);
@@ -1628,6 +1644,8 @@ public sealed class Executor
         }
 
         // Phase 4: Perform the actual deletes on the parent table
+        var isOnlineDdlInProgress = _onlineDdlManager.IsOnlineDdlInProgress(dbName, stmt.TableName);
+        
         foreach (var (rowId, row) in rowsToDelete)
         {
             // Execute BEFORE DELETE triggers
@@ -1636,6 +1654,13 @@ public sealed class Executor
             if (table.DeleteRow(rowId))
             {
                 deletedCount++;
+
+                // Log DML change if online DDL is in progress
+                if (isOnlineDdlInProgress)
+                {
+                    var dmlChange = DmlChange.CreateDelete(rowId, row.Serialize());
+                    _onlineDdlManager.LogDmlChange(dbName, stmt.TableName, dmlChange);
+                }
 
                 // Execute AFTER DELETE triggers
                 ExecuteTriggers(stmt.TableName, TriggerTiming.After, TriggerEvent.Delete, row, null);
@@ -2009,16 +2034,39 @@ public sealed class Executor
 
         foreach (var action in stmt.Actions)
         {
-            switch (action)
+            // Determine the DDL operation type for online DDL tracking
+            var ddlOperation = GetOnlineDdlOperation(action);
+            bool useOnlineDdl = ddlOperation.HasValue && ShouldUseOnlineDdl(stmt, action);
+            
+            // Begin online DDL if applicable
+            if (useOnlineDdl)
             {
-                case AddColumnAction addCol:
-                    // Online ADD COLUMN - adds to schema without blocking DML (instant DDL)
-                    var newColDef = ConvertColumnDefToStorageDefinition(addCol.Column);
-                    schema.AddColumn(newColDef, addCol.AfterColumn);
-                    _catalog.Flush();
-                    messages.Add($"Added column '{addCol.Column.Name}'");
-                    actionsPerformed++;
-                    break;
+                if (!_onlineDdlManager.BeginOnlineDdl(dbName, stmt.TableName, ddlOperation!.Value))
+                {
+                    throw new CyscaleException($"Another DDL operation is in progress on {dbName}.{stmt.TableName}");
+                }
+            }
+
+            try
+            {
+                switch (action)
+                {
+                    case AddColumnAction addCol:
+                        // Online ADD COLUMN - adds to schema without blocking DML (instant DDL)
+                        var newColDef = ConvertColumnDefToStorageDefinition(addCol.Column);
+                        
+                        // Mark the new column for lazy filling in existing rows
+                        var newColOrdinal = schema.Columns.Count;
+                        schema.AddColumn(newColDef, addCol.AfterColumn);
+                        
+                        // Store lazy column info in the table for existing row handling
+                        var tableObj = _catalog.GetTable(dbName, stmt.TableName);
+                        tableObj?.SetLazyColumn(newColOrdinal, newColDef.DefaultValue);
+                        
+                        _catalog.Flush();
+                        messages.Add($"Added column '{addCol.Column.Name}'");
+                        actionsPerformed++;
+                        break;
 
                 case DropColumnAction dropCol:
                     if (schema.GetColumnOrdinal(dropCol.ColumnName) < 0)
@@ -2189,11 +2237,108 @@ public sealed class Executor
                 default:
                     _logger.Warning("Unhandled ALTER TABLE action: {0}", action.GetType().Name);
                     break;
+                }
+
+                // Commit online DDL and apply logged changes
+                if (useOnlineDdl)
+                {
+                    var loggedChanges = _onlineDdlManager.CommitOnlineDdl(dbName, stmt.TableName);
+                    if (loggedChanges.Count > 0)
+                    {
+                        ApplyLoggedDmlChanges(dbName, stmt.TableName, loggedChanges, schema);
+                        messages.Add($"Applied {loggedChanges.Count} logged DML changes");
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Rollback online DDL on error
+                if (useOnlineDdl)
+                {
+                    _onlineDdlManager.RollbackOnlineDdl(dbName, stmt.TableName);
+                }
+                throw;
             }
         }
 
         _logger.Info("ALTER TABLE {0}.{1}: {2}", dbName, stmt.TableName, string.Join("; ", messages));
         return ExecutionResult.Ddl($"Table '{stmt.TableName}' altered ({actionsPerformed} action(s))");
+    }
+
+    /// <summary>
+    /// Determines the OnlineDdlOperation type for a given ALTER TABLE action.
+    /// </summary>
+    private static OnlineDdlOperation? GetOnlineDdlOperation(AlterTableAction action)
+    {
+        return action switch
+        {
+            AddColumnAction => OnlineDdlOperation.AddColumn,
+            DropColumnAction => OnlineDdlOperation.DropColumn,
+            ModifyColumnAction => OnlineDdlOperation.ModifyColumn,
+            ChangeColumnAction => OnlineDdlOperation.ModifyColumn,
+            AddIndexAction => OnlineDdlOperation.AddIndex,
+            DropIndexAction => OnlineDdlOperation.DropIndex,
+            AddConstraintAction => OnlineDdlOperation.AddConstraint,
+            DropConstraintAction => OnlineDdlOperation.DropConstraint,
+            AddForeignKeyAction => OnlineDdlOperation.AddConstraint,
+            DropForeignKeyAction => OnlineDdlOperation.DropConstraint,
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// Determines if online DDL should be used for this operation.
+    /// </summary>
+    private static bool ShouldUseOnlineDdl(AlterTableStatement stmt, AlterTableAction action)
+    {
+        // Use online DDL for column and index operations
+        // Future: respect stmt.Algorithm and stmt.Lock settings
+        return action is AddColumnAction or DropColumnAction or ModifyColumnAction 
+            or ChangeColumnAction or AddIndexAction or DropIndexAction;
+    }
+
+    /// <summary>
+    /// Applies logged DML changes after online DDL completes.
+    /// </summary>
+    private void ApplyLoggedDmlChanges(string dbName, string tableName, List<DmlChange> changes, TableSchema schema)
+    {
+        var table = _catalog.GetTable(dbName, tableName);
+        if (table == null) return;
+
+        foreach (var change in changes)
+        {
+            try
+            {
+                switch (change.Type)
+                {
+                    case DmlChangeType.Insert:
+                        if (change.NewRowData != null)
+                        {
+                            var insertedRow = Row.Deserialize(change.NewRowData, schema);
+                            table.InsertRow(insertedRow);
+                        }
+                        break;
+
+                    case DmlChangeType.Update:
+                        if (change.NewRowData != null)
+                        {
+                            var updatedRow = Row.Deserialize(change.NewRowData, schema);
+                            table.UpdateRow(change.RowId, updatedRow);
+                        }
+                        break;
+
+                    case DmlChangeType.Delete:
+                        table.DeleteRow(change.RowId);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error("Failed to apply logged DML change {0}: {1}", change, ex.Message);
+            }
+        }
+
+        _logger.Info("Applied {0} logged DML changes to {1}.{2}", changes.Count, dbName, tableName);
     }
 
     /// <summary>
@@ -2207,6 +2352,20 @@ public sealed class Executor
             defaultValue = EvaluateLiteralExpression(colDef.DefaultValue);
         }
 
+        // Create EnumTypeDefinition if this is an ENUM column
+        EnumTypeDefinition? enumType = null;
+        if (colDef.DataType == DataType.Enum && colDef.EnumValues != null)
+        {
+            enumType = new EnumTypeDefinition(colDef.Name, colDef.EnumValues);
+        }
+
+        // Create SetTypeDefinition if this is a SET column
+        SetTypeDefinition? setType = null;
+        if (colDef.DataType == DataType.Set && colDef.SetValues != null)
+        {
+            setType = new SetTypeDefinition(colDef.Name, colDef.SetValues);
+        }
+
         return new ColumnDefinition(
             name: colDef.Name,
             dataType: colDef.DataType,
@@ -2216,7 +2375,9 @@ public sealed class Executor
             isNullable: colDef.IsNullable,
             isPrimaryKey: colDef.IsPrimaryKey,
             isAutoIncrement: colDef.IsAutoIncrement,
-            defaultValue: defaultValue
+            defaultValue: defaultValue,
+            enumType: enumType,
+            setType: setType
         );
     }
 

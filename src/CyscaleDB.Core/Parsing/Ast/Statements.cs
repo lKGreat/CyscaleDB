@@ -631,6 +631,16 @@ public class ColumnDef
     /// The default value expression.
     /// </summary>
     public Expression? DefaultValue { get; set; }
+
+    /// <summary>
+    /// For ENUM type: the allowed values.
+    /// </summary>
+    public List<string>? EnumValues { get; set; }
+
+    /// <summary>
+    /// For SET type: the allowed values.
+    /// </summary>
+    public List<string>? SetValues { get; set; }
 }
 
 /// <summary>
