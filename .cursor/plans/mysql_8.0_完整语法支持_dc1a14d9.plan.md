@@ -271,10 +271,10 @@ todos:
     status: completed
   - id: 3.2.4
     content: RETURN 语句解析 - 解析返回值
-    status: pending
+    status: completed
   - id: 3.2.5
     content: 函数执行和返回值 - 测试函数调用
-    status: pending
+    status: completed
   - id: 3.2.6
     content: 表达式中调用函数 - SELECT my_func(col)，测试
     status: pending

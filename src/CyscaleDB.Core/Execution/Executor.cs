@@ -3307,7 +3307,8 @@ public sealed class Executor
             // For now, we'll just evaluate the argument expression without a row context
             // In a full implementation, this would need proper context handling
             var evaluator = BuildExpressionEvaluator(arg);
-            var value = evaluator.Evaluate(new Row([]));
+            var (_, emptyRow) = CreateDummyContext();
+            var value = evaluator.Evaluate(emptyRow);
 
             _procedureVariables[param.Name] = value;
         }
@@ -3343,7 +3344,8 @@ public sealed class Executor
             if (stmt.DefaultValue != null)
             {
                 var evaluator = BuildExpressionEvaluator(stmt.DefaultValue);
-                defaultValue = evaluator.Evaluate(new Row([]));
+                var (_, emptyRow) = CreateDummyContext();
+                defaultValue = evaluator.Evaluate(emptyRow);
             }
             else
             {
@@ -3360,7 +3362,8 @@ public sealed class Executor
     {
         // Evaluate the main IF condition
         var conditionEvaluator = BuildExpressionEvaluator(stmt.Condition);
-        var conditionValue = conditionEvaluator.Evaluate(new Row([]));
+        var (_, emptyRow) = CreateDummyContext();
+        var conditionValue = conditionEvaluator.Evaluate(emptyRow);
 
         if (conditionValue.AsBoolean())
         {
@@ -3379,7 +3382,8 @@ public sealed class Executor
         foreach (var (elseIfCondition, elseIfStatements) in stmt.ElseIfClauses)
         {
             var elseIfEvaluator = BuildExpressionEvaluator(elseIfCondition);
-            var elseIfValue = elseIfEvaluator.Evaluate(new Row([]));
+            var (_, emptyRow2) = CreateDummyContext();
+            var elseIfValue = elseIfEvaluator.Evaluate(emptyRow2);
 
             if (elseIfValue.AsBoolean())
             {
@@ -3413,12 +3417,13 @@ public sealed class Executor
     private ExecutionResult ExecuteWhile(WhileStatement stmt)
     {
         ExecutionResult result = ExecutionResult.Empty();
+        var (_, emptyRow) = CreateDummyContext();
 
         while (true)
         {
             // Evaluate condition
             var conditionEvaluator = BuildExpressionEvaluator(stmt.Condition);
-            var conditionValue = conditionEvaluator.Evaluate(new Row([]));
+            var conditionValue = conditionEvaluator.Evaluate(emptyRow);
 
             if (!conditionValue.AsBoolean())
                 break;
@@ -3499,7 +3504,8 @@ public sealed class Executor
 
             // Evaluate UNTIL condition (loop continues until this is true)
             var untilEvaluator = BuildExpressionEvaluator(stmt.UntilCondition);
-            var untilValue = untilEvaluator.Evaluate(new Row([]));
+            var (_, emptyRow) = CreateDummyContext();
+            var untilValue = untilEvaluator.Evaluate(emptyRow);
 
             if (untilValue.AsBoolean())
                 break;
@@ -3566,7 +3572,8 @@ public sealed class Executor
             throw new CyscaleException("RETURN can only be used inside a stored function", ErrorCode.InternalError);
 
         var evaluator = BuildExpressionEvaluator(stmt.Value);
-        _procedureReturnValue = evaluator.Evaluate(new Row([]));
+        var (_, emptyRow) = CreateDummyContext();
+        _procedureReturnValue = evaluator.Evaluate(emptyRow);
 
         return ExecutionResult.Empty();
     }
@@ -3574,6 +3581,27 @@ public sealed class Executor
     #endregion
 
     #region Expression Building
+
+    /// <summary>
+    /// Creates a dummy schema and row for evaluating expressions in stored procedures.
+    /// </summary>
+    private (TableSchema Schema, Row Row) CreateDummyContext()
+    {
+        var dummyColumn = new ColumnDefinition("_dummy", DataType.Int);
+        var emptySchema = new TableSchema(0, "_proc", "_context", [dummyColumn]);
+        var emptyRow = new Row(emptySchema, [DataValue.Null]);
+        return (emptySchema, emptyRow);
+    }
+
+    /// <summary>
+    /// Builds an expression evaluator without a specific table schema (for stored procedures).
+    /// </summary>
+    private IExpressionEvaluator BuildExpressionEvaluator(Expression expr)
+    {
+        // Create a minimal dummy schema for expressions that don't reference columns
+        var (schema, _) = CreateDummyContext();
+        return BuildExpression(expr, schema);
+    }
 
     private IExpressionEvaluator BuildExpression(Expression expr, TableSchema schema)
     {

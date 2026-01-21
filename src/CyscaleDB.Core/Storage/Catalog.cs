@@ -629,7 +629,7 @@ public sealed class Catalog : IDisposable
         }
     }
 
-    private void SaveCatalog()
+    public void SaveCatalog()
     {
         var path = GetCatalogFilePath();
 
