@@ -73,19 +73,19 @@ todos:
     status: completed
   - id: phase-7.1
     content: "Phase 7.1: 主从复制 - REPLICAOF + 全量/增量同步"
-    status: in_progress
+    status: completed
   - id: phase-7.2
     content: "Phase 7.2: Redis Cluster - 槽位分配 + 节点通信"
-    status: pending
+    status: completed
   - id: phase-8.1
     content: "Phase 8.1: ACL 权限控制"
-    status: pending
+    status: completed
   - id: phase-8.2
     content: "Phase 8.2: 扩展类型 - HyperLogLog/Geo/Bitmap"
     status: completed
   - id: phase-8.3
     content: "Phase 8.3: 监控管理 - INFO/CLIENT/CONFIG/SLOWLOG"
-    status: pending
+    status: completed
 ---
 
 # CysRedis - Redis C# 复刻实施计划

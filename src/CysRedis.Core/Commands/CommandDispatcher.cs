@@ -253,6 +253,13 @@ public class CommandDispatcher
         Register("BITCOUNT", new BitCountCommand());
         Register("BITOP", new BitOpCommand());
 
+        // Replication commands
+        Register("REPLICAOF", new ReplicaOfCommand());
+        Register("SLAVEOF", new ReplicaOfCommand());
+
+        // ACL commands
+        Register("ACL", new AclCommand());
+
         // Server commands
         Register("INFO", new InfoCommand());
         Register("COMMAND", new CommandInfoCommand());

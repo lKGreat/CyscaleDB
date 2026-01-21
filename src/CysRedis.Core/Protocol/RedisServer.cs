@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using CysRedis.Core.Auth;
 using CysRedis.Core.Commands;
 using CysRedis.Core.Common;
 using CysRedis.Core.DataStructures;
 using CysRedis.Core.PubSub;
+using CysRedis.Core.Replication;
 using CysRedis.Core.Scripting;
 using CysRedis.Core.Storage;
 
@@ -58,6 +60,16 @@ public class RedisServer : IDisposable
     public ScriptManager ScriptManager { get; }
 
     /// <summary>
+    /// Replication manager.
+    /// </summary>
+    public ReplicationManager Replication { get; }
+
+    /// <summary>
+    /// ACL manager.
+    /// </summary>
+    public AclManager Acl { get; }
+
+    /// <summary>
     /// Number of connected clients.
     /// </summary>
     public int ClientCount => _clients.Count;
@@ -90,6 +102,8 @@ public class RedisServer : IDisposable
         Dispatcher = new CommandDispatcher(this);
         PubSub = new PubSubManager();
         ScriptManager = new ScriptManager();
+        Replication = new ReplicationManager(this);
+        Acl = new AclManager();
         LastSaveTime = DateTime.UtcNow;
 
         // Initialize persistence if data directory is provided
