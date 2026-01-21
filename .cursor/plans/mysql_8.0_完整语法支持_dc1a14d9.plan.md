@@ -361,7 +361,7 @@ todos:
     status: completed
   - id: 4.3.5
     content: 相关子查询优化 - 减少重复执行，测试性能
-    status: pending
+    status: completed
   - id: 5.1.1
     content: JSON 数据类型 - 添加到 DataType.cs
     status: completed

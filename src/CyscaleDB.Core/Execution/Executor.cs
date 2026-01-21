@@ -4778,9 +4778,58 @@ public sealed class Executor
     /// </summary>
     private IExpressionEvaluator BuildSubqueryExpression(Subquery subquery, TableSchema schema)
     {
+        // Detect if this is a correlated subquery
+        // A correlated subquery references columns from the outer query's schema
+        var isCorrelated = IsCorrelatedSubquery(subquery.Query, schema);
+
         // Build and execute the subquery
         var subqueryOp = BuildSelectOperator(subquery.Query);
-        return new SubqueryEvaluator(subqueryOp);
+        return new SubqueryEvaluator(subqueryOp, isCorrelated);
+    }
+
+    /// <summary>
+    /// Checks if a subquery is correlated (references columns from the outer query).
+    /// </summary>
+    private bool IsCorrelatedSubquery(SelectStatement subquery, TableSchema outerSchema)
+    {
+        // Check WHERE clause for references to outer columns
+        if (subquery.Where != null && ContainsOuterReference(subquery.Where, outerSchema))
+            return true;
+
+        // Check SELECT columns
+        foreach (var col in subquery.Columns)
+        {
+            if (col.Expression != null && ContainsOuterReference(col.Expression, outerSchema))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Checks if an expression contains references to columns from the outer schema.
+    /// </summary>
+    private bool ContainsOuterReference(Expression expr, TableSchema outerSchema)
+    {
+        return expr switch
+        {
+            ColumnReference col => outerSchema.GetColumnOrdinal(col.ColumnName) >= 0,
+            BinaryExpression bin => ContainsOuterReference(bin.Left, outerSchema) || 
+                                    ContainsOuterReference(bin.Right, outerSchema),
+            UnaryExpression un => ContainsOuterReference(un.Operand, outerSchema),
+            FunctionCall func => func.Arguments.Any(a => ContainsOuterReference(a, outerSchema)),
+            InExpression inExpr => ContainsOuterReference(inExpr.Expression, outerSchema) ||
+                                   (inExpr.Values?.Any(v => ContainsOuterReference(v, outerSchema)) ?? false),
+            BetweenExpression between => ContainsOuterReference(between.Expression, outerSchema) ||
+                                         ContainsOuterReference(between.Low, outerSchema) ||
+                                         ContainsOuterReference(between.High, outerSchema),
+            CaseExpression caseExpr => (caseExpr.Operand != null && ContainsOuterReference(caseExpr.Operand, outerSchema)) ||
+                                       caseExpr.WhenClauses.Any(w => ContainsOuterReference(w.When, outerSchema) || 
+                                                                     ContainsOuterReference(w.Then, outerSchema)) ||
+                                       (caseExpr.ElseResult != null && ContainsOuterReference(caseExpr.ElseResult, outerSchema)),
+            Subquery => true, // Nested subqueries are considered correlated for safety
+            _ => false
+        };
     }
 
     /// <summary>
@@ -5311,34 +5360,93 @@ internal sealed class ExistsEvaluator : IExpressionEvaluator
 
 /// <summary>
 /// Evaluates scalar subquery expressions by returning the first value from the subquery.
+/// For non-correlated subqueries, the result is cached after first execution.
 /// </summary>
 internal sealed class SubqueryEvaluator : IExpressionEvaluator
 {
     private readonly IOperator _subquery;
+    private bool _isCorrelated;
+    private bool _hasCached;
+    private DataValue _cachedResult;
+    private readonly Dictionary<string, DataValue> _correlatedCache;
 
-    public SubqueryEvaluator(IOperator subquery)
+    public SubqueryEvaluator(IOperator subquery, bool isCorrelated = false)
     {
         _subquery = subquery;
+        _isCorrelated = isCorrelated;
+        _hasCached = false;
+        _cachedResult = DataValue.Null;
+        _correlatedCache = new Dictionary<string, DataValue>();
     }
 
     public DataValue Evaluate(Row row)
     {
+        // For non-correlated subqueries, return cached result if available
+        if (!_isCorrelated && _hasCached)
+        {
+            return _cachedResult;
+        }
+
+        // For correlated subqueries, check if we've seen this row key before
+        if (_isCorrelated && row != null)
+        {
+            var rowKey = ComputeRowKey(row);
+            if (_correlatedCache.TryGetValue(rowKey, out var cachedValue))
+            {
+                return cachedValue;
+            }
+        }
+
         try
         {
             _subquery.Open();
             var result = _subquery.Next();
             _subquery.Close();
 
+            DataValue value;
             if (result == null)
-                return DataValue.Null;
+            {
+                value = DataValue.Null;
+            }
+            else
+            {
+                // Return the first column value
+                value = result.Values.Length > 0 ? result.Values[0] : DataValue.Null;
+            }
 
-            // Return the first column value
-            return result.Values.Length > 0 ? result.Values[0] : DataValue.Null;
+            // Cache the result
+            if (!_isCorrelated)
+            {
+                _cachedResult = value;
+                _hasCached = true;
+            }
+            else if (row != null)
+            {
+                var rowKey = ComputeRowKey(row);
+                _correlatedCache[rowKey] = value;
+            }
+
+            return value;
         }
         finally
         {
             _subquery.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Computes a cache key based on row values for correlated subquery caching.
+    /// </summary>
+    private static string ComputeRowKey(Row row)
+    {
+        // Use a simple hash of all column values
+        var sb = new System.Text.StringBuilder();
+        foreach (var val in row.Values)
+        {
+            sb.Append(val.ToString());
+            sb.Append('|');
+        }
+        return sb.ToString();
     }
 }
 
