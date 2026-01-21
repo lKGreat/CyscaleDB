@@ -4,12 +4,23 @@
 
 ## 文档列表
 
+### CyscaleDB (MySQL 兼容数据库)
+
 | 文档 | 说明 |
 |------|------|
 | [PROJECT_STATUS.md](./PROJECT_STATUS.md) | 项目进度状态，包含各阶段完成情况和未来规划 |
 | [CAPABILITIES.md](./CAPABILITIES.md) | 功能能力清单，详细列出所有支持的 SQL 语法和特性 |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 系统架构文档，描述各层设计和组件关系 |
 | [CONNECTION.md](./CONNECTION.md) | 连接指南，包含服务器启动和客户端连接示例 |
+
+### CysRedis (Redis 兼容服务器)
+
+| 文档 | 说明 |
+|------|------|
+| [REDIS_GUIDE.md](./REDIS_GUIDE.md) | Redis 使用指南，包含启动命令、客户端连接和基本操作 |
+| [REDIS_EXAMPLES.md](./REDIS_EXAMPLES.md) | Redis 命令示例，详细的使用案例 |
+| [PERFORMANCE_BENCHMARKING.md](./PERFORMANCE_BENCHMARKING.md) | 性能基准测试指南，对比托管和 unsafe 实现 |
+| [UNSAFE_OPTIMIZATIONS.md](./UNSAFE_OPTIMIZATIONS.md) | Unsafe 优化文档，高性能数据结构实现说明 |
 
 ## 使用指南
 

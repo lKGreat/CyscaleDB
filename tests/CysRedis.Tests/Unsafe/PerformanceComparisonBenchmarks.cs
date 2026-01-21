@@ -19,7 +19,7 @@ namespace CysRedis.Tests.Unsafe;
 [RankColumn]
 [MarkdownExporter]
 [HtmlExporter]
-[SimpleJob(RuntimeMoniker.Net80, warmupCount: 3, iterationCount: 10)]
+[SimpleJob(warmupCount: 3, iterationCount: 10)]
 public class PerformanceComparisonBenchmarks
 {
     private const int SmallSize = 100;
@@ -48,7 +48,7 @@ public class PerformanceComparisonBenchmarks
 
     #region RedisHash Benchmarks
 
-    [BenchmarkCategory("Hash"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("Hash"), Benchmark]
     public void Hash_Set_Small_Managed()
     {
         var hash = new RedisHash();
@@ -69,7 +69,7 @@ public class PerformanceComparisonBenchmarks
         hash.Dispose();
     }
 
-    [BenchmarkCategory("Hash"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("Hash"), Benchmark]
     public void Hash_Get_Medium_Managed()
     {
         var hash = new RedisHash();
@@ -100,7 +100,7 @@ public class PerformanceComparisonBenchmarks
         hash.Dispose();
     }
 
-    [BenchmarkCategory("Hash"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("Hash"), Benchmark]
     public void Hash_Mixed_Large_Managed()
     {
         var hash = new RedisHash();
@@ -141,7 +141,7 @@ public class PerformanceComparisonBenchmarks
 
     #region RedisSet Benchmarks
 
-    [BenchmarkCategory("Set"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("Set"), Benchmark]
     public void Set_Add_Small_Managed()
     {
         var set = new RedisSet();
@@ -162,7 +162,7 @@ public class PerformanceComparisonBenchmarks
         set.Dispose();
     }
 
-    [BenchmarkCategory("Set"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("Set"), Benchmark]
     public void Set_Contains_Medium_Managed()
     {
         var set = new RedisSet();
@@ -193,7 +193,7 @@ public class PerformanceComparisonBenchmarks
         set.Dispose();
     }
 
-    [BenchmarkCategory("Set"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("Set"), Benchmark]
     public void Set_Mixed_Large_Managed()
     {
         var set = new RedisSet();
@@ -234,7 +234,7 @@ public class PerformanceComparisonBenchmarks
 
     #region RedisList Benchmarks
 
-    [BenchmarkCategory("List"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("List"), Benchmark]
     public void List_Push_Small_Managed()
     {
         var list = new RedisList();
@@ -255,7 +255,7 @@ public class PerformanceComparisonBenchmarks
         list.Dispose();
     }
 
-    [BenchmarkCategory("List"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("List"), Benchmark]
     public void List_Pop_Medium_Managed()
     {
         var list = new RedisList();
@@ -286,7 +286,7 @@ public class PerformanceComparisonBenchmarks
         list.Dispose();
     }
 
-    [BenchmarkCategory("List"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("List"), Benchmark]
     public void List_Mixed_Large_Managed()
     {
         var list = new RedisList();
@@ -327,7 +327,7 @@ public class PerformanceComparisonBenchmarks
 
     #region RedisSortedSet Benchmarks
 
-    [BenchmarkCategory("SortedSet"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("SortedSet"), Benchmark]
     public void SortedSet_Add_Small_Managed()
     {
         var zset = new RedisSortedSet();
@@ -350,7 +350,7 @@ public class PerformanceComparisonBenchmarks
         zset.Dispose();
     }
 
-    [BenchmarkCategory("SortedSet"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("SortedSet"), Benchmark]
     public void SortedSet_GetScore_Medium_Managed()
     {
         var zset = new RedisSortedSet();
@@ -383,7 +383,7 @@ public class PerformanceComparisonBenchmarks
         zset.Dispose();
     }
 
-    [BenchmarkCategory("SortedSet"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("SortedSet"), Benchmark]
     public void SortedSet_Mixed_Large_Managed()
     {
         var zset = new RedisSortedSet();
@@ -426,7 +426,7 @@ public class PerformanceComparisonBenchmarks
 
     #region Factory-based Benchmarks (Real-world usage)
 
-    [BenchmarkCategory("Factory"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("Factory"), Benchmark]
     public void Factory_Hash_Operations_Managed()
     {
         var factory = new ManagedDataStructureFactory();
@@ -465,7 +465,7 @@ public class PerformanceComparisonBenchmarks
         }
     }
 
-    [BenchmarkCategory("Factory"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("Factory"), Benchmark]
     public void Factory_Set_Operations_Managed()
     {
         var factory = new ManagedDataStructureFactory();
@@ -504,7 +504,7 @@ public class PerformanceComparisonBenchmarks
         }
     }
 
-    [BenchmarkCategory("Factory"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("Factory"), Benchmark]
     public void Factory_List_Operations_Managed()
     {
         var factory = new ManagedDataStructureFactory();
@@ -543,7 +543,7 @@ public class PerformanceComparisonBenchmarks
         }
     }
 
-    [BenchmarkCategory("Factory"), Benchmark(Baseline = true)]
+    [BenchmarkCategory("Factory"), Benchmark]
     public void Factory_SortedSet_Operations_Managed()
     {
         var factory = new ManagedDataStructureFactory();
