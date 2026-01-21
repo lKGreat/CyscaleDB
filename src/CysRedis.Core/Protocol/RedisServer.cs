@@ -144,6 +144,16 @@ public class RedisServer : IDisposable
     public ClientDispatcher IoDispatcher { get; }
 
     /// <summary>
+    /// Server cron for periodic maintenance tasks.
+    /// </summary>
+    public Threading.ServerCron ServerCron { get; }
+
+    /// <summary>
+    /// Lazy free manager for asynchronous object deletion.
+    /// </summary>
+    public Memory.LazyFreeManager LazyFree { get; }
+
+    /// <summary>
     /// Number of connected clients.
     /// </summary>
     public int ClientCount => _clients.Count;
@@ -216,6 +226,8 @@ public class RedisServer : IDisposable
         RateLimiter = new RateLimiter(_options.RateLimit);
         TlsHandler = new TlsHandler(_options.Tls);
         IoDispatcher = new ClientDispatcher(_options.IoThreading, HandleCommandAsync);
+        ServerCron = new Threading.ServerCron(this);
+        LazyFree = new Memory.LazyFreeManager();
         LastSaveTime = DateTime.UtcNow;
 
         // Initialize TLS listener if enabled
@@ -319,6 +331,10 @@ public class RedisServer : IDisposable
         // Start LRU clock updater for memory eviction
         _ = Memory.LruClock.StartClockUpdater(_cts.Token);
         Logger.Info("LRU clock updater started");
+        
+        // Start server cron for periodic maintenance
+        ServerCron.Start(_cts.Token);
+        Logger.Info("Server cron started (100ms interval)");
     }
 
     /// <summary>
@@ -892,6 +908,8 @@ public class RedisServer : IDisposable
         RateLimiter.Dispose();
         TlsHandler.Dispose();
         IoDispatcher.Dispose();
+        ServerCron?.Dispose();
+        LazyFree?.Dispose();
         Store.Dispose();
 
         GC.SuppressFinalize(this);

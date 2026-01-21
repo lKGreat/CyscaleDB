@@ -14,6 +14,8 @@ public sealed class RespPipeWriter : IDisposable
 {
     private readonly PipeWriter _pipeWriter;
     private bool _disposed;
+    private bool _batchMode;
+    private int _batchedWrites;
 
     // Pre-computed common responses
     private static readonly byte[] CrLf = "\r\n"u8.ToArray();
@@ -348,10 +350,50 @@ public sealed class RespPipeWriter : IDisposable
     }
 
     /// <summary>
+    /// Begins batch mode - writes are buffered and not flushed until EndBatch.
+    /// </summary>
+    public void BeginBatch()
+    {
+        _batchMode = true;
+        _batchedWrites = 0;
+    }
+
+    /// <summary>
+    /// Ends batch mode and flushes all buffered writes.
+    /// </summary>
+    public async ValueTask EndBatch(CancellationToken cancellationToken = default)
+    {
+        _batchMode = false;
+        if (_batchedWrites > 0)
+        {
+            await _pipeWriter.FlushAsync(cancellationToken).ConfigureAwait(false);
+            _batchedWrites = 0;
+        }
+    }
+
+    /// <summary>
+    /// Gets whether batch mode is active.
+    /// </summary>
+    public bool IsBatchMode => _batchMode;
+
+    /// <summary>
+    /// Gets the number of writes buffered in current batch.
+    /// </summary>
+    public int BatchedWrites => _batchedWrites;
+
+    /// <summary>
     /// Flushes buffered data to the underlying stream.
+    /// In batch mode, this increments the batched writes counter.
     /// </summary>
     public async ValueTask FlushAsync(CancellationToken cancellationToken = default)
     {
+        if (_batchMode)
+        {
+            // In batch mode, don't actually flush yet
+            _batchedWrites++;
+            return;
+        }
+        
         await _pipeWriter.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 

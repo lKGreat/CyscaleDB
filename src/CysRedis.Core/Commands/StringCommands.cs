@@ -457,7 +457,9 @@ public class IncrCommand : ICommandHandler
         }
 
         var newValue = currentValue + increment;
-        db.Set(key, new RedisString(newValue.ToString()));
+        // Use shared object if possible
+        var newStr = Protocol.SharedObjects.CreateIntegerString(newValue);
+        db.Set(key, newStr);
         return newValue;
     }
 }

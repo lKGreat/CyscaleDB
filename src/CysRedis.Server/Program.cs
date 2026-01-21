@@ -1,3 +1,4 @@
+using System.Runtime;
 using CysRedis.Core.Common;
 using CysRedis.Core.Protocol;
 
@@ -10,6 +11,9 @@ public class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        // Configure GC for optimal server performance
+        ConfigureGarbageCollector();
+
         // Parse command line arguments into options
         var options = ParseCommandLineOptions(args);
 
@@ -64,6 +68,38 @@ public class Program
         {
             server?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Configures garbage collector for optimal server performance.
+    /// </summary>
+    private static void ConfigureGarbageCollector()
+    {
+        // 1. Enable Server GC mode (multi-threaded, parallel GC)
+        // Note: This must be set in runtimeconfig.json or as environment variable before startup
+        // We check and log the current mode
+        var isServerGC = GCSettings.IsServerGC;
+        Logger.Info("GC Mode: {0}", isServerGC ? "Server GC (Parallel)" : "Workstation GC");
+
+        if (!isServerGC)
+        {
+            Logger.Warning("Server GC is not enabled. For best performance, add to CysRedis.Server.csproj:");
+            Logger.Warning("  <PropertyGroup>");
+            Logger.Warning("    <ServerGarbageCollection>true</ServerGarbageCollection>");
+            Logger.Warning("  </PropertyGroup>");
+        }
+
+        // 2. Set sustained low latency mode
+        GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
+        Logger.Info("GC Latency Mode: SustainedLowLatency");
+
+        // 3. Configure LOH compaction
+        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.Default;
+        Logger.Info("LOH Compaction: Configured (will compact on demand)");
+
+        // 4. Log GC info
+        Logger.Info("GC Max Generation: {0}", GC.MaxGeneration);
+        Logger.Info("GC Total Memory: {0:N0} bytes", GC.GetTotalMemory(false));
     }
 
     /// <summary>
