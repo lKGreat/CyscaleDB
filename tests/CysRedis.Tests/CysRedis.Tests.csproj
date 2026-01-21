@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <OutputType>Exe</OutputType>
+    <StartupObject>CysRedis.Tests.Unsafe.RunBenchmarks</StartupObject>
   </PropertyGroup>
 
   <ItemGroup>
