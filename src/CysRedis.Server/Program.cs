@@ -10,30 +10,22 @@ public class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        // Parse command line arguments
-        int port = Constants.DefaultPort;
-        for (int i = 0; i < args.Length; i++)
-        {
-            if (args[i] == "--port" && i + 1 < args.Length)
-            {
-                if (int.TryParse(args[i + 1], out var p))
-                    port = p;
-                i++;
-            }
-        }
+        // Parse command line arguments into options
+        var options = ParseCommandLineOptions(args);
 
         Logger.Info("===========================================");
         Logger.Info("  CysRedis Server v{0}", Constants.ServerVersion);
         Logger.Info("  Redis Protocol Compatible Server");
+        Logger.Info("  with High-Performance Network Stack");
         Logger.Info("===========================================");
-        Logger.Info("Starting server on port {0}...", port);
+        Logger.Info("Starting server on port {0}...", options.Port);
 
         RedisServer? server = null;
 
         try
         {
-            // Initialize and start Redis server
-            server = new RedisServer(port);
+            // Initialize and start Redis server with optimized options
+            server = new RedisServer(options);
             server.Start();
 
             Logger.Info("Server is ready to accept connections.");
@@ -72,5 +64,95 @@ public class Program
         {
             server?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Parses command line arguments into server options.
+    /// </summary>
+    private static RedisServerOptions ParseCommandLineOptions(string[] args)
+    {
+        var options = new RedisServerOptions();
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--port" or "-p" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out var port))
+                        options.Port = port;
+                    break;
+
+                case "--bind" when i + 1 < args.Length:
+                    options.BindAddress = args[++i];
+                    break;
+
+                case "--datadir" when i + 1 < args.Length:
+                    options.DataDir = args[++i];
+                    break;
+
+                case "--maxclients" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out var maxClients))
+                        options.MaxClients = maxClients;
+                    break;
+
+                case "--timeout" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out var timeout))
+                        options.ClientIdleTimeout = timeout == 0 
+                            ? TimeSpan.Zero 
+                            : TimeSpan.FromSeconds(timeout);
+                    break;
+
+                case "--tcp-keepalive" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out var keepAlive))
+                    {
+                        options.TcpKeepAlive = keepAlive > 0;
+                        if (keepAlive > 0)
+                            options.TcpKeepAliveTime = keepAlive;
+                    }
+                    break;
+
+                case "--low-latency":
+                    // Apply low latency preset
+                    options.TcpNoDelay = true;
+                    options.ReceiveBufferSize = 32 * 1024;
+                    options.SendBufferSize = 32 * 1024;
+                    break;
+
+                case "--high-throughput":
+                    // Apply high throughput preset
+                    options.TcpNoDelay = false;
+                    options.ReceiveBufferSize = 128 * 1024;
+                    options.SendBufferSize = 128 * 1024;
+                    break;
+
+                case "--help" or "-h":
+                    PrintUsage();
+                    Environment.Exit(0);
+                    break;
+            }
+        }
+
+        return options;
+    }
+
+    /// <summary>
+    /// Prints command line usage.
+    /// </summary>
+    private static void PrintUsage()
+    {
+        Console.WriteLine("CysRedis Server - Redis Protocol Compatible Server");
+        Console.WriteLine();
+        Console.WriteLine("Usage: CysRedis.Server [options]");
+        Console.WriteLine();
+        Console.WriteLine("Options:");
+        Console.WriteLine("  --port, -p <port>      Server port (default: 6379)");
+        Console.WriteLine("  --bind <address>       Bind address (default: 0.0.0.0)");
+        Console.WriteLine("  --datadir <path>       Data directory for persistence");
+        Console.WriteLine("  --maxclients <num>     Max clients (default: 10000, 0=unlimited)");
+        Console.WriteLine("  --timeout <seconds>    Client idle timeout (default: 300, 0=disabled)");
+        Console.WriteLine("  --tcp-keepalive <sec>  TCP keep-alive interval (default: 60)");
+        Console.WriteLine("  --low-latency          Optimize for low latency");
+        Console.WriteLine("  --high-throughput      Optimize for high throughput");
+        Console.WriteLine("  --help, -h             Show this help message");
     }
 }
