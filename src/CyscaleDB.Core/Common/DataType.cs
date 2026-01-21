@@ -26,6 +26,11 @@ public enum DataType
     TinyInt = 4,
 
     /// <summary>
+    /// 24-bit signed integer (-8,388,608 to 8,388,607)
+    /// </summary>
+    MediumInt = 5,
+
+    /// <summary>
     /// Variable-length character string with maximum length
     /// </summary>
     VarChar = 10,
@@ -39,6 +44,21 @@ public enum DataType
     /// Large text data
     /// </summary>
     Text = 12,
+
+    /// <summary>
+    /// Tiny text data (max 255 bytes)
+    /// </summary>
+    TinyText = 13,
+
+    /// <summary>
+    /// Medium text data (max 16MB)
+    /// </summary>
+    MediumText = 14,
+
+    /// <summary>
+    /// Long text data (max 4GB)
+    /// </summary>
+    LongText = 15,
 
     /// <summary>
     /// Boolean value (true/false)
@@ -66,6 +86,11 @@ public enum DataType
     Timestamp = 33,
 
     /// <summary>
+    /// Year (1901 to 2155, or 0000)
+    /// </summary>
+    Year = 34,
+
+    /// <summary>
     /// Single-precision floating point (32-bit)
     /// </summary>
     Float = 40,
@@ -91,6 +116,31 @@ public enum DataType
     Json = 51,
 
     /// <summary>
+    /// Tiny binary large object (max 255 bytes)
+    /// </summary>
+    TinyBlob = 52,
+
+    /// <summary>
+    /// Medium binary large object (max 16MB)
+    /// </summary>
+    MediumBlob = 53,
+
+    /// <summary>
+    /// Long binary large object (max 4GB)
+    /// </summary>
+    LongBlob = 54,
+
+    /// <summary>
+    /// Variable-length binary data
+    /// </summary>
+    VarBinary = 55,
+
+    /// <summary>
+    /// Fixed-length binary data
+    /// </summary>
+    Binary = 56,
+
+    /// <summary>
     /// Geometry/spatial data
     /// </summary>
     Geometry = 60,
@@ -104,6 +154,11 @@ public enum DataType
     /// SET type - zero or more values from a fixed set stored as bitmask
     /// </summary>
     Set = 71,
+
+    /// <summary>
+    /// BIT type - bit-field type (1 to 64 bits)
+    /// </summary>
+    Bit = 80,
 
     /// <summary>
     /// NULL type (internal use)
@@ -127,14 +182,18 @@ public static class DataTypeExtensions
             DataType.BigInt => true,
             DataType.SmallInt => true,
             DataType.TinyInt => true,
+            DataType.MediumInt => true,
             DataType.Boolean => true,
             DataType.DateTime => true,
             DataType.Date => true,
             DataType.Time => true,
             DataType.Timestamp => true,
+            DataType.Year => true,
             DataType.Float => true,
             DataType.Double => true,
             DataType.Char => true,
+            DataType.Binary => true,
+            DataType.Bit => true,
             DataType.Enum => true,  // Stored as 4-byte int index
             DataType.Set => true,   // Stored as 8-byte long bitmap
             _ => false
@@ -151,6 +210,7 @@ public static class DataTypeExtensions
         {
             DataType.TinyInt => 1,
             DataType.SmallInt => 2,
+            DataType.MediumInt => 3,
             DataType.Int => 4,
             DataType.BigInt => 8,
             DataType.Boolean => 1,
@@ -160,6 +220,8 @@ public static class DataTypeExtensions
             DataType.Time => 8,      // Ticks
             DataType.DateTime => 8,  // Ticks
             DataType.Timestamp => 8, // Ticks
+            DataType.Year => 2,      // 2-byte year value
+            DataType.Bit => 8,       // Up to 64 bits stored as 8 bytes
             DataType.Enum => 4,      // Stored as int index
             DataType.Set => 8,       // Stored as long bitmap
             _ => -1 // Variable length
@@ -177,9 +239,11 @@ public static class DataTypeExtensions
             DataType.BigInt => true,
             DataType.SmallInt => true,
             DataType.TinyInt => true,
+            DataType.MediumInt => true,
             DataType.Float => true,
             DataType.Double => true,
             DataType.Decimal => true,
+            DataType.Bit => true,
             _ => false
         };
     }
@@ -194,6 +258,26 @@ public static class DataTypeExtensions
             DataType.VarChar => true,
             DataType.Char => true,
             DataType.Text => true,
+            DataType.TinyText => true,
+            DataType.MediumText => true,
+            DataType.LongText => true,
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// Determines if the data type is a binary type.
+    /// </summary>
+    public static bool IsBinary(this DataType dataType)
+    {
+        return dataType switch
+        {
+            DataType.Blob => true,
+            DataType.TinyBlob => true,
+            DataType.MediumBlob => true,
+            DataType.LongBlob => true,
+            DataType.VarBinary => true,
+            DataType.Binary => true,
             _ => false
         };
     }
@@ -209,6 +293,7 @@ public static class DataTypeExtensions
             DataType.Date => true,
             DataType.Time => true,
             DataType.Timestamp => true,
+            DataType.Year => true,
             _ => false
         };
     }

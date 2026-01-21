@@ -641,6 +641,36 @@ public class ColumnDef
     /// For SET type: the allowed values.
     /// </summary>
     public List<string>? SetValues { get; set; }
+
+    /// <summary>
+    /// Character set for string types (e.g., utf8mb4).
+    /// </summary>
+    public string? CharacterSet { get; set; }
+
+    /// <summary>
+    /// Collation for string types (e.g., utf8mb4_general_ci).
+    /// </summary>
+    public string? Collation { get; set; }
+
+    /// <summary>
+    /// Whether the numeric type is unsigned.
+    /// </summary>
+    public bool IsUnsigned { get; set; }
+
+    /// <summary>
+    /// Whether the numeric type has zero-fill (implies unsigned).
+    /// </summary>
+    public bool IsZerofill { get; set; }
+
+    /// <summary>
+    /// Column comment.
+    /// </summary>
+    public string? Comment { get; set; }
+
+    /// <summary>
+    /// Whether the column has ON UPDATE CURRENT_TIMESTAMP.
+    /// </summary>
+    public bool OnUpdateCurrentTimestamp { get; set; }
 }
 
 /// <summary>

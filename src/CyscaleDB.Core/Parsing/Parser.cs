@@ -1191,14 +1191,16 @@ public sealed class Parser
         var col = new ColumnDef();
         col.Name = ExpectIdentifier();
         col.DataType = ParseDataType(out var length, out var precision, out var scale, 
-            out var enumValues, out var setValues);
+            out var enumValues, out var setValues, out var isUnsigned, out var isZerofill);
         col.Length = length;
         col.Precision = precision;
         col.Scale = scale;
         col.EnumValues = enumValues;
         col.SetValues = setValues;
+        col.IsUnsigned = isUnsigned;
+        col.IsZerofill = isZerofill;
 
-        // Column constraints
+        // Column constraints and attributes
         while (true)
         {
             if (Match(TokenType.NOT))
@@ -1222,11 +1224,62 @@ public sealed class Parser
             }
             else if (Match(TokenType.UNIQUE))
             {
+                // UNIQUE can be followed by optional KEY
+                Match(TokenType.KEY);
                 col.IsUnique = true;
             }
             else if (Match(TokenType.DEFAULT))
             {
                 col.DefaultValue = ParseExpression();
+            }
+            else if (Match(TokenType.CHARACTER))
+            {
+                // CHARACTER SET charset_name
+                Expect(TokenType.SET);
+                col.CharacterSet = ExpectIdentifier();
+            }
+            else if (Match(TokenType.CHARSET))
+            {
+                // CHARSET charset_name (shorthand)
+                col.CharacterSet = ExpectIdentifier();
+            }
+            else if (Match(TokenType.COLLATION) || MatchIdentifier("COLLATE"))
+            {
+                // COLLATE collation_name
+                col.Collation = ExpectIdentifier();
+            }
+            else if (Match(TokenType.COMMENT))
+            {
+                // COMMENT 'comment_text'
+                col.Comment = ExpectStringLiteral();
+            }
+            else if (Match(TokenType.ON))
+            {
+                // ON UPDATE CURRENT_TIMESTAMP
+                Expect(TokenType.UPDATE);
+                if (MatchIdentifier("CURRENT_TIMESTAMP") || Match(TokenType.CURRENT))
+                {
+                    // Handle CURRENT_TIMESTAMP or CURRENT TIMESTAMP
+                    if (Check(TokenType.TIMESTAMP))
+                    {
+                        Advance();
+                    }
+                    // Handle optional parentheses: CURRENT_TIMESTAMP()
+                    if (Match(TokenType.LeftParen))
+                    {
+                        // Optional precision
+                        if (Check(TokenType.IntegerLiteral))
+                        {
+                            Advance();
+                        }
+                        Expect(TokenType.RightParen);
+                    }
+                    col.OnUpdateCurrentTimestamp = true;
+                }
+                else
+                {
+                    throw Error($"Expected CURRENT_TIMESTAMP after ON UPDATE, got: {_currentToken.Value}");
+                }
             }
             else
             {
@@ -1239,17 +1292,26 @@ public sealed class Parser
 
     private DataType ParseDataType(out int? length, out int? precision, out int? scale)
     {
-        return ParseDataType(out length, out precision, out scale, out _, out _);
+        return ParseDataType(out length, out precision, out scale, out _, out _, out _, out _);
     }
 
     private DataType ParseDataType(out int? length, out int? precision, out int? scale, 
         out List<string>? enumValues, out List<string>? setValues)
+    {
+        return ParseDataType(out length, out precision, out scale, out enumValues, out setValues, out _, out _);
+    }
+
+    private DataType ParseDataType(out int? length, out int? precision, out int? scale, 
+        out List<string>? enumValues, out List<string>? setValues,
+        out bool isUnsigned, out bool isZerofill)
     {
         length = null;
         precision = null;
         scale = null;
         enumValues = null;
         setValues = null;
+        isUnsigned = false;
+        isZerofill = false;
 
         DataType dataType;
 
@@ -1262,22 +1324,33 @@ public sealed class Parser
             TokenType.BIGINT => DataType.BigInt,
             TokenType.SMALLINT => DataType.SmallInt,
             TokenType.TINYINT => DataType.TinyInt,
+            TokenType.MEDIUMINT => DataType.MediumInt,
             TokenType.VARCHAR => DataType.VarChar,
             TokenType.CHAR => DataType.Char,
             TokenType.TEXT => DataType.Text,
+            TokenType.TINYTEXT => DataType.TinyText,
+            TokenType.MEDIUMTEXT => DataType.MediumText,
+            TokenType.LONGTEXT => DataType.LongText,
             TokenType.BOOLEAN or TokenType.BOOL => DataType.Boolean,
             TokenType.DATETIME => DataType.DateTime,
             TokenType.DATE => DataType.Date,
             TokenType.TIME => DataType.Time,
             TokenType.TIMESTAMP => DataType.Timestamp,
+            TokenType.YEAR => DataType.Year,
             TokenType.FLOAT => DataType.Float,
             TokenType.DOUBLE => DataType.Double,
             TokenType.DECIMAL => DataType.Decimal,
             TokenType.BLOB => DataType.Blob,
+            TokenType.TINYBLOB => DataType.TinyBlob,
+            TokenType.MEDIUMBLOB => DataType.MediumBlob,
+            TokenType.LONGBLOB => DataType.LongBlob,
+            TokenType.VARBINARY => DataType.VarBinary,
+            TokenType.BINARY => DataType.Binary,
             TokenType.JSON => DataType.Json,
             TokenType.GEOMETRY => DataType.Geometry,
             TokenType.ENUM => DataType.Enum,
             TokenType.SET => DataType.Set,
+            TokenType.BIT => DataType.Bit,
             _ => throw Error($"Expected data type, got: {token.Value}")
         };
 
@@ -1313,6 +1386,29 @@ public sealed class Parser
             }
 
             Expect(TokenType.RightParen);
+        }
+
+        // Parse optional UNSIGNED/ZEROFILL/SIGNED modifiers for numeric types
+        while (true)
+        {
+            if (Match(TokenType.UNSIGNED))
+            {
+                isUnsigned = true;
+            }
+            else if (Match(TokenType.ZEROFILL))
+            {
+                isZerofill = true;
+                isUnsigned = true; // ZEROFILL implies UNSIGNED
+            }
+            else if (Match(TokenType.SIGNED))
+            {
+                // SIGNED is the default, just consume the token
+                isUnsigned = false;
+            }
+            else
+            {
+                break;
+            }
         }
 
         return dataType;
