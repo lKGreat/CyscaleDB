@@ -2488,6 +2488,18 @@ public sealed class Parser
     }
 
     /// <summary>
+    /// Expects an identifier with a specific value (case-insensitive).
+    /// Throws if the identifier doesn't match.
+    /// </summary>
+    private void ExpectIdentifierValue(string value)
+    {
+        if (!MatchIdentifier(value))
+        {
+            throw Error($"Expected '{value}', got: {_currentToken.Value}");
+        }
+    }
+
+    /// <summary>
     /// Expects a string literal and returns its value.
     /// </summary>
     private string ExpectStringLiteral()
@@ -3702,7 +3714,71 @@ public sealed class Parser
 
     private Statement ParseCreateTriggerStatement()
     {
-        throw new NotImplementedException("CREATE TRIGGER is not yet implemented (Phase 3)");
+        // CREATE [OR REPLACE] TRIGGER trigger_name
+        // {BEFORE | AFTER} {INSERT | UPDATE | DELETE}
+        // ON table_name FOR EACH ROW
+        // trigger_body
+
+        Expect(TokenType.TRIGGER);
+
+        var stmt = new CreateTriggerStatement();
+
+        // Trigger name
+        stmt.TriggerName = ExpectIdentifier();
+
+        // Timing: BEFORE or AFTER
+        if (Match(TokenType.BEFORE))
+        {
+            stmt.Timing = TriggerTiming.Before;
+        }
+        else if (Match(TokenType.AFTER))
+        {
+            stmt.Timing = TriggerTiming.After;
+        }
+        else
+        {
+            throw Error($"Expected BEFORE or AFTER, got: {_currentToken.Value}");
+        }
+
+        // Event: INSERT, UPDATE, or DELETE
+        if (Match(TokenType.INSERT))
+        {
+            stmt.Event = TriggerEvent.Insert;
+        }
+        else if (Match(TokenType.UPDATE))
+        {
+            stmt.Event = TriggerEvent.Update;
+        }
+        else if (Match(TokenType.DELETE))
+        {
+            stmt.Event = TriggerEvent.Delete;
+        }
+        else
+        {
+            throw Error($"Expected INSERT, UPDATE, or DELETE, got: {_currentToken.Value}");
+        }
+
+        // ON table_name
+        Expect(TokenType.ON);
+        stmt.TableName = ExpectIdentifier();
+
+        // FOR EACH ROW
+        Expect(TokenType.FOR);
+        ExpectIdentifierValue("EACH");
+        ExpectIdentifierValue("ROW");
+
+        // Parse trigger body (single statement or BEGIN...END block)
+        if (Check(TokenType.BEGIN))
+        {
+            stmt.Body = ParseProcedureBody();
+        }
+        else
+        {
+            // Single statement
+            stmt.Body = [ParseStatement()];
+        }
+
+        return stmt;
     }
 
     private Statement ParseCreateEventStatement()
@@ -3737,7 +3813,22 @@ public sealed class Parser
 
     private Statement ParseDropTriggerStatement()
     {
-        throw new NotImplementedException("DROP TRIGGER is not yet implemented (Phase 3)");
+        // DROP TRIGGER [IF EXISTS] trigger_name
+        Expect(TokenType.TRIGGER);
+
+        var stmt = new DropTriggerStatement();
+
+        // Check for IF EXISTS
+        if (Match(TokenType.IF))
+        {
+            Expect(TokenType.EXISTS);
+            stmt.IfExists = true;
+        }
+
+        // Trigger name
+        stmt.TriggerName = ExpectIdentifier();
+
+        return stmt;
     }
 
     private Statement ParseDropEventStatement()

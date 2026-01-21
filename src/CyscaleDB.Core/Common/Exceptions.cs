@@ -333,6 +333,10 @@ public enum ErrorCode
     IndexExists = 1208,
     ProcedureNotFound = 1209,
     ProcedureExists = 1210,
+    TriggerNotFound = 1211,
+    TriggerExists = 1212,
+    EventNotFound = 1213,
+    EventExists = 1214,
     
     // Auth errors (1250-1299)
     UserNotFound = 1250,

@@ -277,31 +277,31 @@ todos:
     status: completed
   - id: 3.2.6
     content: 表达式中调用函数 - SELECT my_func(col)，测试
-    status: pending
+    status: completed
   - id: 3.3.1
     content: TRIGGER/BEFORE/AFTER 关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 3.3.2
     content: CreateTriggerStatement AST - 新建 AST 节点
-    status: pending
+    status: completed
   - id: 3.3.3
     content: CREATE TRIGGER 解析 - BEFORE INSERT ON t FOR EACH ROW
-    status: pending
+    status: completed
   - id: 3.3.4
     content: NEW/OLD 伪记录 - 触发器中访问新旧值
-    status: pending
+    status: completed
   - id: 3.3.5
     content: BEFORE INSERT 触发器执行 - 测试插入前触发
-    status: pending
+    status: completed
   - id: 3.3.6
     content: AFTER INSERT 触发器执行 - 测试插入后触发
-    status: pending
+    status: completed
   - id: 3.3.7
     content: BEFORE/AFTER UPDATE 触发器 - 测试更新触发
-    status: pending
+    status: completed
   - id: 3.3.8
     content: BEFORE/AFTER DELETE 触发器 - 测试删除触发
-    status: pending
+    status: completed
   - id: 3.4.1
     content: EVENT/SCHEDULE/EVERY 关键字 - 添加到 Token.cs
     status: pending

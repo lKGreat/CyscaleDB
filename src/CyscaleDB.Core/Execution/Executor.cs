@@ -163,6 +163,9 @@ public sealed class Executor
             LeaveStatement s => ExecuteLeave(s),
             IterateStatement s => ExecuteIterate(s),
             ReturnStatement s => ExecuteReturn(s),
+            // Trigger statements
+            CreateTriggerStatement s => ExecuteCreateTrigger(s),
+            DropTriggerStatement s => ExecuteDropTrigger(s),
             _ => throw new CyscaleException($"Unsupported statement type: {statement.GetType().Name}")
         };
     }
@@ -1091,6 +1094,9 @@ public sealed class Executor
 
             var row = new Row(schema, values);
 
+            // Execute BEFORE INSERT triggers
+            ExecuteTriggers(stmt.TableName, TriggerTiming.Before, TriggerEvent.Insert, null, row);
+
             // Validate foreign key constraints on the new row
             _foreignKeyManager.ValidateInsert(
                 dbName,
@@ -1104,6 +1110,9 @@ public sealed class Executor
 
             table.InsertRow(row);
             insertedCount++;
+
+            // Execute AFTER INSERT triggers
+            ExecuteTriggers(stmt.TableName, TriggerTiming.After, TriggerEvent.Insert, null, row);
         }
 
         table.Flush();
@@ -1399,11 +1408,17 @@ public sealed class Executor
         }
 
         // Phase 4: Perform the actual updates on the parent table
-        foreach (var (rowId, _, newRow) in rowsToUpdate)
+        foreach (var (rowId, oldRow, newRow) in rowsToUpdate)
         {
+            // Execute BEFORE UPDATE triggers
+            ExecuteTriggers(stmt.TableName, TriggerTiming.Before, TriggerEvent.Update, oldRow, newRow);
+
             if (table.UpdateRow(rowId, newRow))
             {
                 updatedCount++;
+
+                // Execute AFTER UPDATE triggers
+                ExecuteTriggers(stmt.TableName, TriggerTiming.After, TriggerEvent.Update, oldRow, newRow);
             }
         }
 
@@ -1497,11 +1512,17 @@ public sealed class Executor
         }
 
         // Phase 4: Perform the actual deletes on the parent table
-        foreach (var (rowId, _) in rowsToDelete)
+        foreach (var (rowId, row) in rowsToDelete)
         {
+            // Execute BEFORE DELETE triggers
+            ExecuteTriggers(stmt.TableName, TriggerTiming.Before, TriggerEvent.Delete, row, null);
+
             if (table.DeleteRow(rowId))
             {
                 deletedCount++;
+
+                // Execute AFTER DELETE triggers
+                ExecuteTriggers(stmt.TableName, TriggerTiming.After, TriggerEvent.Delete, row, null);
             }
         }
 
@@ -3274,6 +3295,148 @@ public sealed class Executor
         return ExecutionResult.Ddl($"Function '{stmt.FunctionName}' dropped successfully");
     }
 
+    #region Trigger Execution
+
+    private ExecutionResult ExecuteCreateTrigger(CreateTriggerStatement stmt)
+    {
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            throw new DatabaseNotFoundException(_currentDatabase);
+
+        // Verify the table exists
+        if (!db.HasTable(stmt.TableName))
+            throw new TableNotFoundException(stmt.TableName);
+
+        // Check if trigger already exists
+        if (db.HasTrigger(stmt.TriggerName) && !stmt.OrReplace)
+            throw new CyscaleException($"Trigger '{stmt.TriggerName}' already exists", ErrorCode.TriggerExists);
+
+        // Create trigger info
+        var triggerInfo = new TriggerInfo(
+            db.GetNextTriggerId(),
+            stmt.TriggerName,
+            stmt.TableName,
+            stmt.Timing,
+            stmt.Event,
+            stmt.Body,
+            stmt.Definer);
+
+        if (stmt.OrReplace)
+        {
+            db.AddOrReplaceTrigger(triggerInfo);
+        }
+        else
+        {
+            db.AddTrigger(triggerInfo);
+        }
+
+        // Save catalog
+        _catalog.SaveCatalog();
+
+        _logger.Info("Created trigger '{0}' on table '{1}' in database '{2}'", 
+            stmt.TriggerName, stmt.TableName, _currentDatabase);
+        return ExecutionResult.Ddl($"Trigger '{stmt.TriggerName}' created successfully");
+    }
+
+    private ExecutionResult ExecuteDropTrigger(DropTriggerStatement stmt)
+    {
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            throw new DatabaseNotFoundException(_currentDatabase);
+
+        if (!db.HasTrigger(stmt.TriggerName))
+        {
+            if (stmt.IfExists)
+                return ExecutionResult.Ddl($"Trigger '{stmt.TriggerName}' does not exist");
+
+            throw new CyscaleException($"Trigger '{stmt.TriggerName}' does not exist", ErrorCode.TriggerNotFound);
+        }
+
+        db.RemoveTrigger(stmt.TriggerName);
+
+        // Save catalog
+        _catalog.SaveCatalog();
+
+        _logger.Info("Dropped trigger '{0}' from database '{1}'", stmt.TriggerName, _currentDatabase);
+        return ExecutionResult.Ddl($"Trigger '{stmt.TriggerName}' dropped successfully");
+    }
+
+    /// <summary>
+    /// Executes triggers for a specific table, timing, and event.
+    /// </summary>
+    private void ExecuteTriggers(string tableName, TriggerTiming timing, TriggerEvent @event, 
+        Row? oldRow = null, Row? newRow = null)
+    {
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            return;
+
+        var triggers = db.GetTriggers(tableName, timing, @event);
+        
+        foreach (var trigger in triggers)
+        {
+            ExecuteSingleTrigger(trigger, oldRow, newRow);
+        }
+    }
+
+    /// <summary>
+    /// Executes a single trigger.
+    /// </summary>
+    private void ExecuteSingleTrigger(TriggerInfo trigger, Row? oldRow, Row? newRow)
+    {
+        // Save current context (support nested triggers)
+        var savedVariables = _procedureVariables;
+        var savedReturnValue = _procedureReturnValue;
+        var savedLeaveLabel = _leaveLabel;
+        var savedIterateLabel = _iterateLabel;
+
+        try
+        {
+            // Initialize trigger execution context
+            _procedureVariables = new Dictionary<string, DataValue>(StringComparer.OrdinalIgnoreCase);
+            _procedureReturnValue = null;
+            _leaveLabel = null;
+            _iterateLabel = null;
+
+            // Make OLD and NEW row data available
+            // OLD row values are prefixed with "OLD."
+            // NEW row values are prefixed with "NEW."
+            if (oldRow != null)
+            {
+                for (int i = 0; i < oldRow.Schema.Columns.Count; i++)
+                {
+                    var colName = oldRow.Schema.Columns[i].Name;
+                    _procedureVariables[$"OLD.{colName}"] = oldRow.Values[i];
+                }
+            }
+
+            if (newRow != null)
+            {
+                for (int i = 0; i < newRow.Schema.Columns.Count; i++)
+                {
+                    var colName = newRow.Schema.Columns[i].Name;
+                    _procedureVariables[$"NEW.{colName}"] = newRow.Values[i];
+                }
+            }
+
+            // Execute trigger body
+            foreach (var bodyStmt in trigger.Body)
+            {
+                Execute(bodyStmt);
+            }
+        }
+        finally
+        {
+            // Restore previous context
+            _procedureVariables = savedVariables;
+            _procedureReturnValue = savedReturnValue;
+            _leaveLabel = savedLeaveLabel;
+            _iterateLabel = savedIterateLabel;
+        }
+    }
+
+    #endregion
+
     private ExecutionResult ExecuteCall(CallStatement stmt)
     {
         var db = _catalog.GetDatabase(_currentDatabase);
@@ -3578,6 +3741,56 @@ public sealed class Executor
         return ExecutionResult.Empty();
     }
 
+    /// <summary>
+    /// Executes a user-defined function and returns its result.
+    /// Called by UserFunctionEvaluator during expression evaluation.
+    /// </summary>
+    internal DataValue ExecuteUserFunction(ProcedureInfo function, List<DataValue> argValues)
+    {
+        // Save current procedure context (support nested function calls)
+        var savedVariables = _procedureVariables;
+        var savedReturnValue = _procedureReturnValue;
+        var savedLeaveLabel = _leaveLabel;
+        var savedIterateLabel = _iterateLabel;
+
+        try
+        {
+            // Initialize function execution context
+            _procedureVariables = new Dictionary<string, DataValue>(StringComparer.OrdinalIgnoreCase);
+            _procedureReturnValue = null;
+            _leaveLabel = null;
+            _iterateLabel = null;
+
+            // Bind arguments to parameters
+            for (int i = 0; i < function.Parameters.Count; i++)
+            {
+                var param = function.Parameters[i];
+                _procedureVariables[param.Name] = argValues[i];
+            }
+
+            // Execute function body
+            foreach (var bodyStmt in function.Body)
+            {
+                Execute(bodyStmt);
+
+                // Check for RETURN
+                if (_procedureReturnValue != null)
+                    break;
+            }
+
+            // Return the result (or NULL if no RETURN was executed)
+            return _procedureReturnValue ?? DataValue.Null;
+        }
+        finally
+        {
+            // Restore previous procedure context
+            _procedureVariables = savedVariables;
+            _procedureReturnValue = savedReturnValue;
+            _leaveLabel = savedLeaveLabel;
+            _iterateLabel = savedIterateLabel;
+        }
+    }
+
     #endregion
 
     #region Expression Building
@@ -3675,8 +3888,36 @@ public sealed class Executor
             _ when IsAggregateFunction(funcName) => 
                 // Aggregates in non-GROUP BY context - return constant for now
                 new ConstantEvaluator(DataValue.Null),
-            _ => throw new CyscaleException($"Unknown function: {func.FunctionName}")
+            _ => BuildUserDefinedFunction(func, schema)
         };
+    }
+
+    /// <summary>
+    /// Builds an evaluator for a user-defined function (stored function).
+    /// </summary>
+    private IExpressionEvaluator BuildUserDefinedFunction(FunctionCall func, TableSchema schema)
+    {
+        // Look up the function in the current database
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            throw new CyscaleException($"Unknown function: {func.FunctionName}");
+
+        var funcInfo = db.GetProcedure(func.FunctionName);
+        if (funcInfo == null || !funcInfo.IsFunction)
+            throw new CyscaleException($"Unknown function: {func.FunctionName}");
+
+        // Check parameter count
+        if (func.Arguments.Count != funcInfo.Parameters.Count)
+            throw new CyscaleException($"Function '{func.FunctionName}' expects {funcInfo.Parameters.Count} arguments, got {func.Arguments.Count}");
+
+        // Build evaluators for all arguments
+        var argEvaluators = new List<IExpressionEvaluator>();
+        foreach (var arg in func.Arguments)
+        {
+            argEvaluators.Add(BuildExpression(arg, schema));
+        }
+
+        return new UserFunctionEvaluator(funcInfo, argEvaluators, this);
     }
 
     private IExpressionEvaluator BuildStringFunction(FunctionCall func, TableSchema schema, Func<string, string> transform)
@@ -5235,6 +5476,36 @@ internal sealed class JsonContainsPathEvaluator : IExpressionEvaluator
             return DataValue.FromInt(0);
 
         return DataValue.FromInt(0);
+    }
+}
+
+/// <summary>
+/// Evaluates user-defined stored functions.
+/// </summary>
+internal sealed class UserFunctionEvaluator : IExpressionEvaluator
+{
+    private readonly ProcedureInfo _function;
+    private readonly List<IExpressionEvaluator> _argEvaluators;
+    private readonly Executor _executor;
+
+    public UserFunctionEvaluator(ProcedureInfo function, List<IExpressionEvaluator> argEvaluators, Executor executor)
+    {
+        _function = function;
+        _argEvaluators = argEvaluators;
+        _executor = executor;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        // Evaluate arguments using the current row context
+        var argValues = new List<DataValue>();
+        foreach (var argEval in _argEvaluators)
+        {
+            argValues.Add(argEval.Evaluate(row));
+        }
+
+        // Execute the function and return the result
+        return _executor.ExecuteUserFunction(_function, argValues);
     }
 }
 

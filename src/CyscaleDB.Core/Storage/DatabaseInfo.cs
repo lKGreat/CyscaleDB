@@ -1,4 +1,5 @@
 using CyscaleDB.Core.Common;
+using CyscaleDB.Core.Parsing.Ast;
 
 namespace CyscaleDB.Core.Storage;
 
@@ -53,6 +54,11 @@ public sealed class DatabaseInfo
     private readonly Dictionary<string, ProcedureInfo> _procedures;
 
     /// <summary>
+    /// The triggers in this database, keyed by name (case-insensitive).
+    /// </summary>
+    private readonly Dictionary<string, TriggerInfo> _triggers;
+
+    /// <summary>
     /// Gets all tables in this database.
     /// </summary>
     public IReadOnlyCollection<TableSchema> Tables => _tables.Values;
@@ -76,6 +82,11 @@ public sealed class DatabaseInfo
     /// Gets all stored procedures and functions in this database.
     /// </summary>
     public IReadOnlyCollection<ProcedureInfo> Procedures => _procedures.Values;
+
+    /// <summary>
+    /// Gets all triggers in this database.
+    /// </summary>
+    public IReadOnlyCollection<TriggerInfo> Triggers => _triggers.Values;
 
     /// <summary>
     /// Gets the number of tables in this database.
@@ -108,6 +119,11 @@ public sealed class DatabaseInfo
     private int _nextProcedureId;
 
     /// <summary>
+    /// Counter for generating unique trigger IDs.
+    /// </summary>
+    private int _nextTriggerId;
+
+    /// <summary>
     /// Creates a new database info.
     /// </summary>
     public DatabaseInfo(
@@ -135,8 +151,10 @@ public sealed class DatabaseInfo
         _foreignKeys = new Dictionary<string, ForeignKeyDefinition>(StringComparer.OrdinalIgnoreCase);
         _checkConstraints = new Dictionary<string, CheckConstraintDefinition>(StringComparer.OrdinalIgnoreCase);
         _procedures = new Dictionary<string, ProcedureInfo>(StringComparer.OrdinalIgnoreCase);
+        _triggers = new Dictionary<string, TriggerInfo>(StringComparer.OrdinalIgnoreCase);
         _nextTableId = 1;
         _nextViewId = 1;
+        _nextTriggerId = 1;
         _nextProcedureId = 1;
     }
 
@@ -413,6 +431,80 @@ public sealed class DatabaseInfo
     /// Sets the next procedure ID (used during deserialization).
     /// </summary>
     internal void SetNextProcedureId(int nextId) => _nextProcedureId = nextId;
+
+    #endregion
+
+    #region Trigger Management
+
+    /// <summary>
+    /// Gets a trigger by name.
+    /// </summary>
+    public TriggerInfo? GetTrigger(string triggerName)
+    {
+        return _triggers.TryGetValue(triggerName, out var trigger) ? trigger : null;
+    }
+
+    /// <summary>
+    /// Checks if a trigger exists.
+    /// </summary>
+    public bool HasTrigger(string triggerName) => _triggers.ContainsKey(triggerName);
+
+    /// <summary>
+    /// Adds a trigger to this database.
+    /// </summary>
+    public void AddTrigger(TriggerInfo trigger)
+    {
+        if (_triggers.ContainsKey(trigger.TriggerName))
+            throw new CyscaleException($"Trigger '{trigger.TriggerName}' already exists", ErrorCode.TriggerExists);
+
+        _triggers[trigger.TriggerName] = trigger;
+    }
+
+    /// <summary>
+    /// Adds or replaces a trigger in this database.
+    /// </summary>
+    public void AddOrReplaceTrigger(TriggerInfo trigger)
+    {
+        _triggers[trigger.TriggerName] = trigger;
+    }
+
+    /// <summary>
+    /// Removes a trigger from this database.
+    /// </summary>
+    public bool RemoveTrigger(string triggerName)
+    {
+        return _triggers.Remove(triggerName);
+    }
+
+    /// <summary>
+    /// Gets the next unique trigger ID.
+    /// </summary>
+    public int GetNextTriggerId() => _nextTriggerId++;
+
+    /// <summary>
+    /// Sets the next trigger ID (used during deserialization).
+    /// </summary>
+    internal void SetNextTriggerId(int nextId) => _nextTriggerId = nextId;
+
+    /// <summary>
+    /// Gets all triggers for a specific table.
+    /// </summary>
+    public IEnumerable<TriggerInfo> GetTriggersForTable(string tableName)
+    {
+        return _triggers.Values.Where(t => 
+            string.Equals(t.TableName, tableName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Gets triggers for a specific table, timing, and event.
+    /// </summary>
+    public IEnumerable<TriggerInfo> GetTriggers(string tableName, TriggerTiming timing, TriggerEvent @event)
+    {
+        return _triggers.Values.Where(t =>
+            string.Equals(t.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
+            t.Timing == timing &&
+            t.Event == @event);
+    }
 
     #endregion
 
