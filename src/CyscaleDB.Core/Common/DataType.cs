@@ -96,6 +96,16 @@ public enum DataType
     Geometry = 60,
 
     /// <summary>
+    /// ENUM type - fixed set of string values stored as integer index
+    /// </summary>
+    Enum = 70,
+
+    /// <summary>
+    /// SET type - zero or more values from a fixed set stored as bitmask
+    /// </summary>
+    Set = 71,
+
+    /// <summary>
     /// NULL type (internal use)
     /// </summary>
     Null = 0

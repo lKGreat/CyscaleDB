@@ -2834,6 +2834,12 @@ public sealed class Parser
             return new ExistsExpression { Subquery = subquery };
         }
 
+        // MATCH...AGAINST full-text search
+        if (Match(TokenType.MATCH))
+        {
+            return ParseMatchExpression();
+        }
+
         // CASE expression
         if (Match(TokenType.CASE))
         {
@@ -3190,6 +3196,96 @@ public sealed class Parser
         Expect(TokenType.END);
 
         return caseExpr;
+    }
+
+    /// <summary>
+    /// Parses MATCH(columns) AGAINST(search_text [mode]) expression.
+    /// </summary>
+    private MatchExpression ParseMatchExpression()
+    {
+        var matchExpr = new MatchExpression();
+
+        // Parse column list: MATCH(col1, col2, ...)
+        Expect(TokenType.LeftParen);
+        
+        do
+        {
+            var name = ExpectIdentifier();
+            ColumnReference colRef;
+            
+            // Check for table.column syntax
+            if (Match(TokenType.Dot))
+            {
+                var columnName = ExpectIdentifier();
+                colRef = new ColumnReference { TableName = name, ColumnName = columnName };
+            }
+            else
+            {
+                colRef = new ColumnReference { ColumnName = name };
+            }
+            
+            matchExpr.Columns.Add(colRef);
+        } while (Match(TokenType.Comma));
+
+        Expect(TokenType.RightParen);
+
+        // Parse AGAINST clause
+        Expect(TokenType.AGAINST);
+        Expect(TokenType.LeftParen);
+
+        // Parse search text
+        matchExpr.SearchText = ParseExpression();
+
+        // Parse optional mode modifiers
+        if (Match(TokenType.IN))
+        {
+            // IN NATURAL LANGUAGE MODE [WITH QUERY EXPANSION]
+            // IN BOOLEAN MODE
+            if (Match(TokenType.NATURAL))
+            {
+                Expect(TokenType.LANGUAGE);
+                Expect(TokenType.MODE);
+                matchExpr.Mode = MatchSearchMode.NaturalLanguage;
+
+                // Check for WITH QUERY EXPANSION
+                if (Match(TokenType.WITH))
+                {
+                    // QUERY should be an identifier
+                    var queryWord = ExpectIdentifierOrKeyword();
+                    if (!queryWord.Equals("QUERY", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw Error($"Expected 'QUERY', got '{queryWord}'");
+                    }
+                    Expect(TokenType.EXPANSION);
+                    matchExpr.Mode = MatchSearchMode.NaturalLanguageWithQueryExpansion;
+                    matchExpr.WithQueryExpansion = true;
+                }
+            }
+            else if (Match(TokenType.BOOLEAN))
+            {
+                Expect(TokenType.MODE);
+                matchExpr.Mode = MatchSearchMode.Boolean;
+            }
+            else
+            {
+                throw Error("Expected NATURAL or BOOLEAN after IN");
+            }
+        }
+        else if (Match(TokenType.WITH))
+        {
+            // WITH QUERY EXPANSION (without IN ... MODE)
+            var queryWord = ExpectIdentifierOrKeyword();
+            if (!queryWord.Equals("QUERY", StringComparison.OrdinalIgnoreCase))
+            {
+                throw Error($"Expected 'QUERY', got '{queryWord}'");
+            }
+            Expect(TokenType.EXPANSION);
+            matchExpr.WithQueryExpansion = true;
+        }
+
+        Expect(TokenType.RightParen);
+
+        return matchExpr;
     }
 
     #endregion

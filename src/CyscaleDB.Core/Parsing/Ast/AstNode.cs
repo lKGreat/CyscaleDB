@@ -108,4 +108,5 @@ public interface IAstVisitor<T>
     T VisitSystemVariableExpression(SystemVariableExpression node);
     T VisitCaseExpression(CaseExpression node);
     T VisitWindowFunctionCall(WindowFunctionCall node);
+    T VisitMatchExpression(MatchExpression node);
 }

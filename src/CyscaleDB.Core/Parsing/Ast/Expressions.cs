@@ -517,3 +517,53 @@ public enum WindowFrameBoundType
     /// </summary>
     Following
 }
+
+/// <summary>
+/// MATCH...AGAINST full-text search expression.
+/// Example: MATCH(col1, col2) AGAINST('search text' IN NATURAL LANGUAGE MODE)
+/// </summary>
+public class MatchExpression : Expression
+{
+    /// <summary>
+    /// The columns to search in.
+    /// </summary>
+    public List<ColumnReference> Columns { get; set; } = new();
+
+    /// <summary>
+    /// The search text.
+    /// </summary>
+    public Expression SearchText { get; set; } = null!;
+
+    /// <summary>
+    /// The search mode.
+    /// </summary>
+    public MatchSearchMode Mode { get; set; } = MatchSearchMode.NaturalLanguage;
+
+    /// <summary>
+    /// Whether to use query expansion.
+    /// </summary>
+    public bool WithQueryExpansion { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitMatchExpression(this);
+}
+
+/// <summary>
+/// Mode for MATCH...AGAINST full-text search.
+/// </summary>
+public enum MatchSearchMode
+{
+    /// <summary>
+    /// Natural language mode (default).
+    /// </summary>
+    NaturalLanguage,
+
+    /// <summary>
+    /// Boolean mode with operators (+, -, *, etc.).
+    /// </summary>
+    Boolean,
+
+    /// <summary>
+    /// Natural language with query expansion.
+    /// </summary>
+    NaturalLanguageWithQueryExpansion
+}

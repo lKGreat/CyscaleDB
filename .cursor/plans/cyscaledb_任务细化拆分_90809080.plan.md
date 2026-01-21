@@ -4,88 +4,88 @@ overview: 将计划文件中的83个大任务进一步细化为更小、可独�
 todos:
   - id: online_ddl_manager_class
     content: 创建 OnlineDdlManager 类框架
-    status: pending
+    status: completed
   - id: online_ddl_begin
     content: 实现 BeginOnlineDdl 方法
-    status: pending
+    status: completed
   - id: online_ddl_log_dml
     content: 实现 LogDmlChange 方法
-    status: pending
+    status: completed
   - id: online_ddl_commit_rollback
     content: 实现 CommitOnlineDdl 和 RollbackOnlineDdl 方法
-    status: pending
+    status: completed
   - id: config_model_class
     content: 创建 CyscaleDbConfiguration 类框架
-    status: pending
+    status: completed
   - id: config_bufferpool_props
     content: 添加 BufferPool 配置属性
-    status: pending
+    status: completed
   - id: config_json_serialization
     content: 实现 FromJson 和 ToJson 方法
-    status: pending
+    status: completed
   - id: config_file_io
     content: 实现 LoadFromFile 和 SaveToFile 方法
-    status: pending
+    status: completed
   - id: metrics_counter_class
     content: 创建 Counter 类
-    status: pending
+    status: completed
   - id: metrics_histogram_class
     content: 创建 Histogram 类
-    status: pending
+    status: completed
   - id: metrics_gauge_class
     content: 创建 Gauge 类
-    status: pending
+    status: completed
   - id: metrics_collector_singleton
     content: 创建 MetricsCollector 单例类框架
-    status: pending
+    status: completed
   - id: window_first_last_value
     content: 实现 ComputeFirstValue 和 ComputeLastValue 方法
-    status: pending
+    status: completed
   - id: window_ntile
     content: 实现 ComputeNtile 方法
-    status: pending
+    status: completed
   - id: window_cume_percent
     content: 实现 ComputeCumeDist 和 ComputePercentRank 方法
-    status: pending
+    status: completed
   - id: json_contains
     content: 实现 JsonContains 函数
-    status: pending
+    status: completed
   - id: json_length_keys
     content: 实现 JsonLength 和 JsonKeys 函数
-    status: pending
+    status: completed
   - id: json_search
     content: 实现 JsonSearch 函数
-    status: pending
+    status: completed
   - id: json_merge
     content: 实现 JsonMergePatch 和 JsonMergePreserve 函数
-    status: pending
+    status: completed
   - id: rwlock_catalog
     content: 修改 Catalog.cs 使用 ReaderWriterLockSlim
-    status: pending
+    status: completed
   - id: interval_tree_class
     content: 创建 IntervalTree 泛型类
-    status: pending
+    status: completed
   - id: buffer_pool_segment
     content: 创建 BufferPoolSegment 类并修改 BufferPool 使用分段锁
-    status: pending
+    status: completed
   - id: enum_type_definition
     content: 创建 EnumTypeDefinition 类并修改 ColumnDefinition 支持 ENUM
-    status: pending
+    status: completed
   - id: set_type_definition
     content: 创建 SetTypeDefinition 类并修改 ColumnDefinition 支持 SET
-    status: pending
+    status: completed
   - id: fulltext_index_class
     content: 创建 FullTextIndex 类和 ITokenizer 接口
-    status: pending
+    status: completed
   - id: fulltext_match_syntax
     content: 在 Parser 和 Executor 中实现 MATCH...AGAINST 语法
-    status: pending
+    status: completed
   - id: docs_update_all
     content: 更新所有文档（PROJECT_STATUS, CONFIGURATION, MONITORING, ONLINE_DDL）
-    status: pending
+    status: completed
   - id: tests_comprehensive
     content: 为所有新功能添加单元测试、集成测试和性能回归测试
-    status: pending
+    status: completed
 ---
 
 # CyscaleDB 任务细化拆分方案

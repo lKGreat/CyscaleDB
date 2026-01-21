@@ -332,6 +332,12 @@ public enum TokenType
     LANGUAGE,           // LANGUAGE SQL
     INOUT,              // INOUT parameter
     OUT,                // OUT parameter
+
+    // Full-text search keywords
+    MATCH,              // MATCH(...) AGAINST(...)
+    AGAINST,            // MATCH(...) AGAINST(...)
+    FULLTEXT,           // FULLTEXT index
+    EXPANSION,          // WITH QUERY EXPANSION
 }
 
 /// <summary>
@@ -587,6 +593,12 @@ public static class Keywords
         ["LANGUAGE"] = TokenType.LANGUAGE,
         ["INOUT"] = TokenType.INOUT,
         ["OUT"] = TokenType.OUT,
+
+        // Full-text search keywords
+        ["MATCH"] = TokenType.MATCH,
+        ["AGAINST"] = TokenType.AGAINST,
+        ["FULLTEXT"] = TokenType.FULLTEXT,
+        ["EXPANSION"] = TokenType.EXPANSION,
     };
 
     /// <summary>

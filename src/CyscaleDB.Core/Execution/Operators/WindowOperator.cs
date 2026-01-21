@@ -100,6 +100,8 @@ public sealed class WindowOperator : IOperator
             WindowFunctionType.FirstValue => DataType.VarChar,
             WindowFunctionType.LastValue => DataType.VarChar,
             WindowFunctionType.NthValue => DataType.VarChar,
+            WindowFunctionType.CumeDist => DataType.Double,
+            WindowFunctionType.PercentRank => DataType.Double,
             _ => DataType.BigInt
         };
     }
@@ -284,6 +286,18 @@ public sealed class WindowOperator : IOperator
                 ComputeCount(wf, partition, results);
                 break;
 
+            case WindowFunctionType.CumeDist:
+                ComputeCumeDist(wf, partition, results);
+                break;
+
+            case WindowFunctionType.PercentRank:
+                ComputePercentRank(wf, partition, results);
+                break;
+
+            case WindowFunctionType.NthValue:
+                ComputeNthValue(wf, partition, results);
+                break;
+
             default:
                 _logger.Warning("Unimplemented window function: {0}", wf.FunctionType);
                 foreach (var rowIndex in partition)
@@ -449,6 +463,130 @@ public sealed class WindowOperator : IOperator
         foreach (var rowIndex in partition)
         {
             results[rowIndex] = lastValue;
+        }
+    }
+
+    /// <summary>
+    /// Computes NTH_VALUE - returns the value of the Nth row in the partition.
+    /// </summary>
+    private void ComputeNthValue(WindowFunctionSpec wf, List<int> partition, DataValue[] results)
+    {
+        if (partition.Count == 0 || wf.Arguments.Count < 2)
+        {
+            foreach (var rowIndex in partition)
+            {
+                results[rowIndex] = DataValue.Null;
+            }
+            return;
+        }
+
+        // Get N from the second argument
+        var nArg = wf.Arguments[1].Evaluate(_bufferedRows![partition[0]]);
+        if (nArg.IsNull)
+        {
+            foreach (var rowIndex in partition)
+            {
+                results[rowIndex] = DataValue.Null;
+            }
+            return;
+        }
+
+        int n = (int)nArg.AsBigInt();
+
+        // N is 1-based, check bounds
+        if (n < 1 || n > partition.Count)
+        {
+            foreach (var rowIndex in partition)
+            {
+                results[rowIndex] = DataValue.Null;
+            }
+            return;
+        }
+
+        // Get the value from the Nth row (1-based, so use n-1 for 0-based index)
+        var nthValue = wf.Arguments[0].Evaluate(_bufferedRows![partition[n - 1]]);
+
+        foreach (var rowIndex in partition)
+        {
+            results[rowIndex] = nthValue;
+        }
+    }
+
+    /// <summary>
+    /// Computes CUME_DIST - cumulative distribution.
+    /// Returns the ratio of rows less than or equal to the current row divided by total rows.
+    /// Formula: (number of rows with values <= current row) / (total rows in partition)
+    /// </summary>
+    private void ComputeCumeDist(WindowFunctionSpec wf, List<int> partition, DataValue[] results)
+    {
+        if (partition.Count == 0)
+            return;
+
+        int totalRows = partition.Count;
+
+        for (int i = 0; i < partition.Count; i++)
+        {
+            // Count how many rows have values <= current row's value
+            // For tied values, all tied rows have the same CUME_DIST
+            // which equals (position of last row with same value) / total rows
+            int rowsLessOrEqual = i + 1;
+
+            // Check for ties: count all rows with the same ORDER BY values
+            while (rowsLessOrEqual < partition.Count &&
+                   AreOrderByValuesEqual(wf, partition[i], partition[rowsLessOrEqual]))
+            {
+                rowsLessOrEqual++;
+            }
+
+            double cumeDist = (double)rowsLessOrEqual / totalRows;
+            
+            // Assign the same value to all tied rows
+            for (int j = i; j < rowsLessOrEqual && j < partition.Count; j++)
+            {
+                if (j == i || AreOrderByValuesEqual(wf, partition[i], partition[j]))
+                {
+                    results[partition[j]] = DataValue.FromDouble(cumeDist);
+                }
+            }
+
+            // Skip tied rows we've already processed
+            while (i + 1 < partition.Count && 
+                   AreOrderByValuesEqual(wf, partition[i], partition[i + 1]))
+            {
+                i++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Computes PERCENT_RANK - relative rank of the current row.
+    /// Formula: (rank - 1) / (total rows in partition - 1)
+    /// Returns 0 for the first row and values between 0 and 1 for others.
+    /// </summary>
+    private void ComputePercentRank(WindowFunctionSpec wf, List<int> partition, DataValue[] results)
+    {
+        if (partition.Count == 0)
+            return;
+
+        // Single row partition always returns 0
+        if (partition.Count == 1)
+        {
+            results[partition[0]] = DataValue.FromDouble(0.0);
+            return;
+        }
+
+        int totalRows = partition.Count;
+        int rank = 1;
+
+        for (int i = 0; i < partition.Count; i++)
+        {
+            if (i > 0 && !AreOrderByValuesEqual(wf, partition[i], partition[i - 1]))
+            {
+                rank = i + 1;
+            }
+
+            double percentRank = (double)(rank - 1) / (totalRows - 1);
+            results[partition[i]] = DataValue.FromDouble(percentRank);
         }
     }
 
@@ -759,6 +897,8 @@ public enum WindowFunctionType
     FirstValue,
     LastValue,
     NthValue,
+    CumeDist,
+    PercentRank,
     Sum,
     Avg,
     Min,

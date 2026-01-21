@@ -4155,6 +4155,7 @@ public sealed class Executor
             SystemVariableExpression sysVar => BuildSystemVariable(sysVar),
             CaseExpression caseExpr => BuildCaseExpression(caseExpr, schema),
             LikeExpression likeExpr => BuildLikeExpression(likeExpr, schema),
+            MatchExpression matchExpr => BuildMatchExpression(matchExpr, schema),
             ExistsExpression existsExpr => BuildExistsExpression(existsExpr, schema),
             QuantifiedComparisonExpression quantified => BuildQuantifiedComparisonExpression(quantified, schema),
             Subquery subquery => BuildSubqueryExpression(subquery, schema),
@@ -4209,6 +4210,9 @@ public sealed class Executor
             "JSON_TYPE" => BuildJsonTypeFunction(func, schema),
             "JSON_CONTAINS" => BuildJsonContainsFunction(func, schema),
             "JSON_CONTAINS_PATH" => BuildJsonContainsPathFunction(func, schema),
+            "JSON_SEARCH" => BuildJsonSearchFunction(func, schema),
+            "JSON_MERGE_PATCH" => BuildJsonMergePatchFunction(func, schema),
+            "JSON_MERGE_PRESERVE" or "JSON_MERGE" => BuildJsonMergePreserveFunction(func, schema),
             // Spatial functions
             "ST_POINT" or "POINT" => BuildStPointFunction(func, schema),
             "ST_GEOMFROMTEXT" or "ST_GEOMETRYFROMTEXT" => BuildStGeomFromTextFunction(func, schema),
@@ -4460,6 +4464,36 @@ public sealed class Executor
         var oneOrAll = BuildExpression(func.Arguments[1], schema);
         var paths = func.Arguments.Skip(2).Select(a => BuildExpression(a, schema)).ToList();
         return new JsonContainsPathEvaluator(jsonDoc, oneOrAll, paths);
+    }
+
+    private IExpressionEvaluator BuildJsonSearchFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 3)
+            throw new CyscaleException("JSON_SEARCH requires at least 3 arguments (json_doc, one_or_all, search_str)");
+
+        var jsonDoc = BuildExpression(func.Arguments[0], schema);
+        var oneOrAll = BuildExpression(func.Arguments[1], schema);
+        var searchStr = BuildExpression(func.Arguments[2], schema);
+        var path = func.Arguments.Count > 3 ? BuildExpression(func.Arguments[3], schema) : null;
+        return new JsonSearchEvaluator(jsonDoc, oneOrAll, searchStr, path);
+    }
+
+    private IExpressionEvaluator BuildJsonMergePatchFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException("JSON_MERGE_PATCH requires at least 2 arguments");
+
+        var args = func.Arguments.Select(a => BuildExpression(a, schema)).ToList();
+        return new JsonMergePatchEvaluator(args);
+    }
+
+    private IExpressionEvaluator BuildJsonMergePreserveFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException("JSON_MERGE_PRESERVE requires at least 2 arguments");
+
+        var args = func.Arguments.Select(a => BuildExpression(a, schema)).ToList();
+        return new JsonMergePreserveEvaluator(args);
     }
 
     #endregion
@@ -4752,6 +4786,32 @@ public sealed class Executor
         var expr = BuildExpression(likeExpr.Expression, schema);
         var pattern = BuildExpression(likeExpr.Pattern, schema);
         return new LikeEvaluator(expr, pattern, likeExpr.IsNot);
+    }
+
+    /// <summary>
+    /// Builds a MATCH...AGAINST full-text search expression evaluator.
+    /// </summary>
+    private IExpressionEvaluator BuildMatchExpression(MatchExpression matchExpr, TableSchema schema)
+    {
+        // Build evaluators for each column
+        var columnEvaluators = new List<IExpressionEvaluator>();
+        foreach (var col in matchExpr.Columns)
+        {
+            var colEval = BuildColumnReference(col, schema);
+            columnEvaluators.Add(colEval);
+        }
+
+        // Build the search text evaluator
+        var searchTextEvaluator = BuildExpression(matchExpr.SearchText, schema);
+
+        // Convert the search mode
+        var mode = matchExpr.Mode switch
+        {
+            MatchSearchMode.Boolean => Storage.Index.BooleanSearchMode.And,
+            _ => Storage.Index.BooleanSearchMode.Or
+        };
+
+        return new MatchAgainstEvaluator(columnEvaluators, searchTextEvaluator, mode);
     }
 
     /// <summary>
@@ -5329,6 +5389,102 @@ internal sealed class LikeEvaluator : IExpressionEvaluator
             value, 
             regexPattern, 
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+}
+
+/// <summary>
+/// Evaluates MATCH...AGAINST full-text search expressions.
+/// Returns a relevance score based on the search text and column content.
+/// </summary>
+internal sealed class MatchAgainstEvaluator : IExpressionEvaluator
+{
+    private readonly List<IExpressionEvaluator> _columnEvaluators;
+    private readonly IExpressionEvaluator _searchTextEvaluator;
+    private readonly Storage.Index.BooleanSearchMode _mode;
+    private readonly Storage.Index.SimpleTokenizer _tokenizer;
+
+    public MatchAgainstEvaluator(
+        List<IExpressionEvaluator> columnEvaluators,
+        IExpressionEvaluator searchTextEvaluator,
+        Storage.Index.BooleanSearchMode mode)
+    {
+        _columnEvaluators = columnEvaluators;
+        _searchTextEvaluator = searchTextEvaluator;
+        _mode = mode;
+        _tokenizer = new Storage.Index.SimpleTokenizer();
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        var searchTextValue = _searchTextEvaluator.Evaluate(row);
+        if (searchTextValue.IsNull)
+            return DataValue.FromDouble(0.0);
+
+        var searchText = searchTextValue.AsString();
+        if (string.IsNullOrWhiteSpace(searchText))
+            return DataValue.FromDouble(0.0);
+
+        // Tokenize the search text
+        var searchTokens = _tokenizer.Tokenize(searchText)
+            .Select(t => t.Term)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (searchTokens.Count == 0)
+            return DataValue.FromDouble(0.0);
+
+        // Collect content from all columns
+        var contentBuilder = new System.Text.StringBuilder();
+        foreach (var colEval in _columnEvaluators)
+        {
+            var colValue = colEval.Evaluate(row);
+            if (!colValue.IsNull)
+            {
+                if (contentBuilder.Length > 0)
+                    contentBuilder.Append(' ');
+                contentBuilder.Append(colValue.AsString());
+            }
+        }
+
+        var content = contentBuilder.ToString();
+        if (string.IsNullOrWhiteSpace(content))
+            return DataValue.FromDouble(0.0);
+
+        // Tokenize the content
+        var contentTokens = _tokenizer.Tokenize(content)
+            .Select(t => t.Term)
+            .ToList();
+
+        if (contentTokens.Count == 0)
+            return DataValue.FromDouble(0.0);
+
+        // Calculate relevance score using TF-IDF-like approach
+        var termFrequencies = contentTokens
+            .GroupBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
+        double score = 0;
+        int matchedTerms = 0;
+
+        foreach (var searchTerm in searchTokens)
+        {
+            if (termFrequencies.TryGetValue(searchTerm, out var tf))
+            {
+                // Normalized TF = frequency / document length
+                double normalizedTf = (double)tf / contentTokens.Count;
+                score += normalizedTf;
+                matchedTerms++;
+            }
+        }
+
+        // In boolean AND mode, all terms must match
+        if (_mode == Storage.Index.BooleanSearchMode.And && matchedTerms < searchTokens.Count)
+        {
+            return DataValue.FromDouble(0.0);
+        }
+
+        // Normalize by number of search terms
+        return DataValue.FromDouble(score / searchTokens.Count);
     }
 }
 
@@ -6041,6 +6197,336 @@ internal sealed class JsonContainsPathEvaluator : IExpressionEvaluator
             return DataValue.FromInt(0);
 
         return DataValue.FromInt(0);
+    }
+}
+
+/// <summary>
+/// Evaluates JSON_SEARCH function - searches for a string in JSON and returns its path.
+/// </summary>
+internal sealed class JsonSearchEvaluator : IExpressionEvaluator
+{
+    private readonly IExpressionEvaluator _jsonDoc;
+    private readonly IExpressionEvaluator _oneOrAll;
+    private readonly IExpressionEvaluator _searchStr;
+    private readonly IExpressionEvaluator? _path;
+
+    public JsonSearchEvaluator(IExpressionEvaluator jsonDoc, IExpressionEvaluator oneOrAll, 
+        IExpressionEvaluator searchStr, IExpressionEvaluator? path)
+    {
+        _jsonDoc = jsonDoc;
+        _oneOrAll = oneOrAll;
+        _searchStr = searchStr;
+        _path = path;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        var jsonValue = _jsonDoc.Evaluate(row);
+        var oneOrAllValue = _oneOrAll.Evaluate(row);
+        var searchValue = _searchStr.Evaluate(row);
+
+        if (jsonValue.IsNull || searchValue.IsNull)
+            return DataValue.Null;
+
+        try
+        {
+            var jsonText = jsonValue.AsString();
+            var searchText = searchValue.AsString();
+            var oneOrAll = oneOrAllValue.AsString().ToUpperInvariant();
+            var startPath = _path?.Evaluate(row).AsString() ?? "$";
+
+            using var doc = System.Text.Json.JsonDocument.Parse(jsonText);
+            var results = SearchJson(doc.RootElement, searchText, startPath, oneOrAll == "ALL");
+
+            if (results.Count == 0)
+                return DataValue.Null;
+
+            if (oneOrAll == "ONE")
+                return DataValue.FromVarChar($"\"{results[0]}\"");
+
+            // Return array of all matching paths
+            var pathsJson = "[" + string.Join(", ", results.Select(p => $"\"{p}\"")) + "]";
+            return DataValue.FromVarChar(pathsJson);
+        }
+        catch
+        {
+            return DataValue.Null;
+        }
+    }
+
+    private static List<string> SearchJson(System.Text.Json.JsonElement element, string searchStr, 
+        string currentPath, bool findAll)
+    {
+        var results = new List<string>();
+        SearchJsonRecursive(element, searchStr, currentPath, findAll, results);
+        return results;
+    }
+
+    private static void SearchJsonRecursive(System.Text.Json.JsonElement element, string searchStr,
+        string currentPath, bool findAll, List<string> results)
+    {
+        switch (element.ValueKind)
+        {
+            case System.Text.Json.JsonValueKind.String:
+                var strValue = element.GetString();
+                if (strValue != null && MatchesPattern(strValue, searchStr))
+                {
+                    results.Add(currentPath);
+                    if (!findAll) return;
+                }
+                break;
+
+            case System.Text.Json.JsonValueKind.Array:
+                int index = 0;
+                foreach (var item in element.EnumerateArray())
+                {
+                    SearchJsonRecursive(item, searchStr, $"{currentPath}[{index}]", findAll, results);
+                    if (!findAll && results.Count > 0) return;
+                    index++;
+                }
+                break;
+
+            case System.Text.Json.JsonValueKind.Object:
+                foreach (var prop in element.EnumerateObject())
+                {
+                    SearchJsonRecursive(prop.Value, searchStr, $"{currentPath}.{prop.Name}", findAll, results);
+                    if (!findAll && results.Count > 0) return;
+                }
+                break;
+        }
+    }
+
+    private static bool MatchesPattern(string value, string pattern)
+    {
+        // Support SQL LIKE-style wildcards: % matches any sequence, _ matches single char
+        if (!pattern.Contains('%') && !pattern.Contains('_'))
+            return value.Equals(pattern, StringComparison.OrdinalIgnoreCase);
+
+        var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+            .Replace("%", ".*")
+            .Replace("_", ".") + "$";
+        return System.Text.RegularExpressions.Regex.IsMatch(value, regexPattern, 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+}
+
+/// <summary>
+/// Evaluates JSON_MERGE_PATCH function - RFC 7396 JSON Merge Patch.
+/// Recursively merges JSON documents, with null values removing keys.
+/// </summary>
+internal sealed class JsonMergePatchEvaluator : IExpressionEvaluator
+{
+    private readonly List<IExpressionEvaluator> _args;
+
+    public JsonMergePatchEvaluator(List<IExpressionEvaluator> args)
+    {
+        _args = args;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        if (_args.Count == 0)
+            return DataValue.Null;
+
+        try
+        {
+            // Start with the first document
+            var result = _args[0].Evaluate(row);
+            if (result.IsNull)
+                return DataValue.Null;
+
+            var mergedDoc = System.Text.Json.JsonDocument.Parse(result.AsString());
+            var merged = JsonElementToNode(mergedDoc.RootElement);
+
+            // Merge each subsequent document
+            for (int i = 1; i < _args.Count; i++)
+            {
+                var patchValue = _args[i].Evaluate(row);
+                if (patchValue.IsNull)
+                    continue;
+
+                var patchDoc = System.Text.Json.JsonDocument.Parse(patchValue.AsString());
+                merged = MergePatch(merged, JsonElementToNode(patchDoc.RootElement));
+            }
+
+            return DataValue.FromVarChar(NodeToJson(merged));
+        }
+        catch
+        {
+            return DataValue.Null;
+        }
+    }
+
+    private static object? JsonElementToNode(System.Text.Json.JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            System.Text.Json.JsonValueKind.Null => null,
+            System.Text.Json.JsonValueKind.True => true,
+            System.Text.Json.JsonValueKind.False => false,
+            System.Text.Json.JsonValueKind.Number => element.GetDouble(),
+            System.Text.Json.JsonValueKind.String => element.GetString(),
+            System.Text.Json.JsonValueKind.Array => element.EnumerateArray()
+                .Select(JsonElementToNode).ToList(),
+            System.Text.Json.JsonValueKind.Object => element.EnumerateObject()
+                .ToDictionary(p => p.Name, p => JsonElementToNode(p.Value)),
+            _ => null
+        };
+    }
+
+    private static object? MergePatch(object? target, object? patch)
+    {
+        // If patch is not an object, it replaces target
+        if (patch is not Dictionary<string, object?> patchObj)
+            return patch;
+
+        // If target is not an object, use empty object
+        var targetObj = target as Dictionary<string, object?> ?? new Dictionary<string, object?>();
+        var result = new Dictionary<string, object?>(targetObj);
+
+        foreach (var kvp in patchObj)
+        {
+            if (kvp.Value == null)
+            {
+                // null removes the key
+                result.Remove(kvp.Key);
+            }
+            else
+            {
+                // Recursively merge
+                result[kvp.Key] = MergePatch(
+                    targetObj.GetValueOrDefault(kvp.Key),
+                    kvp.Value);
+            }
+        }
+
+        return result;
+    }
+
+    private static string NodeToJson(object? node)
+    {
+        return System.Text.Json.JsonSerializer.Serialize(node);
+    }
+}
+
+/// <summary>
+/// Evaluates JSON_MERGE_PRESERVE function - preserves all values including arrays.
+/// Arrays are concatenated, objects are merged with array preservation.
+/// </summary>
+internal sealed class JsonMergePreserveEvaluator : IExpressionEvaluator
+{
+    private readonly List<IExpressionEvaluator> _args;
+
+    public JsonMergePreserveEvaluator(List<IExpressionEvaluator> args)
+    {
+        _args = args;
+    }
+
+    public DataValue Evaluate(Row row)
+    {
+        if (_args.Count == 0)
+            return DataValue.Null;
+
+        try
+        {
+            // Start with the first document
+            var result = _args[0].Evaluate(row);
+            if (result.IsNull)
+                return DataValue.Null;
+
+            var mergedDoc = System.Text.Json.JsonDocument.Parse(result.AsString());
+            var merged = JsonElementToNode(mergedDoc.RootElement);
+
+            // Merge each subsequent document
+            for (int i = 1; i < _args.Count; i++)
+            {
+                var patchValue = _args[i].Evaluate(row);
+                if (patchValue.IsNull)
+                    continue;
+
+                var patchDoc = System.Text.Json.JsonDocument.Parse(patchValue.AsString());
+                merged = MergePreserve(merged, JsonElementToNode(patchDoc.RootElement));
+            }
+
+            return DataValue.FromVarChar(NodeToJson(merged));
+        }
+        catch
+        {
+            return DataValue.Null;
+        }
+    }
+
+    private static object? JsonElementToNode(System.Text.Json.JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            System.Text.Json.JsonValueKind.Null => null,
+            System.Text.Json.JsonValueKind.True => true,
+            System.Text.Json.JsonValueKind.False => false,
+            System.Text.Json.JsonValueKind.Number => element.GetDouble(),
+            System.Text.Json.JsonValueKind.String => element.GetString(),
+            System.Text.Json.JsonValueKind.Array => element.EnumerateArray()
+                .Select(JsonElementToNode).ToList(),
+            System.Text.Json.JsonValueKind.Object => element.EnumerateObject()
+                .ToDictionary(p => p.Name, p => JsonElementToNode(p.Value)),
+            _ => null
+        };
+    }
+
+    private static object? MergePreserve(object? target, object? patch)
+    {
+        // If both are arrays, concatenate them
+        if (target is List<object?> targetList && patch is List<object?> patchList)
+        {
+            var merged = new List<object?>(targetList);
+            merged.AddRange(patchList);
+            return merged;
+        }
+
+        // If patch is not an object, wrap both in array if target exists
+        if (patch is not Dictionary<string, object?> patchObj)
+        {
+            if (target != null)
+            {
+                // Convert to array with both values
+                return new List<object?> { target, patch };
+            }
+            return patch;
+        }
+
+        // If target is not an object, wrap in array
+        if (target is not Dictionary<string, object?> targetObj)
+        {
+            if (target != null)
+            {
+                return new List<object?> { target, patch };
+            }
+            return patch;
+        }
+
+        // Both are objects - merge them
+        var result = new Dictionary<string, object?>(targetObj);
+
+        foreach (var kvp in patchObj)
+        {
+            if (targetObj.TryGetValue(kvp.Key, out var existingValue))
+            {
+                // Key exists - recursively merge
+                result[kvp.Key] = MergePreserve(existingValue, kvp.Value);
+            }
+            else
+            {
+                // Key doesn't exist - just add it
+                result[kvp.Key] = kvp.Value;
+            }
+        }
+
+        return result;
+    }
+
+    private static string NodeToJson(object? node)
+    {
+        return System.Text.Json.JsonSerializer.Serialize(node);
     }
 }
 

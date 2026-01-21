@@ -59,6 +59,16 @@ public sealed class ColumnDefinition
     public int OrdinalPosition { get; internal set; }
 
     /// <summary>
+    /// The ENUM type definition if this column is of type ENUM.
+    /// </summary>
+    public EnumTypeDefinition? EnumType { get; }
+
+    /// <summary>
+    /// The SET type definition if this column is of type SET.
+    /// </summary>
+    public SetTypeDefinition? SetType { get; }
+
+    /// <summary>
     /// Creates a new column definition.
     /// </summary>
     public ColumnDefinition(
@@ -70,13 +80,21 @@ public sealed class ColumnDefinition
         bool isNullable = true,
         bool isPrimaryKey = false,
         bool isAutoIncrement = false,
-        DataValue? defaultValue = null)
+        DataValue? defaultValue = null,
+        EnumTypeDefinition? enumType = null,
+        SetTypeDefinition? setType = null)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("Column name cannot be empty", nameof(name));
 
         if (name.Length > Constants.MaxColumnNameLength)
             throw new ArgumentException($"Column name exceeds maximum length of {Constants.MaxColumnNameLength}", nameof(name));
+
+        // Validate ENUM/SET type constraints
+        if (dataType == DataType.Enum && enumType == null)
+            throw new ArgumentException("ENUM column requires an EnumTypeDefinition", nameof(enumType));
+        if (dataType == DataType.Set && setType == null)
+            throw new ArgumentException("SET column requires a SetTypeDefinition", nameof(setType));
 
         Name = name;
         DataType = dataType;
@@ -87,6 +105,8 @@ public sealed class ColumnDefinition
         IsPrimaryKey = isPrimaryKey;
         IsAutoIncrement = isAutoIncrement;
         DefaultValue = defaultValue;
+        EnumType = enumType;
+        SetType = setType;
     }
 
     private static int GetDefaultMaxLength(DataType dataType)
@@ -186,6 +206,24 @@ public sealed class ColumnDefinition
             writer.Write(defaultBytes);
         }
 
+        // Write ENUM type if present
+        writer.Write(EnumType != null);
+        if (EnumType != null)
+        {
+            var enumBytes = EnumType.Serialize();
+            writer.Write(enumBytes.Length);
+            writer.Write(enumBytes);
+        }
+
+        // Write SET type if present
+        writer.Write(SetType != null);
+        if (SetType != null)
+        {
+            var setBytes = SetType.Serialize();
+            writer.Write(setBytes.Length);
+            writer.Write(setBytes);
+        }
+
         return stream.ToArray();
     }
 
@@ -223,9 +261,40 @@ public sealed class ColumnDefinition
             defaultValue = DataValue.Deserialize(defaultBytes);
         }
 
+        // Read ENUM type if present
+        EnumTypeDefinition? enumType = null;
+        if (reader.BaseStream.Position < reader.BaseStream.Length)
+        {
+            var hasEnum = reader.ReadBoolean();
+            if (hasEnum)
+            {
+                var enumLength = reader.ReadInt32();
+                var enumBytes = reader.ReadBytes(enumLength);
+                using var enumStream = new MemoryStream(enumBytes);
+                using var enumReader = new BinaryReader(enumStream);
+                enumType = EnumTypeDefinition.Deserialize(enumReader);
+            }
+        }
+
+        // Read SET type if present
+        SetTypeDefinition? setType = null;
+        if (reader.BaseStream.Position < reader.BaseStream.Length)
+        {
+            var hasSet = reader.ReadBoolean();
+            if (hasSet)
+            {
+                var setLength = reader.ReadInt32();
+                var setBytes = reader.ReadBytes(setLength);
+                using var setStream = new MemoryStream(setBytes);
+                using var setReader = new BinaryReader(setStream);
+                setType = SetTypeDefinition.Deserialize(setReader);
+            }
+        }
+
         var column = new ColumnDefinition(
             name, dataType, maxLength, precision, scale,
-            isNullable, isPrimaryKey, isAutoIncrement, defaultValue)
+            isNullable, isPrimaryKey, isAutoIncrement, defaultValue,
+            enumType, setType)
         {
             OrdinalPosition = ordinalPosition
         };
