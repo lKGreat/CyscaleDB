@@ -71,7 +71,7 @@ public sealed class Lexer
             ')' => MakeToken(TokenType.RightParen, ")"),
             '*' => MakeToken(TokenType.Asterisk, "*"),
             '+' => MakeToken(TokenType.Plus, "+"),
-            '-' => MakeToken(TokenType.Minus, "-"),
+            '-' => ScanMinus(),
             '/' => MakeToken(TokenType.Slash, "/"),
             '%' => MakeToken(TokenType.Percent, "%"),
             '.' => MakeToken(TokenType.Dot, "."),
@@ -94,6 +94,20 @@ public sealed class Lexer
         }
         // Single @ is invalid for now (user variables not supported)
         return MakeToken(TokenType.Invalid, "@");
+    }
+
+    private Token ScanMinus()
+    {
+        // Check for -> or ->>
+        if (Match('>'))
+        {
+            if (Match('>'))
+            {
+                return MakeToken(TokenType.DoubleArrow, "->>");
+            }
+            return MakeToken(TokenType.Arrow, "->");
+        }
+        return MakeToken(TokenType.Minus, "-");
     }
 
     /// <summary>

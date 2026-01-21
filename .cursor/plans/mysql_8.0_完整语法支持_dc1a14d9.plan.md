@@ -367,16 +367,16 @@ todos:
     status: completed
   - id: 5.1.2
     content: "->/->> 操作符 - Lexer 支持 JSON 路径操作符"
-    status: pending
+    status: completed
   - id: 5.1.3
     content: JSON_EXTRACT 函数 - 提取 JSON 值，测试
     status: completed
   - id: 5.1.4
     content: "-> 操作符执行 - col->'$.key'，测试"
-    status: pending
+    status: completed
   - id: 5.1.5
     content: "->> 操作符执行 - col->>'$.key' 返回文本，测试"
-    status: pending
+    status: completed
   - id: 5.1.6
     content: JSON_SET/JSON_INSERT 函数 - 修改 JSON，测试
     status: completed

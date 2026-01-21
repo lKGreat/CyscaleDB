@@ -2757,7 +2757,48 @@ public sealed class Parser
             return ParseUnaryExpression();
         }
 
-        return ParsePrimaryExpression();
+        return ParsePostfixExpression();
+    }
+
+    private Expression ParsePostfixExpression()
+    {
+        var expr = ParsePrimaryExpression();
+
+        // Handle JSON path operators -> and ->>
+        while (true)
+        {
+            if (Match(TokenType.Arrow))
+            {
+                // -> operator: JSON_EXTRACT
+                var path = ParsePrimaryExpression();
+                expr = new FunctionCall
+                {
+                    FunctionName = "JSON_EXTRACT",
+                    Arguments = [expr, path]
+                };
+            }
+            else if (Match(TokenType.DoubleArrow))
+            {
+                // ->> operator: JSON_UNQUOTE(JSON_EXTRACT(...))
+                var path = ParsePrimaryExpression();
+                var extractCall = new FunctionCall
+                {
+                    FunctionName = "JSON_EXTRACT",
+                    Arguments = [expr, path]
+                };
+                expr = new FunctionCall
+                {
+                    FunctionName = "JSON_UNQUOTE",
+                    Arguments = [extractCall]
+                };
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        return expr;
     }
 
     private Expression ParsePrimaryExpression()

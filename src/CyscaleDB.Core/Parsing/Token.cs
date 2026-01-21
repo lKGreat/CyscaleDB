@@ -73,6 +73,8 @@ public enum TokenType
     Asterisk,           // *
     Plus,               // +
     Minus,              // -
+    Arrow,              // -> (JSON path operator)
+    DoubleArrow,        // ->> (JSON path operator with unquote)
     Slash,              // /
     Percent,            // %
     Equal,              // =
