@@ -253,7 +253,10 @@ public enum TokenType
     SKIP,
     LOCKED,
     LOCK,
+    UNLOCK,             // UNLOCK TABLES
     MODE,
+    ANALYZE,            // ANALYZE TABLE
+    FLUSH,              // FLUSH
 
     // System variable prefix
     AtAt,               // @@
@@ -507,6 +510,9 @@ public static class Keywords
         ["SKIP"] = TokenType.SKIP,
         ["LOCKED"] = TokenType.LOCKED,
         ["LOCK"] = TokenType.LOCK,
+        ["UNLOCK"] = TokenType.UNLOCK,
+        ["ANALYZE"] = TokenType.ANALYZE,
+        ["FLUSH"] = TokenType.FLUSH,
         ["MODE"] = TokenType.MODE,
 
         // CTE (Common Table Expression) keywords

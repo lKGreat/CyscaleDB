@@ -2224,3 +2224,85 @@ public class DropEventStatement : Statement
 }
 
 #endregion
+
+#region Admin Statements
+
+/// <summary>
+/// Represents an ANALYZE TABLE statement.
+/// </summary>
+public class AnalyzeTableStatement : Statement
+{
+    /// <summary>
+    /// The table names to analyze.
+    /// </summary>
+    public List<string> TableNames { get; set; } = [];
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitAnalyzeTableStatement(this);
+}
+
+/// <summary>
+/// Represents a FLUSH statement.
+/// </summary>
+public class FlushStatement : Statement
+{
+    /// <summary>
+    /// The type of flush (TABLES, PRIVILEGES, LOGS, etc.).
+    /// </summary>
+    public string FlushType { get; set; } = null!;
+
+    /// <summary>
+    /// Optional table names for FLUSH TABLES.
+    /// </summary>
+    public List<string> TableNames { get; set; } = [];
+
+    /// <summary>
+    /// Whether WITH READ LOCK is specified.
+    /// </summary>
+    public bool WithReadLock { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitFlushStatement(this);
+}
+
+/// <summary>
+/// Represents a LOCK TABLES statement.
+/// </summary>
+public class LockTablesStatement : Statement
+{
+    /// <summary>
+    /// The table locks to acquire.
+    /// </summary>
+    public List<TableLock> TableLocks { get; set; } = [];
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitLockTablesStatement(this);
+}
+
+/// <summary>
+/// Represents a single table lock specification.
+/// </summary>
+public class TableLock
+{
+    /// <summary>
+    /// The table name.
+    /// </summary>
+    public string TableName { get; set; } = null!;
+
+    /// <summary>
+    /// The lock type (READ, WRITE, READ LOCAL, LOW PRIORITY WRITE).
+    /// </summary>
+    public string LockType { get; set; } = null!;
+
+    /// <summary>
+    /// Optional alias for the table.
+    /// </summary>
+    public string? Alias { get; set; }
+}
+
+/// <summary>
+/// Represents an UNLOCK TABLES statement.
+/// </summary>
+public class UnlockTablesStatement : Statement
+{
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitUnlockTablesStatement(this);
+}
+
+#endregion

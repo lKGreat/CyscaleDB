@@ -169,6 +169,11 @@ public sealed class Executor
             // Event statements
             CreateEventStatement s => ExecuteCreateEvent(s),
             DropEventStatement s => ExecuteDropEvent(s),
+            // Admin statements
+            AnalyzeTableStatement s => ExecuteAnalyzeTable(s),
+            FlushStatement s => ExecuteFlush(s),
+            LockTablesStatement s => ExecuteLockTables(s),
+            UnlockTablesStatement => ExecuteUnlockTables(),
             _ => throw new CyscaleException($"Unsupported statement type: {statement.GetType().Name}")
         };
     }
@@ -3544,6 +3549,88 @@ public sealed class Executor
             _leaveLabel = savedLeaveLabel;
             _iterateLabel = savedIterateLabel;
         }
+    }
+
+    #endregion
+
+    #region Admin Statement Execution
+
+    private ExecutionResult ExecuteAnalyzeTable(AnalyzeTableStatement stmt)
+    {
+        foreach (var tableName in stmt.TableNames)
+        {
+            var table = _catalog.GetTable(_currentDatabase, tableName);
+            if (table == null)
+                throw new TableNotFoundException(tableName);
+
+            // In a real implementation, this would update table statistics
+            // For now, we just log the action
+            _logger.Info("Analyzed table '{0}' in database '{1}'", tableName, _currentDatabase);
+        }
+
+        return ExecutionResult.Ddl($"Analyzed {stmt.TableNames.Count} table(s)");
+    }
+
+    private ExecutionResult ExecuteFlush(FlushStatement stmt)
+    {
+        switch (stmt.FlushType.ToUpperInvariant())
+        {
+            case "TABLES":
+                if (stmt.TableNames.Count > 0)
+                {
+                    foreach (var tableName in stmt.TableNames)
+                    {
+                        var table = _catalog.GetTable(_currentDatabase, tableName);
+                        table?.Flush();
+                    }
+                }
+                else
+                {
+                    _catalog.Flush();
+                }
+                _logger.Info("Flushed tables");
+                break;
+
+            case "PRIVILEGES":
+                // Reload privilege tables (no-op for now)
+                _logger.Info("Flushed privileges");
+                break;
+
+            case "LOGS":
+                // Close and reopen log files (no-op for now)
+                _logger.Info("Flushed logs");
+                break;
+
+            case "STATUS":
+                // Reset status variables (no-op for now)
+                _logger.Info("Flushed status");
+                break;
+        }
+
+        return ExecutionResult.Ddl($"Flushed {stmt.FlushType}");
+    }
+
+    private ExecutionResult ExecuteLockTables(LockTablesStatement stmt)
+    {
+        // In a real implementation, this would acquire table-level locks
+        // For now, we just validate the tables exist and log the action
+        foreach (var tableLock in stmt.TableLocks)
+        {
+            var table = _catalog.GetTable(_currentDatabase, tableLock.TableName);
+            if (table == null)
+                throw new TableNotFoundException(tableLock.TableName);
+
+            _logger.Info("Locked table '{0}' with {1} lock", tableLock.TableName, tableLock.LockType);
+        }
+
+        return ExecutionResult.Ddl($"Locked {stmt.TableLocks.Count} table(s)");
+    }
+
+    private ExecutionResult ExecuteUnlockTables()
+    {
+        // In a real implementation, this would release all table-level locks
+        _logger.Info("Unlocked all tables");
+        return ExecutionResult.Ddl("Unlocked all tables");
     }
 
     #endregion

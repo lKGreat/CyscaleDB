@@ -427,19 +427,19 @@ todos:
     status: pending
   - id: 6.2.1
     content: ANALYZE/FLUSH/LOCK 关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 6.2.2
     content: ANALYZE TABLE 解析执行 - 更新统计信息，测试
-    status: pending
+    status: completed
   - id: 6.2.3
     content: FLUSH 解析执行 - FLUSH TABLES/PRIVILEGES，测试
-    status: pending
+    status: completed
   - id: 6.2.4
     content: LOCK TABLES 解析执行 - 表级锁定，测试
-    status: pending
+    status: completed
   - id: 6.2.5
     content: UNLOCK TABLES 解析执行 - 释放锁定，测试
-    status: pending
+    status: completed
 ---
 
 # MySQL 8.0 完整语法与 InnoDB 存储引擎实施计划

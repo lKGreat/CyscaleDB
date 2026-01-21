@@ -123,6 +123,11 @@ public sealed class Parser
             TokenType.LEAVE => ParseLeaveStatement(),
             TokenType.ITERATE => ParseIterateStatement(),
             TokenType.RETURN => ParseReturnStatement(),
+            // Admin statements
+            TokenType.ANALYZE => ParseAnalyzeStatement(),
+            TokenType.FLUSH => ParseFlushStatement(),
+            TokenType.LOCK => ParseLockTablesStatement(),
+            TokenType.UNLOCK => ParseUnlockTablesStatement(),
             _ => throw Error($"Unexpected token at start of statement: {_currentToken.Value}")
         };
     }
@@ -4026,6 +4031,147 @@ public sealed class Parser
 
         return stmt;
     }
+
+    #region Admin Statements
+
+    private Statement ParseAnalyzeStatement()
+    {
+        // ANALYZE TABLE table_name [, table_name] ...
+        Expect(TokenType.ANALYZE);
+        Expect(TokenType.TABLE);
+
+        var stmt = new AnalyzeTableStatement();
+
+        do
+        {
+            stmt.TableNames.Add(ExpectIdentifier());
+        } while (Match(TokenType.Comma));
+
+        return stmt;
+    }
+
+    private Statement ParseFlushStatement()
+    {
+        // FLUSH [TABLES [table_name [, table_name] ...] [WITH READ LOCK] | PRIVILEGES | LOGS]
+        Expect(TokenType.FLUSH);
+
+        var stmt = new FlushStatement();
+
+        if (Match(TokenType.TABLES))
+        {
+            stmt.FlushType = "TABLES";
+
+            // Optional table names
+            if (Check(TokenType.Identifier))
+            {
+                do
+                {
+                    stmt.TableNames.Add(ExpectIdentifier());
+                } while (Match(TokenType.Comma));
+            }
+
+            // Optional WITH READ LOCK
+            if (Match(TokenType.WITH))
+            {
+                Expect(TokenType.READ);
+                Expect(TokenType.LOCK);
+                stmt.WithReadLock = true;
+            }
+        }
+        else if (Match(TokenType.PRIVILEGES))
+        {
+            stmt.FlushType = "PRIVILEGES";
+        }
+        else if (MatchIdentifier("LOGS"))
+        {
+            stmt.FlushType = "LOGS";
+        }
+        else if (MatchIdentifier("STATUS"))
+        {
+            stmt.FlushType = "STATUS";
+        }
+        else
+        {
+            throw Error($"Expected TABLES, PRIVILEGES, LOGS, or STATUS after FLUSH, got: {_currentToken.Value}");
+        }
+
+        return stmt;
+    }
+
+    private Statement ParseLockTablesStatement()
+    {
+        // LOCK TABLES table_name [[AS] alias] lock_type [, ...]
+        Expect(TokenType.LOCK);
+        Expect(TokenType.TABLES);
+
+        var stmt = new LockTablesStatement();
+
+        do
+        {
+            var tableLock = new TableLock
+            {
+                TableName = ExpectIdentifier()
+            };
+
+            // Optional alias
+            if (Match(TokenType.AS))
+            {
+                tableLock.Alias = ExpectIdentifier();
+            }
+            else if (Check(TokenType.Identifier) && !IsLockType(_currentToken.Value))
+            {
+                tableLock.Alias = ExpectIdentifier();
+            }
+
+            // Lock type
+            if (Match(TokenType.READ))
+            {
+                if (MatchIdentifier("LOCAL"))
+                {
+                    tableLock.LockType = "READ LOCAL";
+                }
+                else
+                {
+                    tableLock.LockType = "READ";
+                }
+            }
+            else if (Match(TokenType.WRITE))
+            {
+                tableLock.LockType = "WRITE";
+            }
+            else if (MatchIdentifier("LOW_PRIORITY"))
+            {
+                Expect(TokenType.WRITE);
+                tableLock.LockType = "LOW_PRIORITY WRITE";
+            }
+            else
+            {
+                throw Error($"Expected READ or WRITE lock type, got: {_currentToken.Value}");
+            }
+
+            stmt.TableLocks.Add(tableLock);
+        } while (Match(TokenType.Comma));
+
+        return stmt;
+    }
+
+    private static bool IsLockType(string value)
+    {
+        return value.Equals("READ", StringComparison.OrdinalIgnoreCase) ||
+               value.Equals("WRITE", StringComparison.OrdinalIgnoreCase) ||
+               value.Equals("LOW_PRIORITY", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private Statement ParseUnlockTablesStatement()
+    {
+        // UNLOCK TABLES
+        Expect(TokenType.UNLOCK);
+        Expect(TokenType.TABLES);
+
+        return new UnlockTablesStatement();
+    }
+
+    #endregion
 
     private Statement ParseCallStatement()
     {

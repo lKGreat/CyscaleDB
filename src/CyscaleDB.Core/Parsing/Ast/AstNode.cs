@@ -86,6 +86,12 @@ public interface IAstVisitor<T>
     T VisitCreateEventStatement(CreateEventStatement node);
     T VisitDropEventStatement(DropEventStatement node);
     
+    // Admin statements
+    T VisitAnalyzeTableStatement(AnalyzeTableStatement node);
+    T VisitFlushStatement(FlushStatement node);
+    T VisitLockTablesStatement(LockTablesStatement node);
+    T VisitUnlockTablesStatement(UnlockTablesStatement node);
+    
     T VisitBinaryExpression(BinaryExpression node);
     T VisitUnaryExpression(UnaryExpression node);
     T VisitLiteralExpression(LiteralExpression node);
