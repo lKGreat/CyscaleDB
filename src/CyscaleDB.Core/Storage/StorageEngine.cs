@@ -5,7 +5,7 @@ namespace CyscaleDB.Core.Storage;
 
 /// <summary>
 /// The main storage engine that coordinates Catalog, BufferPool, and Tables.
-/// Provides a unified interface for database operations.
+/// Provides a unified interface for database operations with configurable options.
 /// </summary>
 public sealed class StorageEngine : IDisposable
 {
@@ -14,7 +14,14 @@ public sealed class StorageEngine : IDisposable
     private readonly BufferPool _bufferPool;
     private readonly ConcurrentDictionary<string, Table> _openTables;
     private readonly Logger _logger;
+    private readonly StorageOptions _options;
     private bool _disposed;
+
+    // Statistics
+    private long _totalInserts;
+    private long _totalUpdates;
+    private long _totalDeletes;
+    private long _totalScans;
 
     /// <summary>
     /// Gets the data directory.
@@ -32,17 +39,38 @@ public sealed class StorageEngine : IDisposable
     public BufferPool BufferPool => _bufferPool;
 
     /// <summary>
-    /// Creates a new storage engine.
+    /// Gets the storage options.
+    /// </summary>
+    public StorageOptions Options => _options;
+
+    /// <summary>
+    /// Creates a new storage engine with default options.
     /// </summary>
     /// <param name="dataDirectory">The root directory for data files.</param>
     /// <param name="bufferPoolSize">The number of pages to cache in memory.</param>
     public StorageEngine(string dataDirectory, int bufferPoolSize = Constants.DefaultBufferPoolSize)
+        : this(new StorageOptions
+        {
+            DataDirectory = dataDirectory,
+            BufferPoolSizePages = bufferPoolSize
+        })
     {
-        if (string.IsNullOrWhiteSpace(dataDirectory))
-            throw new ArgumentException("Data directory cannot be empty", nameof(dataDirectory));
+    }
 
-        _dataDirectory = Path.GetFullPath(dataDirectory);
-        _bufferPool = new BufferPool(bufferPoolSize);
+    /// <summary>
+    /// Creates a new storage engine with custom options.
+    /// </summary>
+    /// <param name="options">Storage configuration options.</param>
+    public StorageEngine(StorageOptions options)
+    {
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+
+        if (string.IsNullOrWhiteSpace(options.DataDirectory))
+            throw new ArgumentException("Data directory cannot be empty", nameof(options));
+
+        _dataDirectory = Path.GetFullPath(options.DataDirectory);
+        _bufferPool = new BufferPool(options.BufferPoolSizePages);
+        _bufferPool.OldBlockTimeMs = options.OldBlockTimeMs;
         _catalog = new Catalog(_dataDirectory);
         _openTables = new ConcurrentDictionary<string, Table>(StringComparer.OrdinalIgnoreCase);
         _logger = LogManager.Default.GetLogger<StorageEngine>();
@@ -50,7 +78,8 @@ public sealed class StorageEngine : IDisposable
         // Ensure data directory exists
         Directory.CreateDirectory(_dataDirectory);
 
-        _logger.Info("Storage engine initialized at: {0}", _dataDirectory);
+        _logger.Info("Storage engine initialized at: {0} with {1} buffer pages",
+            _dataDirectory, options.BufferPoolSizePages);
     }
 
     #region Database Operations
@@ -198,7 +227,9 @@ public sealed class StorageEngine : IDisposable
     public RowId InsertRow(string databaseName, string tableName, Row row)
     {
         var table = OpenTable(databaseName, tableName);
-        return table.InsertRow(row);
+        var result = table.InsertRow(row);
+        Interlocked.Increment(ref _totalInserts);
+        return result;
     }
 
     /// <summary>
@@ -208,7 +239,9 @@ public sealed class StorageEngine : IDisposable
     {
         var table = OpenTable(databaseName, tableName);
         var row = new Row(table.Schema, values);
-        return table.InsertRow(row);
+        var result = table.InsertRow(row);
+        Interlocked.Increment(ref _totalInserts);
+        return result;
     }
 
     /// <summary>
@@ -226,6 +259,14 @@ public sealed class StorageEngine : IDisposable
     public IEnumerable<Row> ScanTable(string databaseName, string tableName)
     {
         var table = OpenTable(databaseName, tableName);
+        Interlocked.Increment(ref _totalScans);
+
+        // Trigger read-ahead if configured
+        if (_options.ReadAheadPages > 0)
+        {
+            _bufferPool.PrefetchPages(table.PageManager, 0, _options.ReadAheadPages);
+        }
+
         return table.ScanTable();
     }
 
@@ -235,7 +276,10 @@ public sealed class StorageEngine : IDisposable
     public bool UpdateRow(string databaseName, string tableName, RowId rowId, Row newRow)
     {
         var table = OpenTable(databaseName, tableName);
-        return table.UpdateRow(rowId, newRow);
+        var result = table.UpdateRow(rowId, newRow);
+        if (result)
+            Interlocked.Increment(ref _totalUpdates);
+        return result;
     }
 
     /// <summary>
@@ -244,7 +288,10 @@ public sealed class StorageEngine : IDisposable
     public bool DeleteRow(string databaseName, string tableName, RowId rowId)
     {
         var table = OpenTable(databaseName, tableName);
-        return table.DeleteRow(rowId);
+        var result = table.DeleteRow(rowId);
+        if (result)
+            Interlocked.Increment(ref _totalDeletes);
+        return result;
     }
 
     #endregion
@@ -270,11 +317,35 @@ public sealed class StorageEngine : IDisposable
     }
 
     /// <summary>
-    /// Gets buffer pool statistics.
+    /// Gets buffer pool statistics (legacy method for compatibility).
     /// </summary>
     public (int cachedPages, int capacity, double hitRatio) GetBufferPoolStats()
     {
         return (_bufferPool.Count, _bufferPool.Capacity, _bufferPool.HitRatio);
+    }
+
+    /// <summary>
+    /// Gets comprehensive storage engine statistics.
+    /// </summary>
+    public StorageEngineStats GetStats()
+    {
+        EnsureNotDisposed();
+
+        var bufferStats = _bufferPool.GetStats();
+
+        return new StorageEngineStats
+        {
+            DataDirectory = _dataDirectory,
+            OpenTables = _openTables.Count,
+            TotalInserts = _totalInserts,
+            TotalUpdates = _totalUpdates,
+            TotalDeletes = _totalDeletes,
+            TotalScans = _totalScans,
+            BufferPoolStats = bufferStats,
+            BufferPoolSizePages = _options.BufferPoolSizePages,
+            ReadAheadPages = _options.ReadAheadPages,
+            FlushMode = _options.FlushMode
+        };
     }
 
     private static string GetTableKey(string databaseName, string tableName)
@@ -473,4 +544,65 @@ public sealed class DatabaseShrinkResult
 
     public override string ToString() =>
         $"Shrink {DatabaseName}: {TableResults.Count} tables, {TotalSpaceReclaimed} bytes reclaimed in {Duration.TotalMilliseconds:F2}ms";
+}
+
+/// <summary>
+/// Comprehensive statistics for the storage engine.
+/// </summary>
+public sealed class StorageEngineStats
+{
+    /// <summary>
+    /// Data directory path.
+    /// </summary>
+    public string DataDirectory { get; init; } = "";
+
+    /// <summary>
+    /// Number of currently open tables.
+    /// </summary>
+    public int OpenTables { get; init; }
+
+    /// <summary>
+    /// Total number of insert operations.
+    /// </summary>
+    public long TotalInserts { get; init; }
+
+    /// <summary>
+    /// Total number of update operations.
+    /// </summary>
+    public long TotalUpdates { get; init; }
+
+    /// <summary>
+    /// Total number of delete operations.
+    /// </summary>
+    public long TotalDeletes { get; init; }
+
+    /// <summary>
+    /// Total number of table scan operations.
+    /// </summary>
+    public long TotalScans { get; init; }
+
+    /// <summary>
+    /// Buffer pool statistics.
+    /// </summary>
+    public BufferPoolStats? BufferPoolStats { get; init; }
+
+    /// <summary>
+    /// Configured buffer pool size in pages.
+    /// </summary>
+    public int BufferPoolSizePages { get; init; }
+
+    /// <summary>
+    /// Configured read-ahead pages.
+    /// </summary>
+    public int ReadAheadPages { get; init; }
+
+    /// <summary>
+    /// Configured flush mode.
+    /// </summary>
+    public FlushMode FlushMode { get; init; }
+
+    public override string ToString()
+    {
+        return $"StorageEngine: {OpenTables} tables, inserts={TotalInserts}, updates={TotalUpdates}, deletes={TotalDeletes}, scans={TotalScans}";
+    }
 }

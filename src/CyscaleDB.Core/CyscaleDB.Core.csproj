@@ -10,4 +10,8 @@
     <InternalsVisibleTo Include="CyscaleDB.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="System.IO.Pipelines" Version="10.0.2" />
+  </ItemGroup>
+
 </Project>

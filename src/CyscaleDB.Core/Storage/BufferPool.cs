@@ -598,6 +598,274 @@ public sealed class BufferPool : IDisposable
         throw new StorageException("Buffer pool is full and all pages are pinned");
     }
 
+    #region Read-Ahead / Prefetch Support
+
+    /// <summary>
+    /// Prefetches pages in the background for read-ahead optimization.
+    /// Pages are loaded asynchronously and added to the old region.
+    /// </summary>
+    /// <param name="pageManager">The page manager to load from.</param>
+    /// <param name="startPageId">Starting page ID.</param>
+    /// <param name="count">Number of pages to prefetch.</param>
+    public void PrefetchPages(PageManager pageManager, int startPageId, int count)
+    {
+        if (count <= 0 || startPageId < 0)
+            return;
+
+        // Fire and forget - background prefetch
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    var pageId = startPageId + i;
+
+                    // Check if page is already in buffer
+                    if (HasPage(pageManager, pageId))
+                        continue;
+
+                    // Check if page exists
+                    if (pageId >= pageManager.PageCount)
+                        break;
+
+                    // Load page asynchronously
+                    await LoadPageAsync(pageManager, pageId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Trace("Prefetch error: {0}", ex.Message);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Checks if a page is already in the buffer pool.
+    /// </summary>
+    public bool HasPage(PageManager pageManager, int pageId)
+    {
+        var key = new BufferKey(pageManager.FilePath, pageId);
+
+        _lock.EnterReadLock();
+        try
+        {
+            return _frames.ContainsKey(key);
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Loads a page asynchronously and adds it to the buffer pool.
+    /// </summary>
+    private async Task LoadPageAsync(PageManager pageManager, int pageId)
+    {
+        try
+        {
+            // Read page asynchronously
+            var page = await pageManager.ReadPageAsync(pageId);
+
+            // Add to buffer pool
+            _lock.EnterWriteLock();
+            try
+            {
+                var key = new BufferKey(pageManager.FilePath, pageId);
+
+                // Check if already loaded (race condition)
+                if (_frames.ContainsKey(key))
+                    return;
+
+                // Make room if necessary
+                while (_frames.Count >= _capacity)
+                {
+                    EvictPage();
+                }
+
+                // Add to buffer at midpoint (old region) using midpoint insertion strategy
+                var lruNode = InsertAtMidpoint(key);
+                var frame = new BufferFrame(page, pageManager, lruNode)
+                {
+                    PinCount = 0,  // Prefetched pages are not pinned
+                    IsInOldRegion = true,
+                    LoadTime = DateTime.UtcNow
+                };
+                _frames[key] = frame;
+                _oldRegionSize++;
+
+                _logger.Trace("Prefetched page {0} from {1} into old region", pageId, pageManager.FilePath);
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Trace("Failed to prefetch page {0}: {1}", pageId, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Gets a page asynchronously from the buffer pool or loads it from disk.
+    /// </summary>
+    public async ValueTask<Page> GetPageAsync(PageManager pageManager, int pageId, CancellationToken cancellationToken = default)
+    {
+        var key = new BufferKey(pageManager.FilePath, pageId);
+
+        _lock.EnterUpgradeableReadLock();
+        try
+        {
+            // Check if page is already in buffer
+            if (_frames.TryGetValue(key, out var frame))
+            {
+                Interlocked.Increment(ref _hitCount);
+
+                _lock.EnterWriteLock();
+                try
+                {
+                    // Check if page should be promoted from old to young region
+                    if (frame.IsInOldRegion)
+                    {
+                        var timeSinceLoad = (DateTime.UtcNow - frame.LoadTime).TotalMilliseconds;
+                        if (timeSinceLoad >= _oldBlockTimeMs)
+                        {
+                            MoveToYoungRegion(frame);
+                            Interlocked.Increment(ref _oldToYoungMoves);
+                        }
+                    }
+                    else
+                    {
+                        _lruList.Remove(frame.LruNode);
+                        _lruList.AddFirst(frame.LruNode);
+                    }
+                    frame.PinCount++;
+                }
+                finally
+                {
+                    _lock.ExitWriteLock();
+                }
+
+                return frame.Page;
+            }
+
+            // Page not in buffer - need to load it
+            Interlocked.Increment(ref _missCount);
+
+            _lock.EnterWriteLock();
+            try
+            {
+                // Double-check after acquiring write lock
+                if (_frames.TryGetValue(key, out frame))
+                {
+                    if (frame.IsInOldRegion)
+                    {
+                        var timeSinceLoad = (DateTime.UtcNow - frame.LoadTime).TotalMilliseconds;
+                        if (timeSinceLoad >= _oldBlockTimeMs)
+                        {
+                            MoveToYoungRegion(frame);
+                            Interlocked.Increment(ref _oldToYoungMoves);
+                        }
+                    }
+                    else
+                    {
+                        _lruList.Remove(frame.LruNode);
+                        _lruList.AddFirst(frame.LruNode);
+                    }
+                    frame.PinCount++;
+                    return frame.Page;
+                }
+
+                // Make room if necessary
+                while (_frames.Count >= _capacity)
+                {
+                    EvictPage();
+                }
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+
+            // Load page asynchronously (outside of lock)
+            var page = await pageManager.ReadPageAsync(pageId, cancellationToken);
+
+            // Add to buffer
+            _lock.EnterWriteLock();
+            try
+            {
+                // Check again if another thread loaded it
+                if (_frames.TryGetValue(key, out frame))
+                {
+                    frame.PinCount++;
+                    return frame.Page;
+                }
+
+                // Make room if necessary
+                while (_frames.Count >= _capacity)
+                {
+                    EvictPage();
+                }
+
+                var lruNode = InsertAtMidpoint(key);
+                frame = new BufferFrame(page, pageManager, lruNode)
+                {
+                    PinCount = 1,
+                    IsInOldRegion = true,
+                    LoadTime = DateTime.UtcNow
+                };
+                _frames[key] = frame;
+                _oldRegionSize++;
+
+                _logger.Trace("Loaded page {0} from {1} into old region (async)", pageId, pageManager.FilePath);
+                return page;
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+        finally
+        {
+            _lock.ExitUpgradeableReadLock();
+        }
+    }
+
+    #endregion
+
+    #region Statistics
+
+    /// <summary>
+    /// Gets buffer pool statistics.
+    /// </summary>
+    public BufferPoolStats GetStats()
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            return new BufferPoolStats
+            {
+                Capacity = _capacity,
+                Count = _frames.Count,
+                YoungRegionCount = _frames.Count - _oldRegionSize,
+                OldRegionCount = _oldRegionSize,
+                HitCount = _hitCount,
+                MissCount = _missCount,
+                HitRatio = HitRatio,
+                YoungToOldMoves = _youngToOldMoves,
+                OldToYoungMoves = _oldToYoungMoves
+            };
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    #endregion
+
     public void Dispose()
     {
         if (_disposed)
@@ -663,5 +931,61 @@ public sealed class BufferPool : IDisposable
             PageManager = pageManager;
             LruNode = lruNode;
         }
+    }
+}
+
+/// <summary>
+/// Statistics snapshot for buffer pool.
+/// </summary>
+public sealed class BufferPoolStats
+{
+    /// <summary>
+    /// Maximum capacity of the buffer pool.
+    /// </summary>
+    public int Capacity { get; init; }
+
+    /// <summary>
+    /// Current number of cached pages.
+    /// </summary>
+    public int Count { get; init; }
+
+    /// <summary>
+    /// Number of pages in the young (hot) region.
+    /// </summary>
+    public int YoungRegionCount { get; init; }
+
+    /// <summary>
+    /// Number of pages in the old (cold) region.
+    /// </summary>
+    public int OldRegionCount { get; init; }
+
+    /// <summary>
+    /// Total number of cache hits.
+    /// </summary>
+    public long HitCount { get; init; }
+
+    /// <summary>
+    /// Total number of cache misses.
+    /// </summary>
+    public long MissCount { get; init; }
+
+    /// <summary>
+    /// Cache hit ratio (0.0 - 1.0).
+    /// </summary>
+    public double HitRatio { get; init; }
+
+    /// <summary>
+    /// Number of pages moved from young to old region.
+    /// </summary>
+    public long YoungToOldMoves { get; init; }
+
+    /// <summary>
+    /// Number of pages promoted from old to young region.
+    /// </summary>
+    public long OldToYoungMoves { get; init; }
+
+    public override string ToString()
+    {
+        return $"BufferPool: {Count}/{Capacity} pages, hit ratio={HitRatio:P2}, young={YoungRegionCount}, old={OldRegionCount}";
     }
 }
