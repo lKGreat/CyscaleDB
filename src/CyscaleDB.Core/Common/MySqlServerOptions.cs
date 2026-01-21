@@ -1,3 +1,6 @@
+using CyscaleDB.Core.Protocol.Security;
+using CyscaleDB.Core.Protocol.Transport;
+
 namespace CyscaleDB.Core.Common;
 
 /// <summary>
@@ -101,6 +104,78 @@ public class MySqlServerOptions
     /// Threshold to resume writer after pausing.
     /// </summary>
     public int ResumeWriterThreshold { get; set; } = 32 * 1024;
+
+    #endregion
+
+    #region Security Configuration
+
+    /// <summary>
+    /// SSL/TLS configuration options.
+    /// </summary>
+    public SslOptions Ssl { get; set; } = new();
+
+    /// <summary>
+    /// IP filter configuration options.
+    /// </summary>
+    public IpFilterOptions IpFilter { get; set; } = new();
+
+    /// <summary>
+    /// Rate limiting configuration options.
+    /// </summary>
+    public RateLimitOptions RateLimit { get; set; } = new();
+
+    #endregion
+
+    #region Compression Configuration
+
+    /// <summary>
+    /// Whether protocol compression is enabled.
+    /// </summary>
+    public bool EnableCompression { get; set; } = false;
+
+    /// <summary>
+    /// Preferred compression algorithm.
+    /// </summary>
+    public CompressionAlgorithm PreferredCompression { get; set; } = CompressionAlgorithm.Zlib;
+
+    /// <summary>
+    /// Minimum payload size to trigger compression (in bytes).
+    /// </summary>
+    public int CompressionThreshold { get; set; } = 50;
+
+    /// <summary>
+    /// Compression level (1-9 for zlib).
+    /// </summary>
+    public int CompressionLevel { get; set; } = 6;
+
+    #endregion
+
+    #region Advanced Configuration
+
+    /// <summary>
+    /// Size of the SocketAsyncEventArgs pool.
+    /// </summary>
+    public int SocketPoolSize { get; set; } = 100;
+
+    /// <summary>
+    /// Maximum size of the SocketAsyncEventArgs pool.
+    /// </summary>
+    public int SocketPoolMaxSize { get; set; } = 1000;
+
+    /// <summary>
+    /// Buffer size for each pooled socket.
+    /// </summary>
+    public int SocketBufferSize { get; set; } = 8192;
+
+    /// <summary>
+    /// Timeout for graceful shutdown.
+    /// </summary>
+    public TimeSpan GracefulShutdownTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Threshold for slow query logging (in milliseconds).
+    /// </summary>
+    public int SlowQueryThresholdMs { get; set; } = 1000;
 
     #endregion
 

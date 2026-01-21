@@ -6,6 +6,9 @@ using System.Text;
 using CyscaleDB.Core.Auth;
 using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Execution;
+using CyscaleDB.Core.Protocol.Monitoring;
+using CyscaleDB.Core.Protocol.Security;
+using CyscaleDB.Core.Protocol.Transport;
 using CyscaleDB.Core.Storage;
 using CyscaleDB.Core.Transactions;
 
@@ -90,7 +93,19 @@ public sealed class MySqlServer : IDisposable
     private Task? _acceptTask;
     private Task? _healthCheckTask;
 
-    // Statistics
+    // Enterprise components
+    private readonly SslHandler? _sslHandler;
+    private readonly IpFilter _ipFilter;
+    private readonly ConnectionRateLimiter _rateLimiter;
+    private readonly SocketAsyncEventArgsPool _socketPool;
+    private readonly NetworkMetrics _metrics;
+    private readonly LatencyHistogram _queryLatency;
+    private readonly CompressionHandler _compressionHandler;
+
+    // Shutdown state
+    private volatile bool _isShuttingDown;
+
+    // Statistics (legacy, now also in _metrics)
     private long _totalConnectionsReceived;
     private long _rejectedConnections;
     private long _totalQueriesExecuted;
@@ -106,9 +121,19 @@ public sealed class MySqlServer : IDisposable
     public int ActiveConnections => _sessions.Count;
 
     /// <summary>
-    /// Server capabilities advertised to clients.
+    /// Gets the network metrics collector.
     /// </summary>
-    public static MySqlCapabilities ServerCapabilities =>
+    public NetworkMetrics Metrics => _metrics;
+
+    /// <summary>
+    /// Gets the query latency histogram.
+    /// </summary>
+    public LatencyHistogram QueryLatency => _queryLatency;
+
+    /// <summary>
+    /// Base server capabilities advertised to clients.
+    /// </summary>
+    private static MySqlCapabilities BaseServerCapabilities =>
         MySqlCapabilities.Protocol41 |
         MySqlCapabilities.ConnectWithDb |
         MySqlCapabilities.SecureConnection |
@@ -122,6 +147,32 @@ public sealed class MySqlServer : IDisposable
         MySqlCapabilities.FoundRows |
         MySqlCapabilities.IgnoreSpace |
         MySqlCapabilities.Interactive;
+
+    /// <summary>
+    /// Gets the server capabilities based on configuration.
+    /// </summary>
+    public MySqlCapabilities GetServerCapabilities()
+    {
+        var caps = BaseServerCapabilities;
+
+        // Add SSL capability if enabled
+        if (_options.Ssl.Enabled)
+        {
+            caps |= MySqlCapabilities.Ssl;
+        }
+
+        // Add compression capability if enabled
+        if (_options.EnableCompression)
+        {
+            caps |= MySqlCapabilities.Compress;
+            if (_options.PreferredCompression == CompressionAlgorithm.Zstd)
+            {
+                caps |= MySqlCapabilities.ZstdCompressionAlgorithm;
+            }
+        }
+
+        return caps;
+    }
 
     /// <summary>
     /// Creates a new MySQL protocol server with default options.
@@ -144,6 +195,29 @@ public sealed class MySqlServer : IDisposable
         _logger = LogManager.Default.GetLogger<MySqlServer>();
         _cancellationTokenSource = new CancellationTokenSource();
 
+        // Initialize enterprise components
+        _ipFilter = new IpFilter(options.IpFilter);
+        _rateLimiter = new ConnectionRateLimiter(options.RateLimit);
+        _socketPool = new SocketAsyncEventArgsPool(
+            options.SocketPoolSize,
+            options.SocketPoolMaxSize,
+            options.SocketBufferSize);
+        _metrics = new NetworkMetrics();
+        _queryLatency = new LatencyHistogram();
+        _compressionHandler = new CompressionHandler(new CompressionOptions
+        {
+            Enabled = options.EnableCompression,
+            PreferredAlgorithm = options.PreferredCompression,
+            CompressionThreshold = options.CompressionThreshold,
+            CompressionLevel = options.CompressionLevel
+        });
+
+        // Initialize SSL handler if enabled
+        if (options.Ssl.Enabled)
+        {
+            _sslHandler = new SslHandler(options.Ssl);
+        }
+
         // Create listener with configured endpoint
         var endpoint = new IPEndPoint(
             IPAddress.Parse(_options.BindAddress),
@@ -152,6 +226,9 @@ public sealed class MySqlServer : IDisposable
 
         // Configure listener socket
         ConfigureListenerSocket(_listener.Server);
+
+        _logger.Info("MySQL server initialized with enterprise features: SSL={0}, Compression={1}, RateLimit={2}, IpFilter={3}",
+            options.Ssl.Enabled, options.EnableCompression, options.RateLimit.Enabled, options.IpFilter.Enabled);
     }
 
     /// <summary>
@@ -224,13 +301,51 @@ public sealed class MySqlServer : IDisposable
     /// </summary>
     public void Stop()
     {
+        StopAsync(_options.GracefulShutdownTimeout).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Stops the server gracefully, waiting for active connections to complete.
+    /// </summary>
+    /// <param name="timeout">Maximum time to wait for graceful shutdown.</param>
+    public async Task StopAsync(TimeSpan timeout)
+    {
         if (_disposed)
             return;
 
-        _cancellationTokenSource.Cancel();
+        _isShuttingDown = true;
+        _logger.Info("Initiating graceful shutdown with timeout {0}s...", timeout.TotalSeconds);
+
+        // 1. Stop accepting new connections
         _listener.Stop();
 
-        // Close all active sessions
+        // 2. Notify all sessions about shutdown
+        foreach (var session in _sessions.Values)
+        {
+            try
+            {
+                await NotifyShutdownAsync(session);
+            }
+            catch (Exception ex)
+            {
+                _logger.Trace("Error notifying session of shutdown: {0}", ex.Message);
+            }
+        }
+
+        // 3. Wait for sessions to complete (with timeout)
+        var deadline = DateTime.UtcNow + timeout;
+        while (_sessions.Count > 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(100);
+        }
+
+        if (_sessions.Count > 0)
+        {
+            _logger.Warning("Forcefully closing {0} remaining sessions", _sessions.Count);
+        }
+
+        // 4. Force close remaining sessions
+        _cancellationTokenSource.Cancel();
         foreach (var session in _sessions.Values)
         {
             try
@@ -244,12 +359,15 @@ public sealed class MySqlServer : IDisposable
         }
         _sessions.Clear();
 
+        // Wait for background tasks
         try
         {
-            _acceptTask?.Wait(TimeSpan.FromSeconds(5));
-            _healthCheckTask?.Wait(TimeSpan.FromSeconds(2));
+            if (_acceptTask != null)
+                await _acceptTask.WaitAsync(TimeSpan.FromSeconds(5));
+            if (_healthCheckTask != null)
+                await _healthCheckTask.WaitAsync(TimeSpan.FromSeconds(2));
         }
-        catch (AggregateException)
+        catch (Exception)
         {
             // Expected when cancelling
         }
@@ -257,19 +375,73 @@ public sealed class MySqlServer : IDisposable
         _logger.Info("MySQL protocol server stopped");
     }
 
+    /// <summary>
+    /// Notifies a session that the server is shutting down.
+    /// </summary>
+    private async Task NotifyShutdownAsync(ClientSession session)
+    {
+        if (session.PipeWriter == null)
+            return;
+
+        try
+        {
+            // Send MySQL error packet indicating server shutdown
+            using var buffer = new MemoryStream();
+            buffer.WriteByte(0xFF); // Error packet
+            buffer.WriteByte(0xED); // Error code 1053 (Server shutdown in progress) low
+            buffer.WriteByte(0x04); // Error code high
+            buffer.WriteByte(0x23); // SQL state marker '#'
+            var sqlStateBytes = Encoding.UTF8.GetBytes("08S01");
+            buffer.Write(sqlStateBytes);
+            var messageBytes = Encoding.UTF8.GetBytes("Server shutdown in progress");
+            buffer.Write(messageBytes);
+
+            await session.PipeWriter.WritePacketAsync(buffer.ToArray());
+        }
+        catch
+        {
+            // Ignore errors when notifying
+        }
+    }
+
     private async Task AcceptConnectionsAsync()
     {
-        while (!_cancellationTokenSource.Token.IsCancellationRequested)
+        while (!_cancellationTokenSource.Token.IsCancellationRequested && !_isShuttingDown)
         {
             try
             {
                 var client = await _listener.AcceptTcpClientAsync(_cancellationTokenSource.Token);
                 Interlocked.Increment(ref _totalConnectionsReceived);
 
+                var remoteEndPoint = client.Client.RemoteEndPoint as IPEndPoint;
+                var clientIp = remoteEndPoint?.Address.ToString() ?? "unknown";
+
+                // Check IP filter
+                if (remoteEndPoint != null && !_ipFilter.IsAllowed(remoteEndPoint.Address))
+                {
+                    Interlocked.Increment(ref _rejectedConnections);
+                    _metrics.RecordRejectedConnection();
+                    _logger.Warning("Connection rejected by IP filter: {0}", clientIp);
+                    client.Close();
+                    continue;
+                }
+
+                // Check rate limit
+                if (!_rateLimiter.TryAcquire(clientIp))
+                {
+                    Interlocked.Increment(ref _rejectedConnections);
+                    _metrics.RecordRejectedConnection();
+                    _logger.Warning("Connection rejected by rate limiter: {0}", clientIp);
+                    await RejectConnectionAsync(client, "Too many connections from your address");
+                    continue;
+                }
+
                 // Check max connections limit
                 if (_sessions.Count >= _options.MaxConnections)
                 {
                     Interlocked.Increment(ref _rejectedConnections);
+                    _metrics.RecordRejectedConnection();
+                    _rateLimiter.Release(clientIp);
                     _logger.Warning("Connection rejected: max connections ({0}) reached", _options.MaxConnections);
                     await RejectConnectionAsync(client, "Too many connections");
                     continue;
@@ -278,7 +450,10 @@ public sealed class MySqlServer : IDisposable
                 // Configure client socket
                 ConfigureClientSocket(client.Client);
 
-                _ = Task.Run(() => HandleClientAsync(client, _cancellationTokenSource.Token), _cancellationTokenSource.Token);
+                // Record connection
+                _metrics.RecordConnection();
+
+                _ = Task.Run(() => HandleClientAsync(client, clientIp, _cancellationTokenSource.Token), _cancellationTokenSource.Token);
             }
             catch (OperationCanceledException)
             {
@@ -328,31 +503,32 @@ public sealed class MySqlServer : IDisposable
         }
     }
 
-    private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
+    private async Task HandleClientAsync(TcpClient client, string clientIp, CancellationToken cancellationToken)
     {
         var clientEndPoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
         _logger.Debug("Client connected from {0}", clientEndPoint);
         ClientSession? session = null;
+        Stream? activeStream = null;
 
         try
         {
             using (client)
             {
-                var stream = client.GetStream();
+                activeStream = client.GetStream();
 
                 // Create pipe-based reader/writer
-                var pipeReader = MySqlPipeReader.Create(stream, _options);
-                var pipeWriter = MySqlPipeWriter.Create(stream, _options);
+                var pipeReader = MySqlPipeReader.Create(activeStream, _options);
+                var pipeWriter = MySqlPipeWriter.Create(activeStream, _options);
 
                 // Also keep legacy writers for compatibility during handshake
-                var legacyWriter = new PacketWriter(stream);
+                var legacyWriter = new PacketWriter(activeStream);
 
-                // Send handshake packet
+                // Send handshake packet with dynamic capabilities
                 var salt = Handshake.GenerateSalt();
                 var handshakePacket = Handshake.CreateHandshakePacket(
                     Constants.ServerVersion,
                     salt,
-                    (uint)ServerCapabilities);
+                    (uint)GetServerCapabilities());
 
                 await legacyWriter.WritePacketAsync(handshakePacket, cancellationToken);
                 pipeReader.SetSequence(legacyWriter.CurrentSequence);
@@ -381,7 +557,8 @@ public sealed class MySqlServer : IDisposable
                     _logger.Warning("Authentication failed for user '{0}'@'{1}'", response.Username, clientHost);
 
                     // Synchronize pipe writer with legacy writer sequence
-                    pipeWriter = MySqlPipeWriter.Create(stream, _options);
+                    pipeWriter = MySqlPipeWriter.Create(activeStream, _options);
+                    _metrics.RecordProtocolError();
                     
                     await SendErrorPacketAsync(pipeWriter, 1045, "28000",
                         $"Access denied for user '{response.Username}'@'{clientHost}' (using password: {(authBytes.Length > 0 ? "YES" : "NO")})",
@@ -393,10 +570,10 @@ public sealed class MySqlServer : IDisposable
                     response.Username, response.Database ?? "(none)");
 
                 // Create client session with negotiated capabilities
-                var clientCapabilities = (MySqlCapabilities)(response.Capabilities & (int)ServerCapabilities);
+                var clientCapabilities = (MySqlCapabilities)(response.Capabilities & (int)GetServerCapabilities());
                 
                 // Reset pipe writer for command phase
-                pipeWriter = MySqlPipeWriter.Create(stream, _options);
+                pipeWriter = MySqlPipeWriter.Create(activeStream, _options);
                 
                 session = new ClientSession(clientCapabilities, new Executor(_storageEngine.Catalog, _transactionManager), pipeReader, pipeWriter)
                 {
@@ -442,11 +619,19 @@ public sealed class MySqlServer : IDisposable
         }
         finally
         {
+            // Cleanup
             if (session != null)
             {
                 _sessions.TryRemove(session.Id, out _);
                 session.Dispose();
             }
+
+            // Release rate limiter slot
+            _rateLimiter.Release(clientIp);
+
+            // Record disconnection
+            _metrics.RecordDisconnection();
+
             _logger.Debug("Client disconnected: {0}", clientEndPoint);
         }
     }
@@ -977,8 +1162,29 @@ public sealed class MySqlServer : IDisposable
         {
             Stop();
             _cancellationTokenSource.Dispose();
+            _sslHandler?.Dispose();
+            _rateLimiter.Dispose();
+            _socketPool.Dispose();
             _disposed = true;
         }
+    }
+
+    /// <summary>
+    /// Gets comprehensive server statistics including all enterprise components.
+    /// </summary>
+    public EnterpriseServerStats GetEnterpriseStats()
+    {
+        return new EnterpriseServerStats
+        {
+            BasicStats = GetStats(),
+            NetworkMetrics = _metrics.GetSnapshot(),
+            QueryLatency = _queryLatency.GetPercentiles(),
+            SslStats = _sslHandler?.GetStats(),
+            RateLimiterStats = _rateLimiter.GetStats(),
+            IpFilterStats = _ipFilter.GetStats(),
+            SocketPoolStats = _socketPool.GetStats(),
+            CompressionStats = _compressionHandler.GetStats()
+        };
     }
 
     private static string GetClientHost(string clientEndPoint)
@@ -1009,4 +1215,26 @@ public sealed class ServerStats
     public long RejectedConnections { get; init; }
     public long TotalQueriesExecuted { get; init; }
     public int MaxConnections { get; init; }
+}
+
+/// <summary>
+/// Comprehensive enterprise server statistics.
+/// </summary>
+public sealed class EnterpriseServerStats
+{
+    public ServerStats? BasicStats { get; init; }
+    public NetworkMetricsSnapshot? NetworkMetrics { get; init; }
+    public LatencyPercentiles? QueryLatency { get; init; }
+    public SslHandlerStats? SslStats { get; init; }
+    public RateLimiterStats? RateLimiterStats { get; init; }
+    public IpFilterStats? IpFilterStats { get; init; }
+    public SocketPoolStats? SocketPoolStats { get; init; }
+    public CompressionStats? CompressionStats { get; init; }
+
+    public override string ToString()
+    {
+        return $"EnterpriseStats: {BasicStats?.ActiveConnections} connections, " +
+               $"{NetworkMetrics?.TotalQueries} queries, " +
+               $"p99 latency={QueryLatency?.P99:F2}ms";
+    }
 }
