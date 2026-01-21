@@ -54,6 +54,38 @@ public interface IAstVisitor<T>
     T VisitShowCollationStatement(ShowCollationStatement node);
     T VisitShowCharsetStatement(ShowCharsetStatement node);
     
+    // User management statements
+    T VisitCreateUserStatement(CreateUserStatement node);
+    T VisitAlterUserStatement(AlterUserStatement node);
+    T VisitDropUserStatement(DropUserStatement node);
+    T VisitGrantStatement(GrantStatement node);
+    T VisitRevokeStatement(RevokeStatement node);
+    
+    // Stored procedures
+    T VisitCreateProcedureStatement(CreateProcedureStatement node);
+    T VisitDropProcedureStatement(DropProcedureStatement node);
+    T VisitCallStatement(CallStatement node);
+    T VisitDeclareVariableStatement(DeclareVariableStatement node);
+    T VisitIfStatement(IfStatement node);
+    T VisitWhileStatement(WhileStatement node);
+    T VisitRepeatStatement(RepeatStatement node);
+    T VisitLoopStatement(LoopStatement node);
+    T VisitLeaveStatement(LeaveStatement node);
+    T VisitIterateStatement(IterateStatement node);
+    T VisitReturnStatement(ReturnStatement node);
+    
+    // Stored functions
+    T VisitCreateFunctionStatement(CreateFunctionStatement node);
+    T VisitDropFunctionStatement(DropFunctionStatement node);
+    
+    // Triggers
+    T VisitCreateTriggerStatement(CreateTriggerStatement node);
+    T VisitDropTriggerStatement(DropTriggerStatement node);
+    
+    // Events
+    T VisitCreateEventStatement(CreateEventStatement node);
+    T VisitDropEventStatement(DropEventStatement node);
+    
     T VisitBinaryExpression(BinaryExpression node);
     T VisitUnaryExpression(UnaryExpression node);
     T VisitLiteralExpression(LiteralExpression node);
@@ -65,6 +97,7 @@ public interface IAstVisitor<T>
     T VisitIsNullExpression(IsNullExpression node);
     T VisitLikeExpression(LikeExpression node);
     T VisitExistsExpression(ExistsExpression node);
+    T VisitQuantifiedComparisonExpression(QuantifiedComparisonExpression node);
     T VisitColumnDefinitionNode(ColumnDefinitionNode node);
     T VisitSystemVariableExpression(SystemVariableExpression node);
     T VisitCaseExpression(CaseExpression node);

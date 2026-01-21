@@ -67,12 +67,29 @@ public class SelectStatement : Statement
     public int? Offset { get; set; }
 
     /// <summary>
+    /// Set operation queries (for SELECT ... UNION/INTERSECT/EXCEPT SELECT ...)
+    /// </summary>
+    public List<SelectStatement> SetOperationQueries { get; set; } = [];
+
+    /// <summary>
+    /// Types of set operations (UNION, INTERSECT, EXCEPT).
+    /// </summary>
+    public List<SetOperationType> SetOperationTypes { get; set; } = [];
+
+    /// <summary>
+    /// Whether ALL is used for each set operation (vs removing duplicates).
+    /// </summary>
+    public List<bool> SetOperationAllFlags { get; set; } = [];
+
+    /// <summary>
     /// UNION queries (for SELECT ... UNION SELECT ...)
+    /// Deprecated: Use SetOperationQueries instead.
     /// </summary>
     public List<SelectStatement> UnionQueries { get; set; } = [];
 
     /// <summary>
     /// Whether UNION ALL is used (vs UNION which removes duplicates).
+    /// Deprecated: Use SetOperationAllFlags instead.
     /// </summary>
     public List<bool> UnionAllFlags { get; set; } = [];
 
@@ -135,6 +152,27 @@ public class CteDefinition
     /// The SELECT query that defines the CTE.
     /// </summary>
     public SelectStatement Query { get; set; } = null!;
+}
+
+/// <summary>
+/// Set operation types for combining SELECT statements.
+/// </summary>
+public enum SetOperationType
+{
+    /// <summary>
+    /// UNION: Combines results from two queries, removing duplicates (or keeping with ALL).
+    /// </summary>
+    Union = 0,
+
+    /// <summary>
+    /// INTERSECT: Returns only rows that appear in both queries.
+    /// </summary>
+    Intersect = 1,
+
+    /// <summary>
+    /// EXCEPT: Returns rows from first query that are not in second query.
+    /// </summary>
+    Except = 2
 }
 
 /// <summary>
@@ -245,6 +283,16 @@ public class JoinClause
     /// </summary>
     public Expression? Condition { get; set; }
 
+    /// <summary>
+    /// Whether this is a NATURAL join (implicit equality on same-named columns).
+    /// </summary>
+    public bool IsNatural { get; set; }
+
+    /// <summary>
+    /// The USING clause columns (explicit list of columns to join on).
+    /// </summary>
+    public List<string> UsingColumns { get; set; } = [];
+
     public JoinClause() { }
 
     public JoinClause(JoinType joinType, SimpleTableReference table, Expression? condition)
@@ -327,6 +375,16 @@ public class JoinTableReference : TableReference
     /// The join condition (ON clause).
     /// </summary>
     public Expression? Condition { get; set; }
+
+    /// <summary>
+    /// Whether this is a NATURAL join.
+    /// </summary>
+    public bool IsNatural { get; set; }
+
+    /// <summary>
+    /// The USING clause columns.
+    /// </summary>
+    public List<string> UsingColumns { get; set; } = [];
 }
 
 /// <summary>
@@ -338,7 +396,8 @@ public enum JoinType
     Left,
     Right,
     Full,
-    Cross
+    Cross,
+    Natural
 }
 
 /// <summary>
@@ -1503,6 +1562,665 @@ public class ShowCharsetStatement : Statement
     public string? LikePattern { get; set; }
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowCharsetStatement(this);
+}
+
+#endregion
+
+#region User Management Statements
+
+/// <summary>
+/// Represents a CREATE USER statement.
+/// </summary>
+public class CreateUserStatement : Statement
+{
+    /// <summary>
+    /// The username.
+    /// </summary>
+    public string UserName { get; set; } = null!;
+
+    /// <summary>
+    /// The host (default is '%').
+    /// </summary>
+    public string Host { get; set; } = "%";
+
+    /// <summary>
+    /// The password (optional).
+    /// </summary>
+    public string? Password { get; set; }
+
+    /// <summary>
+    /// Whether IF NOT EXISTS was specified.
+    /// </summary>
+    public bool IfNotExists { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitCreateUserStatement(this);
+}
+
+/// <summary>
+/// Represents an ALTER USER statement.
+/// </summary>
+public class AlterUserStatement : Statement
+{
+    /// <summary>
+    /// The username.
+    /// </summary>
+    public string UserName { get; set; } = null!;
+
+    /// <summary>
+    /// The host.
+    /// </summary>
+    public string Host { get; set; } = "%";
+
+    /// <summary>
+    /// The new password (optional).
+    /// </summary>
+    public string? Password { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitAlterUserStatement(this);
+}
+
+/// <summary>
+/// Represents a DROP USER statement.
+/// </summary>
+public class DropUserStatement : Statement
+{
+    /// <summary>
+    /// The username.
+    /// </summary>
+    public string UserName { get; set; } = null!;
+
+    /// <summary>
+    /// The host.
+    /// </summary>
+    public string Host { get; set; } = "%";
+
+    /// <summary>
+    /// Whether IF EXISTS was specified.
+    /// </summary>
+    public bool IfExists { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDropUserStatement(this);
+}
+
+/// <summary>
+/// Represents a GRANT statement.
+/// </summary>
+public class GrantStatement : Statement
+{
+    /// <summary>
+    /// The privileges to grant (e.g., SELECT, INSERT, ALL PRIVILEGES).
+    /// </summary>
+    public List<string> Privileges { get; set; } = [];
+
+    /// <summary>
+    /// The database name (null for all databases).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// The table name (null for all tables).
+    /// </summary>
+    public string? TableName { get; set; }
+
+    /// <summary>
+    /// The username to grant to.
+    /// </summary>
+    public string UserName { get; set; } = null!;
+
+    /// <summary>
+    /// The host.
+    /// </summary>
+    public string Host { get; set; } = "%";
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitGrantStatement(this);
+}
+
+/// <summary>
+/// Represents a REVOKE statement.
+/// </summary>
+public class RevokeStatement : Statement
+{
+    /// <summary>
+    /// The privileges to revoke.
+    /// </summary>
+    public List<string> Privileges { get; set; } = [];
+
+    /// <summary>
+    /// The database name (null for all databases).
+    /// </summary>
+    public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// The table name (null for all tables).
+    /// </summary>
+    public string? TableName { get; set; }
+
+    /// <summary>
+    /// The username to revoke from.
+    /// </summary>
+    public string UserName { get; set; } = null!;
+
+    /// <summary>
+    /// The host.
+    /// </summary>
+    public string Host { get; set; } = "%";
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitRevokeStatement(this);
+}
+
+#endregion
+
+#region Stored Procedures, Functions, Triggers, Events
+
+/// <summary>
+/// Parameter mode for stored procedures/functions.
+/// </summary>
+public enum ParameterMode
+{
+    In,
+    Out,
+    InOut
+}
+
+/// <summary>
+/// Represents a parameter for a stored procedure or function.
+/// </summary>
+public class ProcedureParameter
+{
+    /// <summary>
+    /// The parameter name.
+    /// </summary>
+    public string Name { get; set; } = null!;
+
+    /// <summary>
+    /// The parameter mode (IN, OUT, INOUT).
+    /// </summary>
+    public ParameterMode Mode { get; set; } = ParameterMode.In;
+
+    /// <summary>
+    /// The parameter data type.
+    /// </summary>
+    public DataType DataType { get; set; }
+
+    /// <summary>
+    /// Size/precision for the data type (for VARCHAR, DECIMAL, etc.).
+    /// </summary>
+    public int? Size { get; set; }
+
+    /// <summary>
+    /// Scale for DECIMAL types.
+    /// </summary>
+    public int? Scale { get; set; }
+}
+
+/// <summary>
+/// Represents a CREATE PROCEDURE statement.
+/// </summary>
+public class CreateProcedureStatement : Statement
+{
+    /// <summary>
+    /// The procedure name.
+    /// </summary>
+    public string ProcedureName { get; set; } = null!;
+
+    /// <summary>
+    /// The parameters for the procedure.
+    /// </summary>
+    public List<ProcedureParameter> Parameters { get; set; } = [];
+
+    /// <summary>
+    /// The procedure body (list of statements).
+    /// </summary>
+    public List<Statement> Body { get; set; } = [];
+
+    /// <summary>
+    /// The definer (user@host).
+    /// </summary>
+    public string? Definer { get; set; }
+
+    /// <summary>
+    /// SQL SECURITY (DEFINER or INVOKER).
+    /// </summary>
+    public string? SqlSecurity { get; set; }
+
+    /// <summary>
+    /// Comment for the procedure.
+    /// </summary>
+    public string? Comment { get; set; }
+
+    /// <summary>
+    /// Whether OR REPLACE was specified.
+    /// </summary>
+    public bool OrReplace { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitCreateProcedureStatement(this);
+}
+
+/// <summary>
+/// Represents a DROP PROCEDURE statement.
+/// </summary>
+public class DropProcedureStatement : Statement
+{
+    /// <summary>
+    /// The procedure name to drop.
+    /// </summary>
+    public string ProcedureName { get; set; } = null!;
+
+    /// <summary>
+    /// Whether IF EXISTS was specified.
+    /// </summary>
+    public bool IfExists { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDropProcedureStatement(this);
+}
+
+/// <summary>
+/// Represents a CALL statement to execute a stored procedure.
+/// </summary>
+public class CallStatement : Statement
+{
+    /// <summary>
+    /// The procedure name to call.
+    /// </summary>
+    public string ProcedureName { get; set; } = null!;
+
+    /// <summary>
+    /// The arguments to pass to the procedure.
+    /// </summary>
+    public List<Expression> Arguments { get; set; } = [];
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitCallStatement(this);
+}
+
+/// <summary>
+/// Represents a DECLARE variable statement within a procedure.
+/// </summary>
+public class DeclareVariableStatement : Statement
+{
+    /// <summary>
+    /// The variable names to declare.
+    /// </summary>
+    public List<string> VariableNames { get; set; } = [];
+
+    /// <summary>
+    /// The data type for the variables.
+    /// </summary>
+    public DataType DataType { get; set; }
+
+    /// <summary>
+    /// Size/precision for the data type.
+    /// </summary>
+    public int? Size { get; set; }
+
+    /// <summary>
+    /// Scale for DECIMAL types.
+    /// </summary>
+    public int? Scale { get; set; }
+
+    /// <summary>
+    /// Default value for the variables.
+    /// </summary>
+    public Expression? DefaultValue { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDeclareVariableStatement(this);
+}
+
+/// <summary>
+/// Represents an IF statement within a procedure.
+/// </summary>
+public class IfStatement : Statement
+{
+    /// <summary>
+    /// The condition to test.
+    /// </summary>
+    public Expression Condition { get; set; } = null!;
+
+    /// <summary>
+    /// The statements to execute if the condition is true.
+    /// </summary>
+    public List<Statement> ThenStatements { get; set; } = [];
+
+    /// <summary>
+    /// ELSEIF clauses.
+    /// </summary>
+    public List<(Expression Condition, List<Statement> Statements)> ElseIfClauses { get; set; } = [];
+
+    /// <summary>
+    /// The ELSE statements (executed if all conditions are false).
+    /// </summary>
+    public List<Statement>? ElseStatements { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitIfStatement(this);
+}
+
+/// <summary>
+/// Represents a WHILE loop statement.
+/// </summary>
+public class WhileStatement : Statement
+{
+    /// <summary>
+    /// The loop condition.
+    /// </summary>
+    public Expression Condition { get; set; } = null!;
+
+    /// <summary>
+    /// The loop body.
+    /// </summary>
+    public List<Statement> Body { get; set; } = [];
+
+    /// <summary>
+    /// Optional label for the loop.
+    /// </summary>
+    public string? Label { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitWhileStatement(this);
+}
+
+/// <summary>
+/// Represents a REPEAT loop statement.
+/// </summary>
+public class RepeatStatement : Statement
+{
+    /// <summary>
+    /// The loop body.
+    /// </summary>
+    public List<Statement> Body { get; set; } = [];
+
+    /// <summary>
+    /// The loop condition (loop continues UNTIL this is true).
+    /// </summary>
+    public Expression UntilCondition { get; set; } = null!;
+
+    /// <summary>
+    /// Optional label for the loop.
+    /// </summary>
+    public string? Label { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitRepeatStatement(this);
+}
+
+/// <summary>
+/// Represents a LOOP statement (infinite loop with LEAVE/ITERATE).
+/// </summary>
+public class LoopStatement : Statement
+{
+    /// <summary>
+    /// The loop body.
+    /// </summary>
+    public List<Statement> Body { get; set; } = [];
+
+    /// <summary>
+    /// The label for the loop (required for LOOP).
+    /// </summary>
+    public string Label { get; set; } = null!;
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitLoopStatement(this);
+}
+
+/// <summary>
+/// Represents a LEAVE statement (exit a loop or block).
+/// </summary>
+public class LeaveStatement : Statement
+{
+    /// <summary>
+    /// The label to leave.
+    /// </summary>
+    public string Label { get; set; } = null!;
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitLeaveStatement(this);
+}
+
+/// <summary>
+/// Represents an ITERATE statement (continue to next loop iteration).
+/// </summary>
+public class IterateStatement : Statement
+{
+    /// <summary>
+    /// The label to iterate.
+    /// </summary>
+    public string Label { get; set; } = null!;
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitIterateStatement(this);
+}
+
+/// <summary>
+/// Represents a RETURN statement in a stored function.
+/// </summary>
+public class ReturnStatement : Statement
+{
+    /// <summary>
+    /// The value to return.
+    /// </summary>
+    public Expression Value { get; set; } = null!;
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitReturnStatement(this);
+}
+
+/// <summary>
+/// Represents a CREATE FUNCTION statement.
+/// </summary>
+public class CreateFunctionStatement : Statement
+{
+    /// <summary>
+    /// The function name.
+    /// </summary>
+    public string FunctionName { get; set; } = null!;
+
+    /// <summary>
+    /// The parameters for the function.
+    /// </summary>
+    public List<ProcedureParameter> Parameters { get; set; } = [];
+
+    /// <summary>
+    /// The return data type.
+    /// </summary>
+    public DataType ReturnType { get; set; }
+
+    /// <summary>
+    /// Size/precision for the return type.
+    /// </summary>
+    public int? ReturnSize { get; set; }
+
+    /// <summary>
+    /// Scale for DECIMAL return types.
+    /// </summary>
+    public int? ReturnScale { get; set; }
+
+    /// <summary>
+    /// The function body.
+    /// </summary>
+    public List<Statement> Body { get; set; } = [];
+
+    /// <summary>
+    /// Whether the function is DETERMINISTIC.
+    /// </summary>
+    public bool IsDeterministic { get; set; }
+
+    /// <summary>
+    /// The definer (user@host).
+    /// </summary>
+    public string? Definer { get; set; }
+
+    /// <summary>
+    /// SQL SECURITY (DEFINER or INVOKER).
+    /// </summary>
+    public string? SqlSecurity { get; set; }
+
+    /// <summary>
+    /// Comment for the function.
+    /// </summary>
+    public string? Comment { get; set; }
+
+    /// <summary>
+    /// Whether OR REPLACE was specified.
+    /// </summary>
+    public bool OrReplace { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitCreateFunctionStatement(this);
+}
+
+/// <summary>
+/// Represents a DROP FUNCTION statement.
+/// </summary>
+public class DropFunctionStatement : Statement
+{
+    /// <summary>
+    /// The function name to drop.
+    /// </summary>
+    public string FunctionName { get; set; } = null!;
+
+    /// <summary>
+    /// Whether IF EXISTS was specified.
+    /// </summary>
+    public bool IfExists { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDropFunctionStatement(this);
+}
+
+/// <summary>
+/// Trigger timing (BEFORE or AFTER).
+/// </summary>
+public enum TriggerTiming
+{
+    Before,
+    After
+}
+
+/// <summary>
+/// Trigger event (INSERT, UPDATE, DELETE).
+/// </summary>
+public enum TriggerEvent
+{
+    Insert,
+    Update,
+    Delete
+}
+
+/// <summary>
+/// Represents a CREATE TRIGGER statement.
+/// </summary>
+public class CreateTriggerStatement : Statement
+{
+    /// <summary>
+    /// The trigger name.
+    /// </summary>
+    public string TriggerName { get; set; } = null!;
+
+    /// <summary>
+    /// The timing (BEFORE or AFTER).
+    /// </summary>
+    public TriggerTiming Timing { get; set; }
+
+    /// <summary>
+    /// The event (INSERT, UPDATE, DELETE).
+    /// </summary>
+    public TriggerEvent Event { get; set; }
+
+    /// <summary>
+    /// The table name the trigger is on.
+    /// </summary>
+    public string TableName { get; set; } = null!;
+
+    /// <summary>
+    /// The trigger body.
+    /// </summary>
+    public List<Statement> Body { get; set; } = [];
+
+    /// <summary>
+    /// The definer (user@host).
+    /// </summary>
+    public string? Definer { get; set; }
+
+    /// <summary>
+    /// Whether OR REPLACE was specified.
+    /// </summary>
+    public bool OrReplace { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitCreateTriggerStatement(this);
+}
+
+/// <summary>
+/// Represents a DROP TRIGGER statement.
+/// </summary>
+public class DropTriggerStatement : Statement
+{
+    /// <summary>
+    /// The trigger name to drop.
+    /// </summary>
+    public string TriggerName { get; set; } = null!;
+
+    /// <summary>
+    /// Whether IF EXISTS was specified.
+    /// </summary>
+    public bool IfExists { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDropTriggerStatement(this);
+}
+
+/// <summary>
+/// Represents a CREATE EVENT statement.
+/// </summary>
+public class CreateEventStatement : Statement
+{
+    /// <summary>
+    /// The event name.
+    /// </summary>
+    public string EventName { get; set; } = null!;
+
+    /// <summary>
+    /// The schedule expression (e.g., "EVERY 1 DAY", "AT '2024-01-01 00:00:00'").
+    /// </summary>
+    public string Schedule { get; set; } = null!;
+
+    /// <summary>
+    /// The event body.
+    /// </summary>
+    public List<Statement> Body { get; set; } = [];
+
+    /// <summary>
+    /// Whether ON COMPLETION PRESERVE is specified.
+    /// </summary>
+    public bool OnCompletionPreserve { get; set; }
+
+    /// <summary>
+    /// Whether the event is enabled.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Comment for the event.
+    /// </summary>
+    public string? Comment { get; set; }
+
+    /// <summary>
+    /// The definer (user@host).
+    /// </summary>
+    public string? Definer { get; set; }
+
+    /// <summary>
+    /// Whether OR REPLACE was specified.
+    /// </summary>
+    public bool OrReplace { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitCreateEventStatement(this);
+}
+
+/// <summary>
+/// Represents a DROP EVENT statement.
+/// </summary>
+public class DropEventStatement : Statement
+{
+    /// <summary>
+    /// The event name to drop.
+    /// </summary>
+    public string EventName { get; set; } = null!;
+
+    /// <summary>
+    /// Whether IF EXISTS was specified.
+    /// </summary>
+    public bool IfExists { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDropEventStatement(this);
 }
 
 #endregion

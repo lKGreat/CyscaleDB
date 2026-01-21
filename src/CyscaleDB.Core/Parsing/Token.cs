@@ -47,7 +47,7 @@ public readonly struct Token
     /// <summary>
     /// Checks if this token is a keyword.
     /// </summary>
-    public bool IsKeyword => Type >= TokenType.SELECT && Type <= TokenType.ROLLBACK;
+    public bool IsKeyword => Type >= TokenType.SELECT && Type <= TokenType.OUT;
 }
 
 /// <summary>
@@ -122,6 +122,7 @@ public enum TokenType
     OUTER,
     FULL,
     CROSS,
+    NATURAL,
     ORDER,
     BY,
     ASC,
@@ -132,7 +133,11 @@ public enum TokenType
     HAVING,
     DISTINCT,
     ALL,
+    ANY,
+    SOME,
     UNION,
+    INTERSECT,
+    EXCEPT,
     EXISTS,
     TRUE,
     FALSE,
@@ -161,6 +166,17 @@ public enum TokenType
     DOUBLE,
     DECIMAL,
     BLOB,
+    JSON,
+    GEOMETRY,
+
+    // User management keywords
+    USER,
+    GRANT,
+    REVOKE,
+    PRIVILEGES,
+    IDENTIFIED,
+    PASSWORD,
+    HOST,
 
     // Additional keywords
     SHOW,
@@ -273,6 +289,44 @@ public enum TokenType
     RESTRICT,           // RESTRICT action
     NO,                 // NO (for NO ACTION)
     ACTION,             // ACTION (for NO ACTION)
+
+    // Stored procedure/function/trigger keywords
+    PROCEDURE,          // CREATE PROCEDURE
+    CALL,               // CALL procedure
+    DECLARE,            // DECLARE variable
+    ELSEIF,             // ELSEIF in IF statement
+    WHILE,              // WHILE loop
+    DO,                 // DO (for WHILE ... DO)
+    LOOP,               // LOOP
+    REPEAT,             // REPEAT
+    UNTIL,              // UNTIL (for REPEAT)
+    LEAVE,              // LEAVE (exit loop/block)
+    ITERATE,            // ITERATE (continue loop)
+    FUNCTION,           // CREATE FUNCTION
+    RETURNS,            // RETURNS (for functions)
+    RETURN,             // RETURN value
+    DETERMINISTIC,      // DETERMINISTIC function
+    TRIGGER,            // CREATE TRIGGER
+    BEFORE,             // BEFORE trigger
+    EACH,               // FOR EACH ROW
+    OLD,                // OLD pseudo-record
+    NEW,                // NEW pseudo-record
+    EVENT,              // CREATE EVENT
+    SCHEDULE,           // EVENT schedule
+    EVERY,              // EVERY interval
+    AT,                 // AT time
+    COMPLETE,           // ON COMPLETION
+    PRESERVE,           // PRESERVE (for events)
+    ENABLE,             // ENABLE event
+    DISABLE,            // DISABLE event
+    DEFINER,            // DEFINER clause
+    SQL,                // SQL (for SQL SECURITY)
+    SECURITY,           // SECURITY (for SQL SECURITY)
+    INVOKER,            // INVOKER (for SQL SECURITY INVOKER)
+    CONTAINS,           // CONTAINS SQL
+    LANGUAGE,           // LANGUAGE SQL
+    INOUT,              // INOUT parameter
+    OUT,                // OUT parameter
 }
 
 /// <summary>
@@ -321,6 +375,7 @@ public static class Keywords
         ["OUTER"] = TokenType.OUTER,
         ["FULL"] = TokenType.FULL,
         ["CROSS"] = TokenType.CROSS,
+        ["NATURAL"] = TokenType.NATURAL,
         ["ORDER"] = TokenType.ORDER,
         ["BY"] = TokenType.BY,
         ["ASC"] = TokenType.ASC,
@@ -331,7 +386,11 @@ public static class Keywords
         ["HAVING"] = TokenType.HAVING,
         ["DISTINCT"] = TokenType.DISTINCT,
         ["ALL"] = TokenType.ALL,
+        ["ANY"] = TokenType.ANY,
+        ["SOME"] = TokenType.SOME,
         ["UNION"] = TokenType.UNION,
+        ["INTERSECT"] = TokenType.INTERSECT,
+        ["EXCEPT"] = TokenType.EXCEPT,
         ["EXISTS"] = TokenType.EXISTS,
         ["TRUE"] = TokenType.TRUE,
         ["FALSE"] = TokenType.FALSE,
@@ -360,6 +419,17 @@ public static class Keywords
         ["DOUBLE"] = TokenType.DOUBLE,
         ["DECIMAL"] = TokenType.DECIMAL,
         ["BLOB"] = TokenType.BLOB,
+        ["JSON"] = TokenType.JSON,
+        ["GEOMETRY"] = TokenType.GEOMETRY,
+
+        // User management
+        ["USER"] = TokenType.USER,
+        ["GRANT"] = TokenType.GRANT,
+        ["REVOKE"] = TokenType.REVOKE,
+        ["PRIVILEGES"] = TokenType.PRIVILEGES,
+        ["IDENTIFIED"] = TokenType.IDENTIFIED,
+        ["PASSWORD"] = TokenType.PASSWORD,
+        ["HOST"] = TokenType.HOST,
 
         // Additional
         ["SHOW"] = TokenType.SHOW,
@@ -470,6 +540,45 @@ public static class Keywords
         ["RESTRICT"] = TokenType.RESTRICT,
         ["NO"] = TokenType.NO,
         ["ACTION"] = TokenType.ACTION,
+
+        // Stored procedure/function/trigger keywords
+        ["PROCEDURE"] = TokenType.PROCEDURE,
+        ["CALL"] = TokenType.CALL,
+        ["DECLARE"] = TokenType.DECLARE,
+        ["ELSEIF"] = TokenType.ELSEIF,
+        ["ELSIF"] = TokenType.ELSEIF,  // Alternative spelling
+        ["WHILE"] = TokenType.WHILE,
+        ["DO"] = TokenType.DO,
+        ["LOOP"] = TokenType.LOOP,
+        ["REPEAT"] = TokenType.REPEAT,
+        ["UNTIL"] = TokenType.UNTIL,
+        ["LEAVE"] = TokenType.LEAVE,
+        ["ITERATE"] = TokenType.ITERATE,
+        ["FUNCTION"] = TokenType.FUNCTION,
+        ["RETURNS"] = TokenType.RETURNS,
+        ["RETURN"] = TokenType.RETURN,
+        ["DETERMINISTIC"] = TokenType.DETERMINISTIC,
+        ["TRIGGER"] = TokenType.TRIGGER,
+        ["BEFORE"] = TokenType.BEFORE,
+        ["EACH"] = TokenType.EACH,
+        ["OLD"] = TokenType.OLD,
+        ["NEW"] = TokenType.NEW,
+        ["EVENT"] = TokenType.EVENT,
+        ["SCHEDULE"] = TokenType.SCHEDULE,
+        ["EVERY"] = TokenType.EVERY,
+        ["AT"] = TokenType.AT,
+        ["COMPLETE"] = TokenType.COMPLETE,
+        ["PRESERVE"] = TokenType.PRESERVE,
+        ["ENABLE"] = TokenType.ENABLE,
+        ["DISABLE"] = TokenType.DISABLE,
+        ["DEFINER"] = TokenType.DEFINER,
+        ["SQL"] = TokenType.SQL,
+        ["SECURITY"] = TokenType.SECURITY,
+        ["INVOKER"] = TokenType.INVOKER,
+        ["CONTAINS"] = TokenType.CONTAINS,
+        ["LANGUAGE"] = TokenType.LANGUAGE,
+        ["INOUT"] = TokenType.INOUT,
+        ["OUT"] = TokenType.OUT,
     };
 
     /// <summary>

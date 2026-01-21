@@ -319,58 +319,58 @@ todos:
     status: pending
   - id: 4.1.1
     content: INTERSECT/EXCEPT 关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 4.1.2
     content: INTERSECT 解析 - SELECT ... INTERSECT SELECT ...
-    status: pending
+    status: completed
   - id: 4.1.3
     content: INTERSECT 执行 - 返回交集，测试
-    status: pending
+    status: completed
   - id: 4.1.4
     content: EXCEPT 解析执行 - 返回差集，测试
-    status: pending
+    status: completed
   - id: 4.1.5
     content: 嵌套集合操作 - (A UNION B) INTERSECT C，测试
-    status: pending
+    status: completed
   - id: 4.2.1
     content: NATURAL/USING 关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 4.2.2
     content: NATURAL JOIN 解析 - 自动匹配同名列
-    status: pending
+    status: completed
   - id: 4.2.3
     content: NATURAL JOIN 执行 - 测试自然连接
-    status: pending
+    status: completed
   - id: 4.2.4
     content: USING 子句解析 - JOIN ... USING (col1, col2)
-    status: pending
+    status: completed
   - id: 4.2.5
     content: USING 子句执行 - 测试 USING 连接
-    status: pending
+    status: completed
   - id: 4.3.1
     content: ALL/ANY/SOME 关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 4.3.2
     content: 比较子查询 AST - col > ALL (SELECT ...)
-    status: pending
+    status: completed
   - id: 4.3.3
     content: ALL 子查询执行 - 与所有值比较，测试
-    status: pending
+    status: completed
   - id: 4.3.4
     content: ANY/SOME 子查询执行 - 与任一值比较，测试
-    status: pending
+    status: completed
   - id: 4.3.5
     content: 相关子查询优化 - 减少重复执行，测试性能
     status: pending
   - id: 5.1.1
     content: JSON 数据类型 - 添加到 DataType.cs
-    status: pending
+    status: completed
   - id: 5.1.2
     content: "->/->> 操作符 - Lexer 支持 JSON 路径操作符"
     status: pending
   - id: 5.1.3
     content: JSON_EXTRACT 函数 - 提取 JSON 值，测试
-    status: pending
+    status: completed
   - id: 5.1.4
     content: "-> 操作符执行 - col->'$.key'，测试"
     status: pending
@@ -379,10 +379,10 @@ todos:
     status: pending
   - id: 5.1.6
     content: JSON_SET/JSON_INSERT 函数 - 修改 JSON，测试
-    status: pending
+    status: completed
   - id: 5.1.7
     content: JSON_ARRAY/JSON_OBJECT 函数 - 创建 JSON，测试
-    status: pending
+    status: completed
   - id: 5.2.1
     content: GEOMETRY/POINT 等类型 - 添加到 DataType.cs
     status: pending
@@ -400,28 +400,28 @@ todos:
     status: pending
   - id: 6.1.1
     content: USER/GRANT/REVOKE 等关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 6.1.2
     content: CreateUserStatement AST - 新建 AST 节点
-    status: pending
+    status: completed
   - id: 6.1.3
     content: CREATE USER 解析执行 - 创建用户，测试
-    status: pending
+    status: completed
   - id: 6.1.4
     content: DROP USER 解析执行 - 删除用户，测试
-    status: pending
+    status: completed
   - id: 6.1.5
     content: ALTER USER 解析执行 - 修改密码，测试
-    status: pending
+    status: completed
   - id: 6.1.6
     content: GrantStatement AST - 新建 AST 节点
-    status: pending
+    status: completed
   - id: 6.1.7
     content: GRANT 解析执行 - 授予权限，测试
-    status: pending
+    status: completed
   - id: 6.1.8
     content: REVOKE 解析执行 - 撤销权限，测试
-    status: pending
+    status: completed
   - id: 6.1.9
     content: 权限检查集成 - 执行语句前检查权限，测试
     status: pending

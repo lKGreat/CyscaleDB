@@ -255,6 +255,56 @@ public class ExistsExpression : Expression
 }
 
 /// <summary>
+/// Quantified comparison expression (e.g., x > ALL (SELECT ...), y = ANY (SELECT ...)).
+/// Supports ALL, ANY, and SOME quantifiers.
+/// </summary>
+public class QuantifiedComparisonExpression : Expression
+{
+    /// <summary>
+    /// The left expression to compare.
+    /// </summary>
+    public Expression Expression { get; set; } = null!;
+
+    /// <summary>
+    /// The comparison operator (=, !=, <, <=, >, >=).
+    /// </summary>
+    public BinaryOperator Operator { get; set; }
+
+    /// <summary>
+    /// The quantifier (ALL, ANY, SOME).
+    /// </summary>
+    public QuantifierType Quantifier { get; set; }
+
+    /// <summary>
+    /// The subquery.
+    /// </summary>
+    public SelectStatement Subquery { get; set; } = null!;
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitQuantifiedComparisonExpression(this);
+}
+
+/// <summary>
+/// Quantifier types for subquery comparisons.
+/// </summary>
+public enum QuantifierType
+{
+    /// <summary>
+    /// ALL: condition must be true for all rows in subquery.
+    /// </summary>
+    All,
+
+    /// <summary>
+    /// ANY: condition must be true for at least one row in subquery.
+    /// </summary>
+    Any,
+
+    /// <summary>
+    /// SOME: synonym for ANY.
+    /// </summary>
+    Some
+}
+
+/// <summary>
 /// LIKE expression (e.g., name LIKE 'John%').
 /// </summary>
 public class LikeExpression : Expression

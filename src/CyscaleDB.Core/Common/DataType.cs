@@ -86,6 +86,16 @@ public enum DataType
     Blob = 50,
 
     /// <summary>
+    /// JSON data (stored as text, validated and parsed)
+    /// </summary>
+    Json = 51,
+
+    /// <summary>
+    /// Geometry/spatial data
+    /// </summary>
+    Geometry = 60,
+
+    /// <summary>
     /// NULL type (internal use)
     /// </summary>
     Null = 0

@@ -111,6 +111,18 @@ public sealed class Parser
             TokenType.OPTIMIZE => ParseOptimizeStatement(),
             TokenType.SET => ParseSetStatement(),
             TokenType.KILL => ParseKillStatement(),
+            TokenType.GRANT => ParseGrantStatement(),
+            TokenType.REVOKE => ParseRevokeStatement(),
+            TokenType.CALL => ParseCallStatement(),
+            // Stored procedure control flow statements (only valid inside procedures)
+            TokenType.DECLARE => ParseDeclareVariableStatement(),
+            TokenType.IF => ParseIfStatement(),
+            TokenType.WHILE => ParseWhileStatement(),
+            TokenType.REPEAT => ParseRepeatStatement(),
+            TokenType.LOOP => ParseLoopStatement(),
+            TokenType.LEAVE => ParseLeaveStatement(),
+            TokenType.ITERATE => ParseIterateStatement(),
+            TokenType.RETURN => ParseReturnStatement(),
             _ => throw Error($"Unexpected token at start of statement: {_currentToken.Value}")
         };
     }
@@ -274,12 +286,34 @@ public sealed class Parser
         // FOR UPDATE / FOR SHARE clause
         ParseLockingClause(stmt);
 
-        // UNION clauses
-        while (Check(TokenType.UNION))
+        // Set operations (UNION, INTERSECT, EXCEPT)
+        while (Check(TokenType.UNION) || Check(TokenType.INTERSECT) || Check(TokenType.EXCEPT))
         {
-            Advance();
-            bool isUnionAll = Match(TokenType.ALL);
-            stmt.UnionAllFlags.Add(isUnionAll);
+            SetOperationType opType;
+            if (Check(TokenType.UNION))
+            {
+                Advance();
+                opType = SetOperationType.Union;
+            }
+            else if (Check(TokenType.INTERSECT))
+            {
+                Advance();
+                opType = SetOperationType.Intersect;
+            }
+            else // EXCEPT
+            {
+                Advance();
+                opType = SetOperationType.Except;
+            }
+
+            bool hasAll = Match(TokenType.ALL);
+            
+            // Add to new SetOperation collections
+            stmt.SetOperationTypes.Add(opType);
+            stmt.SetOperationAllFlags.Add(hasAll);
+            
+            // Also add to legacy UnionAllFlags for backward compatibility
+            stmt.UnionAllFlags.Add(hasAll);
             
             // Parse the next SELECT statement
             Expect(TokenType.SELECT);
@@ -360,6 +394,8 @@ public sealed class Parser
                 }
             }
 
+            // Add to both new and legacy collections
+            stmt.SetOperationQueries.Add(unionStmt);
             stmt.UnionQueries.Add(unionStmt);
         }
 
@@ -565,12 +601,36 @@ public sealed class Parser
         // Parse JOINs
         while (IsJoinKeyword())
         {
+            bool isNatural = false;
+            List<string> usingColumns = [];
+
+            // Check for NATURAL keyword before join type
+            if (Check(TokenType.NATURAL))
+            {
+                isNatural = true;
+            }
+
             var joinType = ParseJoinType();
             var right = ParseSimpleTableReference();
 
             Expression? condition = null;
-            if (Match(TokenType.ON))
+            
+            // Parse join condition: ON, USING, or implicit (for NATURAL)
+            if (isNatural)
             {
+                // NATURAL JOIN: condition is implicit (equality on all common columns)
+                // No ON or USING clause allowed
+            }
+            else if (Match(TokenType.USING))
+            {
+                // USING clause: equality on specified columns
+                Expect(TokenType.LeftParen);
+                usingColumns = ParseIdentifierList();
+                Expect(TokenType.RightParen);
+            }
+            else if (Match(TokenType.ON))
+            {
+                // ON clause: explicit condition
                 condition = ParseExpression();
             }
 
@@ -579,7 +639,9 @@ public sealed class Parser
                 Left = left,
                 Right = right,
                 JoinType = joinType,
-                Condition = condition
+                Condition = condition,
+                IsNatural = isNatural,
+                UsingColumns = usingColumns
             };
         }
 
@@ -640,14 +702,38 @@ public sealed class Parser
     {
         return Check(TokenType.JOIN) || Check(TokenType.INNER) || 
                Check(TokenType.LEFT) || Check(TokenType.RIGHT) || 
-               Check(TokenType.FULL) || Check(TokenType.CROSS);
+               Check(TokenType.FULL) || Check(TokenType.CROSS) || 
+               Check(TokenType.NATURAL);
     }
 
     private JoinType ParseJoinType()
     {
         JoinType joinType = JoinType.Inner;
 
-        if (Match(TokenType.INNER))
+        // Check for NATURAL keyword first
+        if (Check(TokenType.NATURAL))
+        {
+            Advance();
+            joinType = JoinType.Natural;
+            
+            // NATURAL can be combined with INNER/LEFT/RIGHT
+            if (Match(TokenType.INNER))
+            {
+                // NATURAL INNER JOIN
+            }
+            else if (Match(TokenType.LEFT))
+            {
+                Match(TokenType.OUTER);
+                // NATURAL LEFT JOIN
+            }
+            else if (Match(TokenType.RIGHT))
+            {
+                Match(TokenType.OUTER);
+                // NATURAL RIGHT JOIN
+            }
+            // For NATURAL alone, it's treated as NATURAL INNER JOIN
+        }
+        else if (Match(TokenType.INNER))
         {
             joinType = JoinType.Inner;
         }
@@ -817,8 +903,75 @@ public sealed class Parser
                 throw Error("UNIQUE cannot be used with CREATE VIEW");
             return ParseCreateViewStatement();
         }
+        else if (Check(TokenType.USER))
+        {
+            if (isUnique)
+                throw Error("UNIQUE cannot be used with CREATE USER");
+            return ParseCreateUserStatement();
+        }
+        else if (Check(TokenType.PROCEDURE))
+        {
+            if (isUnique)
+                throw Error("UNIQUE cannot be used with CREATE PROCEDURE");
+            return ParseCreateProcedureStatement();
+        }
+        else if (Check(TokenType.FUNCTION))
+        {
+            if (isUnique)
+                throw Error("UNIQUE cannot be used with CREATE FUNCTION");
+            return ParseCreateFunctionStatement();
+        }
+        else if (Check(TokenType.TRIGGER))
+        {
+            if (isUnique)
+                throw Error("UNIQUE cannot be used with CREATE TRIGGER");
+            return ParseCreateTriggerStatement();
+        }
+        else if (Check(TokenType.EVENT))
+        {
+            if (isUnique)
+                throw Error("UNIQUE cannot be used with CREATE EVENT");
+            return ParseCreateEventStatement();
+        }
 
-        throw Error($"Expected TABLE, DATABASE, INDEX, or VIEW after CREATE, got: {_currentToken.Value}");
+        throw Error($"Expected TABLE, DATABASE, INDEX, VIEW, USER, PROCEDURE, FUNCTION, TRIGGER, or EVENT after CREATE, got: {_currentToken.Value}");
+    }
+
+    private CreateUserStatement ParseCreateUserStatement()
+    {
+        Expect(TokenType.USER);
+
+        var stmt = new CreateUserStatement();
+
+        // Check for IF NOT EXISTS
+        if (Match(TokenType.IF))
+        {
+            Expect(TokenType.NOT);
+            Expect(TokenType.EXISTS);
+            stmt.IfNotExists = true;
+        }
+
+        // Parse username@host
+        stmt.UserName = ExpectIdentifier();
+        if (Match(TokenType.AtAt) || (_currentToken.Value == "@" && Check(TokenType.Identifier)))
+        {
+            if (!Check(TokenType.AtAt))
+                Advance(); // Skip @
+            stmt.Host = ExpectIdentifier();
+        }
+
+        // Parse IDENTIFIED BY 'password'
+        if (MatchIdentifier("IDENTIFIED"))
+        {
+            Expect(TokenType.BY);
+            if (Check(TokenType.StringLiteral))
+            {
+                stmt.Password = _currentToken.Value;
+                Advance();
+            }
+        }
+
+        return stmt;
     }
 
     private CreateIndexStatement ParseCreateIndexStatement(bool isUnique)
@@ -1039,6 +1192,8 @@ public sealed class Parser
             TokenType.DOUBLE => DataType.Double,
             TokenType.DECIMAL => DataType.Decimal,
             TokenType.BLOB => DataType.Blob,
+            TokenType.JSON => DataType.Json,
+            TokenType.GEOMETRY => DataType.Geometry,
             _ => throw Error($"Expected data type, got: {token.Value}")
         };
 
@@ -1188,8 +1343,81 @@ public sealed class Parser
         {
             return ParseDropViewStatement();
         }
+        else if (Check(TokenType.USER))
+        {
+            return ParseDropUserStatement();
+        }
+        else if (Check(TokenType.PROCEDURE))
+        {
+            return ParseDropProcedureStatement();
+        }
+        else if (Check(TokenType.FUNCTION))
+        {
+            return ParseDropFunctionStatement();
+        }
+        else if (Check(TokenType.TRIGGER))
+        {
+            return ParseDropTriggerStatement();
+        }
+        else if (Check(TokenType.EVENT))
+        {
+            return ParseDropEventStatement();
+        }
 
-        throw Error($"Expected TABLE, DATABASE, INDEX, or VIEW after DROP, got: {_currentToken.Value}");
+        throw Error($"Expected TABLE, DATABASE, INDEX, VIEW, USER, PROCEDURE, FUNCTION, TRIGGER, or EVENT after DROP, got: {_currentToken.Value}");
+    }
+
+    private DropUserStatement ParseDropUserStatement()
+    {
+        Expect(TokenType.USER);
+
+        var stmt = new DropUserStatement();
+
+        if (Match(TokenType.IF))
+        {
+            Expect(TokenType.EXISTS);
+            stmt.IfExists = true;
+        }
+
+        // Parse username@host
+        stmt.UserName = ExpectIdentifier();
+        if (Match(TokenType.AtAt) || (_currentToken.Value == "@" && Check(TokenType.Identifier)))
+        {
+            if (!Check(TokenType.AtAt))
+                Advance(); // Skip @
+            stmt.Host = ExpectIdentifier();
+        }
+
+        return stmt;
+    }
+
+    private AlterUserStatement ParseAlterUserStatement()
+    {
+        Expect(TokenType.USER);
+
+        var stmt = new AlterUserStatement();
+
+        // Parse username@host
+        stmt.UserName = ExpectIdentifier();
+        if (Match(TokenType.AtAt) || (_currentToken.Value == "@" && Check(TokenType.Identifier)))
+        {
+            if (!Check(TokenType.AtAt))
+                Advance(); // Skip @
+            stmt.Host = ExpectIdentifier();
+        }
+
+        // Parse IDENTIFIED BY 'password'
+        if (MatchIdentifier("IDENTIFIED"))
+        {
+            Expect(TokenType.BY);
+            if (Check(TokenType.StringLiteral))
+            {
+                stmt.Password = _currentToken.Value;
+                Advance();
+            }
+        }
+
+        return stmt;
     }
 
     private DropIndexStatement ParseDropIndexStatement()
@@ -1242,11 +1470,17 @@ public sealed class Parser
     }
 
     /// <summary>
-    /// Parses an ALTER TABLE statement.
+    /// Parses an ALTER statement (TABLE or USER).
     /// </summary>
-    private AlterTableStatement ParseAlterStatement()
+    private Statement ParseAlterStatement()
     {
         Expect(TokenType.ALTER);
+
+        if (Check(TokenType.USER))
+        {
+            return ParseAlterUserStatement();
+        }
+
         Expect(TokenType.TABLE);
 
         var stmt = new AlterTableStatement();
@@ -2322,6 +2556,34 @@ public sealed class Parser
 
         if (op.HasValue)
         {
+            // Check for quantified subquery (ALL/ANY/SOME)
+            if (Check(TokenType.ALL) || Check(TokenType.ANY) || Check(TokenType.SOME))
+            {
+                QuantifierType quantifier;
+                if (Match(TokenType.ALL))
+                    quantifier = QuantifierType.All;
+                else if (Match(TokenType.ANY))
+                    quantifier = QuantifierType.Any;
+                else // SOME
+                {
+                    Advance();
+                    quantifier = QuantifierType.Some;
+                }
+
+                Expect(TokenType.LeftParen);
+                var subquery = ParseSelectStatement();
+                Expect(TokenType.RightParen);
+
+                return new QuantifiedComparisonExpression
+                {
+                    Expression = left,
+                    Operator = op.Value,
+                    Quantifier = quantifier,
+                    Subquery = subquery
+                };
+            }
+
+            // Regular binary comparison
             var right = ParseAdditionExpression();
             return new BinaryExpression
             {
@@ -2813,6 +3075,108 @@ public sealed class Parser
 
     #endregion
 
+    #region User Management Statements
+
+    private GrantStatement ParseGrantStatement()
+    {
+        Expect(TokenType.GRANT);
+
+        var stmt = new GrantStatement();
+
+        // Parse privileges
+        if (Match(TokenType.ALL))
+        {
+            Match(TokenType.PRIVILEGES); // Optional
+            stmt.Privileges.Add("ALL");
+        }
+        else
+        {
+            do
+            {
+                stmt.Privileges.Add(ExpectIdentifier());
+            } while (Match(TokenType.Comma));
+        }
+
+        Expect(TokenType.ON);
+
+        // Parse database.table or table
+        var firstIdentifier = ExpectIdentifier();
+        if (Match(TokenType.Dot))
+        {
+            stmt.DatabaseName = firstIdentifier;
+            stmt.TableName = ExpectIdentifier();
+        }
+        else
+        {
+            stmt.TableName = firstIdentifier;
+        }
+
+        Expect(TokenType.TO);
+
+        // Parse username@host
+        stmt.UserName = ExpectIdentifier();
+        if (Match(TokenType.AtAt) || (_currentToken.Value == "@" && Check(TokenType.Identifier)))
+        {
+            if (!Check(TokenType.AtAt))
+                Advance(); // Skip @
+            stmt.Host = ExpectIdentifier();
+        }
+
+        return stmt;
+    }
+
+    private RevokeStatement ParseRevokeStatement()
+    {
+        Expect(TokenType.REVOKE);
+
+        var stmt = new RevokeStatement();
+
+        // Parse privileges
+        if (Match(TokenType.ALL))
+        {
+            Match(TokenType.PRIVILEGES); // Optional
+            stmt.Privileges.Add("ALL");
+        }
+        else
+        {
+            do
+            {
+                stmt.Privileges.Add(ExpectIdentifier());
+            } while (Match(TokenType.Comma));
+        }
+
+        Expect(TokenType.ON);
+
+        // Parse database.table or table
+        var firstIdentifier = ExpectIdentifier();
+        if (Match(TokenType.Dot))
+        {
+            stmt.DatabaseName = firstIdentifier;
+            stmt.TableName = ExpectIdentifier();
+        }
+        else
+        {
+            stmt.TableName = firstIdentifier;
+        }
+
+        // FROM keyword
+        if (MatchIdentifier("FROM"))
+        {
+            // Parse username@host
+            stmt.UserName = ExpectIdentifier();
+            if (Match(TokenType.AtAt) || (_currentToken.Value == "@" && Check(TokenType.Identifier)))
+            {
+                if (!Check(TokenType.AtAt))
+                    Advance(); // Skip @
+                stmt.Host = ExpectIdentifier();
+            }
+        }
+
+        return stmt;
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private List<Expression> ParseExpressionList()
@@ -2916,6 +3280,98 @@ public sealed class Parser
     private SqlSyntaxException Error(string message)
     {
         return new SqlSyntaxException(message, _currentToken.Position, _currentToken.Line, _currentToken.Column);
+    }
+
+    #endregion
+
+    #region Stored Procedures, Functions, Triggers, Events (Phase 3 - Stubs)
+
+    // These are stub implementations for Phase 3 features to allow compilation
+    // They will be fully implemented in Phase 3
+
+    private Statement ParseCreateProcedureStatement()
+    {
+        throw new NotImplementedException("CREATE PROCEDURE is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseCreateFunctionStatement()
+    {
+        throw new NotImplementedException("CREATE FUNCTION is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseCreateTriggerStatement()
+    {
+        throw new NotImplementedException("CREATE TRIGGER is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseCreateEventStatement()
+    {
+        throw new NotImplementedException("CREATE EVENT is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseDropProcedureStatement()
+    {
+        throw new NotImplementedException("DROP PROCEDURE is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseDropFunctionStatement()
+    {
+        throw new NotImplementedException("DROP FUNCTION is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseDropTriggerStatement()
+    {
+        throw new NotImplementedException("DROP TRIGGER is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseDropEventStatement()
+    {
+        throw new NotImplementedException("DROP EVENT is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseCallStatement()
+    {
+        throw new NotImplementedException("CALL is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseDeclareVariableStatement()
+    {
+        throw new NotImplementedException("DECLARE is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseIfStatement()
+    {
+        throw new NotImplementedException("IF statement is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseWhileStatement()
+    {
+        throw new NotImplementedException("WHILE statement is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseRepeatStatement()
+    {
+        throw new NotImplementedException("REPEAT statement is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseLoopStatement()
+    {
+        throw new NotImplementedException("LOOP statement is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseLeaveStatement()
+    {
+        throw new NotImplementedException("LEAVE statement is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseIterateStatement()
+    {
+        throw new NotImplementedException("ITERATE statement is not yet implemented (Phase 3)");
+    }
+
+    private Statement ParseReturnStatement()
+    {
+        throw new NotImplementedException("RETURN statement is not yet implemented (Phase 3)");
     }
 
     #endregion
