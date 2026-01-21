@@ -74,6 +74,24 @@ public readonly struct DataValue : IEquatable<DataValue>, IComparable<DataValue>
 
     public static DataValue FromGeometry(string? value) => value is null ? Null : new(DataType.Geometry, value);
 
+    /// <summary>
+    /// Creates an ENUM value from its integer index (1-based, 0 means empty).
+    /// </summary>
+    public static DataValue FromEnum(int index) => new(DataType.Enum, index);
+    public static DataValue FromEnum(int? index) => index.HasValue ? FromEnum(index.Value) : Null;
+
+    /// <summary>
+    /// Creates a SET value from its bitmap representation.
+    /// Each bit position corresponds to a set member (bit 0 = first member, bit 1 = second, etc.).
+    /// </summary>
+    public static DataValue FromSet(long bitmap) => new(DataType.Set, bitmap);
+    public static DataValue FromSet(long? bitmap) => bitmap.HasValue ? FromSet(bitmap.Value) : Null;
+
+    /// <summary>
+    /// Creates a JSON value from a string.
+    /// </summary>
+    public static DataValue FromJson(string? value) => value is null ? Null : new(DataType.Json, value);
+
     #endregion
 
     #region Value Accessors
@@ -91,6 +109,16 @@ public readonly struct DataValue : IEquatable<DataValue>, IComparable<DataValue>
     public double AsDouble() => (double)(_value ?? throw new InvalidOperationException("Value is null"));
     public decimal AsDecimal() => (decimal)(_value ?? throw new InvalidOperationException("Value is null"));
     public byte[] AsBlob() => (byte[])(_value ?? throw new InvalidOperationException("Value is null"));
+
+    /// <summary>
+    /// Gets the ENUM index (1-based, 0 means empty string).
+    /// </summary>
+    public int AsEnumIndex() => (int)(_value ?? throw new InvalidOperationException("Value is null"));
+
+    /// <summary>
+    /// Gets the SET bitmap representation.
+    /// </summary>
+    public long AsSetBitmap() => (long)(_value ?? throw new InvalidOperationException("Value is null"));
 
     /// <summary>
     /// Gets the raw object value (can be null).
@@ -189,6 +217,20 @@ public readonly struct DataValue : IEquatable<DataValue>, IComparable<DataValue>
                 writer.Write(blobBytes.Length);
                 writer.Write(blobBytes);
                 break;
+            case DataType.Enum:
+                // ENUM is stored as an int index (1-based)
+                writer.Write(AsEnumIndex());
+                break;
+            case DataType.Set:
+                // SET is stored as a long bitmap
+                writer.Write(AsSetBitmap());
+                break;
+            case DataType.Json:
+                // JSON is stored as a length-prefixed UTF-8 string
+                var jsonBytes = Encoding.UTF8.GetBytes(AsString());
+                writer.Write(jsonBytes.Length);
+                writer.Write(jsonBytes);
+                break;
             case DataType.Null:
                 // Nothing to write
                 break;
@@ -256,6 +298,9 @@ public readonly struct DataValue : IEquatable<DataValue>, IComparable<DataValue>
             DataType.Timestamp => FromDateTime(new DateTime(reader.ReadInt64())),
             DataType.VarChar or DataType.Char or DataType.Text => DeserializeString(reader, type),
             DataType.Blob => DeserializeBlob(reader),
+            DataType.Enum => FromEnum(reader.ReadInt32()),
+            DataType.Set => FromSet(reader.ReadInt64()),
+            DataType.Json => DeserializeJson(reader),
             DataType.Null => Null,
             _ => throw new NotSupportedException($"Deserialization not supported for type {type}")
         };
@@ -280,6 +325,14 @@ public readonly struct DataValue : IEquatable<DataValue>, IComparable<DataValue>
         var length = reader.ReadInt32();
         var bytes = reader.ReadBytes(length);
         return FromBlob(bytes);
+    }
+
+    private static DataValue DeserializeJson(BinaryReader reader)
+    {
+        var length = reader.ReadInt32();
+        var bytes = reader.ReadBytes(length);
+        var json = Encoding.UTF8.GetString(bytes);
+        return FromJson(json);
     }
 
     #endregion
@@ -341,6 +394,9 @@ public readonly struct DataValue : IEquatable<DataValue>, IComparable<DataValue>
             DataType.VarChar or DataType.Char or DataType.Text => 
                 string.Compare(AsString(), other.AsString(), StringComparison.Ordinal),
             DataType.Blob => CompareBlobs(AsBlob(), other.AsBlob()),
+            DataType.Enum => AsEnumIndex().CompareTo(other.AsEnumIndex()),
+            DataType.Set => AsSetBitmap().CompareTo(other.AsSetBitmap()),
+            DataType.Json => string.Compare(AsString(), other.AsString(), StringComparison.Ordinal),
             _ => 0
         };
     }
@@ -391,6 +447,9 @@ public readonly struct DataValue : IEquatable<DataValue>, IComparable<DataValue>
             DataType.Time => AsTime().ToString("HH:mm:ss"),
             DataType.Boolean => AsBoolean() ? "TRUE" : "FALSE",
             DataType.Blob => $"BLOB({AsBlob().Length} bytes)",
+            DataType.Enum => $"ENUM({AsEnumIndex()})",
+            DataType.Set => $"SET({AsSetBitmap()})",
+            DataType.Json => AsString(),
             _ => _value?.ToString() ?? "NULL"
         };
     }

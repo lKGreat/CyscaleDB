@@ -4956,10 +4956,12 @@ public sealed class Executor
     {
         // Build evaluators for each column
         var columnEvaluators = new List<IExpressionEvaluator>();
+        var columnNames = new List<string>();
         foreach (var col in matchExpr.Columns)
         {
             var colEval = BuildColumnReference(col, schema);
             columnEvaluators.Add(colEval);
+            columnNames.Add(col.ColumnName);
         }
 
         // Build the search text evaluator
@@ -4972,7 +4974,14 @@ public sealed class Executor
             _ => Storage.Index.BooleanSearchMode.Or
         };
 
-        return new MatchAgainstEvaluator(columnEvaluators, searchTextEvaluator, mode);
+        // Pass schema info for full-text index lookup
+        return new MatchAgainstEvaluator(
+            columnEvaluators, 
+            searchTextEvaluator, 
+            mode,
+            schema.DatabaseName,
+            schema.TableName,
+            columnNames);
     }
 
     /// <summary>
@@ -5563,16 +5572,31 @@ internal sealed class MatchAgainstEvaluator : IExpressionEvaluator
     private readonly IExpressionEvaluator _searchTextEvaluator;
     private readonly Storage.Index.BooleanSearchMode _mode;
     private readonly Storage.Index.SimpleTokenizer _tokenizer;
+    private readonly string? _databaseName;
+    private readonly string? _tableName;
+    private readonly List<string> _columnNames;
+    private readonly Storage.Index.FullTextIndexManager _indexManager;
+    
+    // Cache for full-text index search results (rowId -> score)
+    private Dictionary<int, double>? _cachedScores;
+    private string? _cachedSearchText;
 
     public MatchAgainstEvaluator(
         List<IExpressionEvaluator> columnEvaluators,
         IExpressionEvaluator searchTextEvaluator,
-        Storage.Index.BooleanSearchMode mode)
+        Storage.Index.BooleanSearchMode mode,
+        string? databaseName = null,
+        string? tableName = null,
+        List<string>? columnNames = null)
     {
         _columnEvaluators = columnEvaluators;
         _searchTextEvaluator = searchTextEvaluator;
         _mode = mode;
         _tokenizer = new Storage.Index.SimpleTokenizer();
+        _databaseName = databaseName;
+        _tableName = tableName;
+        _columnNames = columnNames ?? new List<string>();
+        _indexManager = Storage.Index.FullTextIndexManager.Instance;
     }
 
     public DataValue Evaluate(Row row)
@@ -5585,6 +5609,48 @@ internal sealed class MatchAgainstEvaluator : IExpressionEvaluator
         if (string.IsNullOrWhiteSpace(searchText))
             return DataValue.FromDouble(0.0);
 
+        // Try to use full-text index if available
+        if (!string.IsNullOrEmpty(_databaseName) && !string.IsNullOrEmpty(_tableName) && _columnNames.Count > 0)
+        {
+            var index = _indexManager.GetIndexForColumns(_databaseName, _tableName, _columnNames);
+            if (index != null)
+            {
+                return EvaluateWithIndex(row, searchText, index);
+            }
+        }
+
+        // Fall back to in-memory calculation
+        return EvaluateInMemory(row, searchText);
+    }
+
+    private DataValue EvaluateWithIndex(Row row, string searchText, Storage.Index.FullTextIndex index)
+    {
+        // Use cached results if search text hasn't changed
+        if (_cachedSearchText != searchText || _cachedScores == null)
+        {
+            var results = index.Search(searchText, 10000);
+            _cachedScores = results.ToDictionary(r => r.DocumentId, r => r.Score);
+            _cachedSearchText = searchText;
+        }
+
+        // Get the row ID and look up score
+        var rowId = row.RowId;
+        if (rowId.IsValid)
+        {
+            // Use combined page + slot as document ID
+            int docId = (rowId.PageId << 16) | (rowId.SlotNumber & 0xFFFF);
+            if (_cachedScores.TryGetValue(docId, out var score))
+            {
+                return DataValue.FromDouble(score);
+            }
+        }
+
+        // If not found in index results, return 0
+        return DataValue.FromDouble(0.0);
+    }
+
+    private DataValue EvaluateInMemory(Row row, string searchText)
+    {
         // Tokenize the search text
         var searchTokens = _tokenizer.Tokenize(searchText)
             .Select(t => t.Term)

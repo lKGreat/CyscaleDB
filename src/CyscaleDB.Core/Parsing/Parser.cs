@@ -879,28 +879,37 @@ public sealed class Parser
     {
         Expect(TokenType.CREATE);
 
-        // Check for UNIQUE keyword before INDEX
+        // Check for UNIQUE or FULLTEXT keyword before INDEX
         bool isUnique = false;
+        bool isFulltext = false;
         if (Match(TokenType.UNIQUE))
         {
             isUnique = true;
+        }
+        else if (Match(TokenType.FULLTEXT))
+        {
+            isFulltext = true;
         }
 
         if (Check(TokenType.TABLE))
         {
             if (isUnique)
                 throw Error("UNIQUE cannot be used with CREATE TABLE");
+            if (isFulltext)
+                throw Error("FULLTEXT cannot be used with CREATE TABLE");
             return ParseCreateTableStatement();
         }
         else if (Check(TokenType.DATABASE))
         {
             if (isUnique)
                 throw Error("UNIQUE cannot be used with CREATE DATABASE");
+            if (isFulltext)
+                throw Error("FULLTEXT cannot be used with CREATE DATABASE");
             return ParseCreateDatabaseStatement();
         }
         else if (Check(TokenType.INDEX))
         {
-            return ParseCreateIndexStatement(isUnique);
+            return ParseCreateIndexStatement(isUnique, isFulltext);
         }
         else if (Check(TokenType.VIEW))
         {
@@ -1025,12 +1034,18 @@ public sealed class Parser
         return stmt;
     }
 
-    private CreateIndexStatement ParseCreateIndexStatement(bool isUnique)
+    private CreateIndexStatement ParseCreateIndexStatement(bool isUnique, bool isFulltext = false)
     {
         Expect(TokenType.INDEX);
 
         var stmt = new CreateIndexStatement();
         stmt.IsUnique = isUnique;
+        
+        // Set index type based on FULLTEXT keyword
+        if (isFulltext)
+        {
+            stmt.IndexType = IndexTypeAst.Fulltext;
+        }
 
         // IF NOT EXISTS
         if (Match(TokenType.IF))
@@ -1056,9 +1071,13 @@ public sealed class Parser
         stmt.Columns = ParseIdentifierList();
         Expect(TokenType.RightParen);
 
-        // Optional USING clause for index type
+        // Optional USING clause for index type (only if not already set to FULLTEXT)
         if (Match(TokenType.USING))
         {
+            if (isFulltext)
+            {
+                throw Error("USING clause cannot be used with FULLTEXT index");
+            }
             if (Match(TokenType.BTREE))
             {
                 stmt.IndexType = IndexTypeAst.BTree;

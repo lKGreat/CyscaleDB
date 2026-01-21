@@ -135,6 +135,8 @@ public static class DataTypeExtensions
             DataType.Float => true,
             DataType.Double => true,
             DataType.Char => true,
+            DataType.Enum => true,  // Stored as 4-byte int index
+            DataType.Set => true,   // Stored as 8-byte long bitmap
             _ => false
         };
     }
@@ -158,6 +160,8 @@ public static class DataTypeExtensions
             DataType.Time => 8,      // Ticks
             DataType.DateTime => 8,  // Ticks
             DataType.Timestamp => 8, // Ticks
+            DataType.Enum => 4,      // Stored as int index
+            DataType.Set => 8,       // Stored as long bitmap
             _ => -1 // Variable length
         };
     }

@@ -15,7 +15,12 @@ public enum IndexType : byte
     /// <summary>
     /// Hash index for equality lookups.
     /// </summary>
-    Hash = 1
+    Hash = 1,
+
+    /// <summary>
+    /// Full-text index for text search.
+    /// </summary>
+    Fulltext = 2
 }
 
 /// <summary>
@@ -148,6 +153,7 @@ public sealed class IndexInfo
         {
             IndexType.BTree => Constants.IndexFileExtension,
             IndexType.Hash => Constants.HashIndexExtension,
+            IndexType.Fulltext => ".fti", // Full-text index extension
             _ => Constants.IndexFileExtension
         };
     }

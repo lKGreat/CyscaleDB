@@ -1217,7 +1217,8 @@ public class DropIndexStatement : Statement
 public enum IndexTypeAst
 {
     BTree,
-    Hash
+    Hash,
+    Fulltext
 }
 
 #endregion
