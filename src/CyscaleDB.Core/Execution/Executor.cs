@@ -4083,6 +4083,19 @@ public sealed class Executor
             "JSON_TYPE" => BuildJsonTypeFunction(func, schema),
             "JSON_CONTAINS" => BuildJsonContainsFunction(func, schema),
             "JSON_CONTAINS_PATH" => BuildJsonContainsPathFunction(func, schema),
+            // Spatial functions
+            "ST_POINT" or "POINT" => BuildStPointFunction(func, schema),
+            "ST_GEOMFROMTEXT" or "ST_GEOMETRYFROMTEXT" => BuildStGeomFromTextFunction(func, schema),
+            "ST_ASTEXT" or "ST_ASWKT" => BuildStAsTextFunction(func, schema),
+            "ST_DISTANCE" => BuildStDistanceFunction(func, schema),
+            "ST_DISTANCE_SPHERE" => BuildStDistanceSphereFunction(func, schema),
+            "ST_CONTAINS" => BuildStContainsFunction(func, schema),
+            "ST_WITHIN" => BuildStWithinFunction(func, schema),
+            "ST_INTERSECTS" => BuildStIntersectsFunction(func, schema),
+            "ST_BUFFER" => BuildStBufferFunction(func, schema),
+            "ST_X" => BuildStXFunction(func, schema),
+            "ST_Y" => BuildStYFunction(func, schema),
+            "ST_SRID" => BuildStSridFunction(func, schema),
             _ when IsAggregateFunction(funcName) => 
                 // Aggregates in non-GROUP BY context - return constant for now
                 new ConstantEvaluator(DataValue.Null),
@@ -4321,6 +4334,126 @@ public sealed class Executor
         var oneOrAll = BuildExpression(func.Arguments[1], schema);
         var paths = func.Arguments.Skip(2).Select(a => BuildExpression(a, schema)).ToList();
         return new JsonContainsPathEvaluator(jsonDoc, oneOrAll, paths);
+    }
+
+    #endregion
+
+    #region Spatial Functions
+
+    private IExpressionEvaluator BuildStPointFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException("ST_POINT requires 2 arguments (x, y)");
+
+        var x = BuildExpression(func.Arguments[0], schema);
+        var y = BuildExpression(func.Arguments[1], schema);
+        return new StPointEvaluator(x, y);
+    }
+
+    private IExpressionEvaluator BuildStGeomFromTextFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 1)
+            throw new CyscaleException("ST_GEOMFROMTEXT requires at least 1 argument");
+
+        var wkt = BuildExpression(func.Arguments[0], schema);
+        var srid = func.Arguments.Count > 1 ? BuildExpression(func.Arguments[1], schema) : null;
+        return new StGeomFromTextEvaluator(wkt, srid);
+    }
+
+    private IExpressionEvaluator BuildStAsTextFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 1)
+            throw new CyscaleException("ST_ASTEXT requires 1 argument");
+
+        var geom = BuildExpression(func.Arguments[0], schema);
+        return new StAsTextEvaluator(geom);
+    }
+
+    private IExpressionEvaluator BuildStDistanceFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException("ST_DISTANCE requires 2 arguments");
+
+        var geom1 = BuildExpression(func.Arguments[0], schema);
+        var geom2 = BuildExpression(func.Arguments[1], schema);
+        return new StDistanceEvaluator(geom1, geom2);
+    }
+
+    private IExpressionEvaluator BuildStDistanceSphereFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException("ST_DISTANCE_SPHERE requires 2 arguments");
+
+        var geom1 = BuildExpression(func.Arguments[0], schema);
+        var geom2 = BuildExpression(func.Arguments[1], schema);
+        return new StDistanceSphereEvaluator(geom1, geom2);
+    }
+
+    private IExpressionEvaluator BuildStContainsFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException("ST_CONTAINS requires 2 arguments");
+
+        var geom1 = BuildExpression(func.Arguments[0], schema);
+        var geom2 = BuildExpression(func.Arguments[1], schema);
+        return new StContainsEvaluator(geom1, geom2);
+    }
+
+    private IExpressionEvaluator BuildStWithinFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException("ST_WITHIN requires 2 arguments");
+
+        var geom1 = BuildExpression(func.Arguments[0], schema);
+        var geom2 = BuildExpression(func.Arguments[1], schema);
+        return new StWithinEvaluator(geom1, geom2);
+    }
+
+    private IExpressionEvaluator BuildStIntersectsFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException("ST_INTERSECTS requires 2 arguments");
+
+        var geom1 = BuildExpression(func.Arguments[0], schema);
+        var geom2 = BuildExpression(func.Arguments[1], schema);
+        return new StIntersectsEvaluator(geom1, geom2);
+    }
+
+    private IExpressionEvaluator BuildStBufferFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 2)
+            throw new CyscaleException("ST_BUFFER requires 2 arguments");
+
+        var geom = BuildExpression(func.Arguments[0], schema);
+        var distance = BuildExpression(func.Arguments[1], schema);
+        return new StBufferEvaluator(geom, distance);
+    }
+
+    private IExpressionEvaluator BuildStXFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 1)
+            throw new CyscaleException("ST_X requires 1 argument");
+
+        var point = BuildExpression(func.Arguments[0], schema);
+        return new StXEvaluator(point);
+    }
+
+    private IExpressionEvaluator BuildStYFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 1)
+            throw new CyscaleException("ST_Y requires 1 argument");
+
+        var point = BuildExpression(func.Arguments[0], schema);
+        return new StYEvaluator(point);
+    }
+
+    private IExpressionEvaluator BuildStSridFunction(FunctionCall func, TableSchema schema)
+    {
+        if (func.Arguments.Count < 1)
+            throw new CyscaleException("ST_SRID requires 1 argument");
+
+        var geom = BuildExpression(func.Arguments[0], schema);
+        return new StSridEvaluator(geom);
     }
 
     #endregion

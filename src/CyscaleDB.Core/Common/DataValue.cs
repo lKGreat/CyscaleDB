@@ -72,6 +72,8 @@ public readonly struct DataValue : IEquatable<DataValue>, IComparable<DataValue>
 
     public static DataValue FromBlob(byte[]? value) => value is null ? Null : new(DataType.Blob, value);
 
+    public static DataValue FromGeometry(string? value) => value is null ? Null : new(DataType.Geometry, value);
+
     #endregion
 
     #region Value Accessors

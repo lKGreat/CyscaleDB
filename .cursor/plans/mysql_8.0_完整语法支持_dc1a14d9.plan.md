@@ -385,19 +385,19 @@ todos:
     status: completed
   - id: 5.2.1
     content: GEOMETRY/POINT 等类型 - 添加到 DataType.cs
-    status: pending
+    status: completed
   - id: 5.2.2
     content: ST_GeomFromText 函数 - 解析 WKT 创建几何对象
-    status: pending
+    status: completed
   - id: 5.2.3
     content: ST_AsText 函数 - 几何对象转 WKT
-    status: pending
+    status: completed
   - id: 5.2.4
     content: ST_Distance 函数 - 计算两点距离，测试
-    status: pending
+    status: completed
   - id: 5.2.5
     content: ST_Contains 函数 - 几何包含判断，测试
-    status: pending
+    status: completed
   - id: 6.1.1
     content: USER/GRANT/REVOKE 等关键字 - 添加到 Token.cs
     status: completed
