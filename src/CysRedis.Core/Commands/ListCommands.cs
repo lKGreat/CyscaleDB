@@ -245,3 +245,113 @@ public class LTrimCommand : ICommandHandler
         return context.Client.WriteOkAsync(cancellationToken);
     }
 }
+
+/// <summary>
+/// LPOS command - finds the position(s) of an element in a list.
+/// </summary>
+public class LPosCommand : ICommandHandler
+{
+    public async Task ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    {
+        context.EnsureMinArgs(2);
+        var key = context.GetArg(0);
+        var element = Encoding.UTF8.GetBytes(context.GetArg(1));
+        var list = context.Database.Get<RedisList>(key);
+        
+        if (list == null)
+        {
+            await context.Client.WriteNullAsync(cancellationToken);
+            return;
+        }
+        
+        int rank = 1, count = 1, maxlen = 0;
+        
+        // Parse optional parameters
+        for (int i = 2; i < context.ArgCount; i++)
+        {
+            var opt = context.GetArg(i).ToUpperInvariant();
+            switch (opt)
+            {
+                case "RANK":
+                    i++;
+                    if (i >= context.ArgCount) throw new SyntaxErrorException();
+                    rank = (int)context.GetArgAsInt(i);
+                    if (rank == 0) throw new Common.InvalidArgumentException("RANK can't be zero");
+                    break;
+                case "COUNT":
+                    i++;
+                    if (i >= context.ArgCount) throw new SyntaxErrorException();
+                    count = (int)context.GetArgAsInt(i);
+                    if (count < 0) throw new Common.InvalidArgumentException("COUNT can't be negative");
+                    break;
+                case "MAXLEN":
+                    i++;
+                    if (i >= context.ArgCount) throw new SyntaxErrorException();
+                    maxlen = (int)context.GetArgAsInt(i);
+                    if (maxlen < 0) throw new Common.InvalidArgumentException("MAXLEN can't be negative");
+                    break;
+            }
+        }
+        
+        var positions = new List<long>();
+        int matchCount = 0;
+        int direction = rank > 0 ? 1 : -1;
+        int absRank = Math.Abs(rank);
+        int searchLen = maxlen > 0 ? Math.Min(maxlen, list.Count) : list.Count;
+        
+        if (direction > 0)
+        {
+            // Forward search
+            for (int i = 0; i < searchLen; i++)
+            {
+                var item = list.GetByIndex(i);
+                if (item != null && item.SequenceEqual(element))
+                {
+                    matchCount++;
+                    if (matchCount >= absRank)
+                    {
+                        positions.Add(i);
+                        if (count > 0 && positions.Count >= count) break;
+                    }
+                }
+            }
+        }
+        else
+        {
+            // Backward search
+            for (int i = list.Count - 1; i >= list.Count - searchLen; i--)
+            {
+                var item = list.GetByIndex(i);
+                if (item != null && item.SequenceEqual(element))
+                {
+                    matchCount++;
+                    if (matchCount >= absRank)
+                    {
+                        positions.Add(i);
+                        if (count > 0 && positions.Count >= count) break;
+                    }
+                }
+            }
+        }
+        
+        // Return results
+        if (count == 1)
+        {
+            if (positions.Count > 0)
+                await context.Client.WriteIntegerAsync(positions[0], cancellationToken);
+            else
+                await context.Client.WriteNullAsync(cancellationToken);
+        }
+        else if (count == 0)
+        {
+            // COUNT 0 means return all matches
+            var results = positions.Select(p => new RespValue(p)).ToArray();
+            await context.Client.WriteResponseAsync(RespValue.Array(results), cancellationToken);
+        }
+        else
+        {
+            var results = positions.Select(p => new RespValue(p)).ToArray();
+            await context.Client.WriteResponseAsync(RespValue.Array(results), cancellationToken);
+        }
+    }
+}

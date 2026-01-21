@@ -277,3 +277,174 @@ public class HSetNxCommand : ICommandHandler
         return context.Client.WriteIntegerAsync(set ? 1 : 0, cancellationToken);
     }
 }
+
+/// <summary>
+/// HEXPIRE command - sets field expiration in seconds (Redis 8.0+).
+/// </summary>
+public class HExpireCommand : ICommandHandler
+{
+    public async Task ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    {
+        context.EnsureMinArgs(3);
+        var key = context.GetArg(0);
+        var seconds = context.GetArgAsInt(1);
+        var hash = context.Database.Get<RedisHash>(key);
+        
+        if (hash == null)
+        {
+            await context.Client.WriteIntegerAsync(-2, cancellationToken);
+            return;
+        }
+        
+        var expireAt = DateTime.UtcNow.AddSeconds(seconds);
+        var results = new RespValue[context.ArgCount - 2];
+        
+        for (int i = 2; i < context.ArgCount; i++)
+        {
+            var field = context.GetArg(i);
+            if (!hash.Exists(field))
+                results[i - 2] = new RespValue(-2); // Field doesn't exist
+            else
+            {
+                hash.SetFieldExpire(field, expireAt);
+                results[i - 2] = new RespValue(1);
+            }
+        }
+        
+        await context.Client.WriteResponseAsync(RespValue.Array(results), cancellationToken);
+    }
+}
+
+/// <summary>
+/// HPEXPIRE command - sets field expiration in milliseconds (Redis 8.0+).
+/// </summary>
+public class HPExpireCommand : ICommandHandler
+{
+    public async Task ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    {
+        context.EnsureMinArgs(3);
+        var key = context.GetArg(0);
+        var milliseconds = context.GetArgAsInt(1);
+        var hash = context.Database.Get<RedisHash>(key);
+        
+        if (hash == null)
+        {
+            await context.Client.WriteIntegerAsync(-2, cancellationToken);
+            return;
+        }
+        
+        var expireAt = DateTime.UtcNow.AddMilliseconds(milliseconds);
+        var results = new RespValue[context.ArgCount - 2];
+        
+        for (int i = 2; i < context.ArgCount; i++)
+        {
+            var field = context.GetArg(i);
+            if (!hash.Exists(field))
+                results[i - 2] = new RespValue(-2);
+            else
+            {
+                hash.SetFieldExpire(field, expireAt);
+                results[i - 2] = new RespValue(1);
+            }
+        }
+        
+        await context.Client.WriteResponseAsync(RespValue.Array(results), cancellationToken);
+    }
+}
+
+/// <summary>
+/// HTTL command - gets field TTL in seconds (Redis 8.0+).
+/// </summary>
+public class HTtlCommand : ICommandHandler
+{
+    public async Task ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    {
+        context.EnsureMinArgs(2);
+        var key = context.GetArg(0);
+        var hash = context.Database.Get<RedisHash>(key);
+        
+        if (hash == null)
+        {
+            await context.Client.WriteIntegerAsync(-2, cancellationToken);
+            return;
+        }
+        
+        var results = new RespValue[context.ArgCount - 1];
+        
+        for (int i = 1; i < context.ArgCount; i++)
+        {
+            var field = context.GetArg(i);
+            var ttl = hash.GetFieldTtl(field) ?? -2;
+            results[i - 1] = new RespValue(ttl);
+        }
+        
+        await context.Client.WriteResponseAsync(RespValue.Array(results), cancellationToken);
+    }
+}
+
+/// <summary>
+/// HPTTL command - gets field TTL in milliseconds (Redis 8.0+).
+/// </summary>
+public class HPTtlCommand : ICommandHandler
+{
+    public async Task ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    {
+        context.EnsureMinArgs(2);
+        var key = context.GetArg(0);
+        var hash = context.Database.Get<RedisHash>(key);
+        
+        if (hash == null)
+        {
+            await context.Client.WriteIntegerAsync(-2, cancellationToken);
+            return;
+        }
+        
+        var results = new RespValue[context.ArgCount - 1];
+        
+        for (int i = 1; i < context.ArgCount; i++)
+        {
+            var field = context.GetArg(i);
+            var pttl = hash.GetFieldPttl(field) ?? -2;
+            results[i - 1] = new RespValue(pttl);
+        }
+        
+        await context.Client.WriteResponseAsync(RespValue.Array(results), cancellationToken);
+    }
+}
+
+/// <summary>
+/// HPERSIST command - removes field expiration (Redis 8.0+).
+/// </summary>
+public class HPersistCommand : ICommandHandler
+{
+    public async Task ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    {
+        context.EnsureMinArgs(2);
+        var key = context.GetArg(0);
+        var hash = context.Database.Get<RedisHash>(key);
+        
+        if (hash == null)
+        {
+            await context.Client.WriteIntegerAsync(-2, cancellationToken);
+            return;
+        }
+        
+        var results = new RespValue[context.ArgCount - 1];
+        
+        for (int i = 1; i < context.ArgCount; i++)
+        {
+            var field = context.GetArg(i);
+            if (!hash.Exists(field))
+                results[i - 1] = new RespValue(-2); // Field doesn't exist
+            else if (hash.GetFieldExpire(field) == null)
+                results[i - 1] = new RespValue(-1); // No expiration set
+            else
+            {
+                hash.PersistField(field);
+                results[i - 1] = new RespValue(1);
+            }
+        }
+        
+        await context.Client.WriteResponseAsync(RespValue.Array(results), cancellationToken);
+    }
+}

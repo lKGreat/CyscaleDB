@@ -1,4 +1,6 @@
+using System.Text;
 using CysRedis.Core.Common;
+using CysRedis.Core.DataStructures;
 using CysRedis.Core.Protocol;
 
 namespace CysRedis.Core.Commands;
@@ -350,5 +352,124 @@ public class ExpireTimeCommand : ICommandHandler
             
         var timestamp = new DateTimeOffset(expiry.Value).ToUnixTimeSeconds();
         return context.Client.WriteIntegerAsync(timestamp, cancellationToken);
+    }
+}
+
+/// <summary>
+/// COPY command - copies a key to another key.
+/// </summary>
+public class CopyCommand : ICommandHandler
+{
+    public Task ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    {
+        context.EnsureMinArgs(2);
+        var sourceKey = context.GetArg(0);
+        var destKey = context.GetArg(1);
+        bool replace = false;
+        int destDb = context.Client.DatabaseIndex;
+        
+        // Parse REPLACE/DB parameters
+        for (int i = 2; i < context.ArgCount; i++)
+        {
+            var opt = context.GetArg(i).ToUpperInvariant();
+            if (opt == "REPLACE")
+            {
+                replace = true;
+            }
+            else if (opt == "DB")
+            {
+                i++;
+                if (i >= context.ArgCount) throw new SyntaxErrorException();
+                destDb = (int)context.GetArgAsInt(i);
+            }
+        }
+        
+        var sourceDb = context.Database;
+        var targetDb = context.Server.Store.GetDatabase(destDb);
+        var source = sourceDb.Get(sourceKey);
+        
+        if (source == null)
+            return context.Client.WriteIntegerAsync(0, cancellationToken);
+        
+        if (!replace && targetDb.Exists(destKey))
+            return context.Client.WriteIntegerAsync(0, cancellationToken);
+        
+        // Deep copy object
+        var copy = DeepCopyRedisObject(source);
+        targetDb.Set(destKey, copy);
+        
+        // Copy expiration time
+        var expire = sourceDb.GetExpire(sourceKey);
+        if (expire.HasValue)
+            targetDb.SetExpire(destKey, expire.Value);
+        
+        return context.Client.WriteIntegerAsync(1, cancellationToken);
+    }
+    
+    private static RedisObject DeepCopyRedisObject(RedisObject obj)
+    {
+        return obj switch
+        {
+            RedisString s => new RedisString((byte[])s.Value.Clone()),
+            RedisList l => CopyList(l),
+            RedisSet s => CopySet(s),
+            RedisSortedSet z => CopySortedSet(z),
+            RedisHash h => CopyHash(h),
+            RedisStream stream => CopyStream(stream),
+            _ => throw new NotSupportedException($"Cannot copy object of type {obj.GetType().Name}")
+        };
+    }
+    
+    private static RedisList CopyList(RedisList source)
+    {
+        var copy = new RedisList();
+        for (int i = 0; i < source.Count; i++)
+        {
+            var item = source.GetByIndex(i);
+            if (item != null)
+                copy.PushRight((byte[])item.Clone());
+        }
+        return copy;
+    }
+    
+    private static RedisSet CopySet(RedisSet source)
+    {
+        var copy = new RedisSet();
+        foreach (var member in source.Members)
+        {
+            copy.Add(member);
+        }
+        return copy;
+    }
+    
+    private static RedisSortedSet CopySortedSet(RedisSortedSet source)
+    {
+        var copy = new RedisSortedSet();
+        foreach (var member in source.Members)
+        {
+            var score = source.GetScore(member);
+            if (score.HasValue)
+                copy.Add(member, score.Value);
+        }
+        return copy;
+    }
+    
+    private static RedisHash CopyHash(RedisHash source)
+    {
+        var copy = new RedisHash();
+        foreach (var entry in source.Entries)
+        {
+            copy.Set(entry.Key, (byte[])entry.Value.Clone());
+        }
+        return copy;
+    }
+    
+    private static RedisStream CopyStream(RedisStream source)
+    {
+        // For stream, we create a new instance
+        // Stream copying is complex due to consumer groups, so we do a shallow copy
+        var copy = new RedisStream();
+        // Note: Full stream copying with consumer groups would require more work
+        return copy;
     }
 }

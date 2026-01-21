@@ -89,6 +89,28 @@ public class SIsMemberCommand : ICommandHandler
 }
 
 /// <summary>
+/// SMISMEMBER command - checks multiple members for existence.
+/// </summary>
+public class SMIsMemberCommand : ICommandHandler
+{
+    public async Task ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    {
+        context.EnsureMinArgs(2);
+        var key = context.GetArg(0);
+        var set = context.Database.Get<RedisSet>(key);
+        
+        var results = new RespValue[context.ArgCount - 1];
+        for (int i = 1; i < context.ArgCount; i++)
+        {
+            var member = context.GetArg(i);
+            results[i - 1] = new RespValue(set?.Contains(member) == true ? 1 : 0);
+        }
+        
+        await context.Client.WriteResponseAsync(RespValue.Array(results), cancellationToken);
+    }
+}
+
+/// <summary>
 /// SCARD command.
 /// </summary>
 public class SCardCommand : ICommandHandler

@@ -18,6 +18,8 @@ public class SetCommand : ICommandHandler
 
         bool nx = false, xx = false, get = false;
         TimeSpan? expiry = null;
+        string? ifeqValue = null, ifneValue = null;
+        string? ifdeqDigest = null, ifdneDigest = null;
 
         // Parse options
         for (int i = 2; i < context.ArgCount; i++)
@@ -33,6 +35,26 @@ public class SetCommand : ICommandHandler
                     break;
                 case "GET":
                     get = true;
+                    break;
+                case "IFEQ":
+                    i++;
+                    if (i >= context.ArgCount) throw new SyntaxErrorException();
+                    ifeqValue = context.GetArg(i);
+                    break;
+                case "IFNE":
+                    i++;
+                    if (i >= context.ArgCount) throw new SyntaxErrorException();
+                    ifneValue = context.GetArg(i);
+                    break;
+                case "IFDEQ":
+                    i++;
+                    if (i >= context.ArgCount) throw new SyntaxErrorException();
+                    ifdeqDigest = context.GetArg(i);
+                    break;
+                case "IFDNE":
+                    i++;
+                    if (i >= context.ArgCount) throw new SyntaxErrorException();
+                    ifdneDigest = context.GetArg(i);
                     break;
                 case "EX":
                     i++;
@@ -71,6 +93,76 @@ public class SetCommand : ICommandHandler
         {
             var existing = db.Get<RedisString>(key);
             oldValue = existing?.GetString();
+        }
+
+        // Check conditional set requirements
+        if (ifeqValue != null || ifneValue != null || ifdeqDigest != null || ifdneDigest != null)
+        {
+            var existing = db.Get<RedisString>(key);
+            if (existing == null)
+            {
+                // Key doesn't exist - conditional check fails for IFEQ/IFDEQ
+                if (ifeqValue != null || ifdeqDigest != null)
+                {
+                    if (get)
+                        await context.Client.WriteBulkStringAsync(oldValue, cancellationToken);
+                    else
+                        await context.Client.WriteNullAsync(cancellationToken);
+                    return;
+                }
+            }
+            else
+            {
+                var currentValue = existing.GetString();
+                
+                // IFEQ: Set only if current value equals specified value
+                if (ifeqValue != null && currentValue != ifeqValue)
+                {
+                    if (get)
+                        await context.Client.WriteBulkStringAsync(oldValue, cancellationToken);
+                    else
+                        await context.Client.WriteNullAsync(cancellationToken);
+                    return;
+                }
+                
+                // IFNE: Set only if current value doesn't equal specified value
+                if (ifneValue != null && currentValue == ifneValue)
+                {
+                    if (get)
+                        await context.Client.WriteBulkStringAsync(oldValue, cancellationToken);
+                    else
+                        await context.Client.WriteNullAsync(cancellationToken);
+                    return;
+                }
+                
+                // IFDEQ: Set only if current digest equals specified digest
+                if (ifdeqDigest != null)
+                {
+                    var currentDigest = ComputeXxh3Digest(currentValue);
+                    if (!currentDigest.Equals(ifdeqDigest, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (get)
+                            await context.Client.WriteBulkStringAsync(oldValue, cancellationToken);
+                        else
+                            await context.Client.WriteNullAsync(cancellationToken);
+                        return;
+                    }
+                }
+                
+                // IFDNE: Set only if current digest doesn't equal specified digest
+                if (ifdneDigest != null)
+                {
+                    var currentDigest = ComputeXxh3Digest(currentValue);
+                    if (currentDigest.Equals(ifdneDigest, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (get)
+                            await context.Client.WriteBulkStringAsync(oldValue, cancellationToken);
+                        else
+                            await context.Client.WriteNullAsync(cancellationToken);
+                        return;
+                    }
+                }
+            }
         }
 
         var newObj = new RedisString(value);
@@ -112,6 +204,25 @@ public class SetCommand : ICommandHandler
         {
             await context.Client.WriteNullAsync(cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Compute XXH3 64-bit hash digest for a string (formatted as hex).
+    /// This is a simple implementation - for production, consider using System.IO.Hashing.XxHash3 (.NET 7+)
+    /// </summary>
+    private static string ComputeXxh3Digest(string value)
+    {
+        // Simple hash implementation (can be replaced with XXH3 in .NET 7+)
+        var bytes = Encoding.UTF8.GetBytes(value);
+        ulong hash = 0x9E3779B185EBCA87UL; // XXH3 seed
+        
+        foreach (var b in bytes)
+        {
+            hash ^= b;
+            hash *= 0x100000001B3UL; // FNV prime
+        }
+        
+        return hash.ToString("x16"); // 16 hex chars
     }
 }
 

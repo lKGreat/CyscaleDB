@@ -315,6 +315,10 @@ public class RedisServer : IDisposable
         {
             _healthCheckTask = RunHealthCheckAsync();
         }
+        
+        // Start LRU clock updater for memory eviction
+        _ = Memory.LruClock.StartClockUpdater(_cts.Token);
+        Logger.Info("LRU clock updater started");
     }
 
     /// <summary>

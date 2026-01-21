@@ -12,31 +12,50 @@ public abstract class RedisObject
 }
 
 /// <summary>
-/// Redis string type.
+/// Redis string type with zero-copy support.
 /// </summary>
 public class RedisString : RedisObject
 {
     public override string TypeName => "string";
 
+    private Memory<byte> _value;
+
     /// <summary>
-    /// The raw bytes value.
+    /// The raw bytes value (for backward compatibility).
     /// </summary>
-    public byte[] Value { get; set; }
+    public byte[] Value => _value.ToArray();
+    
+    /// <summary>
+    /// Gets the value as a Memory<byte> for zero-copy operations.
+    /// </summary>
+    public Memory<byte> ValueMemory => _value;
+    
+    /// <summary>
+    /// Gets the value as a ReadOnlySpan<byte> for zero-copy operations.
+    /// </summary>
+    public ReadOnlySpan<byte> ValueSpan => _value.Span;
 
     public RedisString(byte[] value)
     {
-        Value = value ?? throw new ArgumentNullException(nameof(value));
+        if (value == null) throw new ArgumentNullException(nameof(value));
+        _value = value;
+    }
+    
+    public RedisString(Memory<byte> value)
+    {
+        _value = value;
     }
 
     public RedisString(string value)
     {
-        Value = System.Text.Encoding.UTF8.GetBytes(value ?? string.Empty);
+        var bytes = System.Text.Encoding.UTF8.GetBytes(value ?? string.Empty);
+        _value = bytes;
     }
 
     /// <summary>
     /// Gets the string value.
     /// </summary>
-    public string GetString() => System.Text.Encoding.UTF8.GetString(Value);
+    public string GetString() => System.Text.Encoding.UTF8.GetString(_value.Span);
 
     /// <summary>
     /// Gets the value as an integer.
@@ -60,7 +79,8 @@ public class RedisString : RedisObject
     /// </summary>
     public void SetInt64(long value)
     {
-        Value = System.Text.Encoding.UTF8.GetBytes(value.ToString());
+        var bytes = System.Text.Encoding.UTF8.GetBytes(value.ToString());
+        _value = bytes;
     }
 
     /// <summary>
@@ -68,14 +88,15 @@ public class RedisString : RedisObject
     /// </summary>
     public void SetDouble(double value)
     {
-        Value = System.Text.Encoding.UTF8.GetBytes(
+        var bytes = System.Text.Encoding.UTF8.GetBytes(
             value.ToString("G17", System.Globalization.CultureInfo.InvariantCulture));
+        _value = bytes;
     }
 
     /// <summary>
     /// Gets the length in bytes.
     /// </summary>
-    public int Length => Value.Length;
+    public int Length => _value.Length;
 }
 
 /// <summary>
@@ -390,17 +411,21 @@ public class RedisSortedSet : RedisObject
 }
 
 /// <summary>
-/// Redis hash type.
+/// Redis hash type with field-level expiration support (Redis 8.0+).
 /// </summary>
 public class RedisHash : RedisObject
 {
     public override string TypeName => "hash";
 
     private readonly Dictionary<string, byte[]> _hash = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTime> _fieldExpires = new(StringComparer.Ordinal);
 
     public int Count => _hash.Count;
 
-    public void Set(string field, byte[] value) => _hash[field] = value;
+    public void Set(string field, byte[] value)
+    {
+        _hash[field] = value;
+    }
     
     public bool SetNx(string field, byte[] value)
     {
@@ -411,16 +436,36 @@ public class RedisHash : RedisObject
 
     public byte[]? Get(string field)
     {
+        // Check if field has expired
+        if (IsFieldExpired(field))
+        {
+            Delete(field);
+            return null;
+        }
+        
         _hash.TryGetValue(field, out var value);
         return value;
     }
 
-    public bool Delete(string field) => _hash.Remove(field);
-    public bool Exists(string field) => _hash.ContainsKey(field);
+    public bool Delete(string field)
+    {
+        _fieldExpires.Remove(field);
+        return _hash.Remove(field);
+    }
+    
+    public bool Exists(string field)
+    {
+        if (IsFieldExpired(field))
+        {
+            Delete(field);
+            return false;
+        }
+        return _hash.ContainsKey(field);
+    }
 
-    public IEnumerable<string> Keys => _hash.Keys;
-    public IEnumerable<byte[]> Values => _hash.Values;
-    public IEnumerable<KeyValuePair<string, byte[]>> Entries => _hash;
+    public IEnumerable<string> Keys => _hash.Keys.Where(k => !IsFieldExpired(k));
+    public IEnumerable<byte[]> Values => _hash.Where(kvp => !IsFieldExpired(kvp.Key)).Select(kvp => kvp.Value);
+    public IEnumerable<KeyValuePair<string, byte[]>> Entries => _hash.Where(kvp => !IsFieldExpired(kvp.Key));
 
     public long IncrBy(string field, long increment)
     {
@@ -457,5 +502,90 @@ public class RedisHash : RedisObject
         _hash[field] = System.Text.Encoding.UTF8.GetBytes(
             value.ToString("G17", System.Globalization.CultureInfo.InvariantCulture));
         return value;
+    }
+    
+    /// <summary>
+    /// Sets field expiration time.
+    /// </summary>
+    public bool SetFieldExpire(string field, DateTime expireAt)
+    {
+        if (!_hash.ContainsKey(field))
+            return false;
+        _fieldExpires[field] = expireAt;
+        return true;
+    }
+    
+    /// <summary>
+    /// Gets field expiration time.
+    /// </summary>
+    public DateTime? GetFieldExpire(string field)
+    {
+        return _fieldExpires.TryGetValue(field, out var expiry) ? expiry : null;
+    }
+    
+    /// <summary>
+    /// Removes field expiration.
+    /// </summary>
+    public bool PersistField(string field)
+    {
+        return _fieldExpires.Remove(field);
+    }
+    
+    /// <summary>
+    /// Gets field TTL in seconds.
+    /// </summary>
+    public long? GetFieldTtl(string field)
+    {
+        if (!_hash.ContainsKey(field))
+            return -2; // Field doesn't exist
+        
+        if (!_fieldExpires.TryGetValue(field, out var expiry))
+            return -1; // No expiration
+        
+        var remaining = (expiry - DateTime.UtcNow).TotalSeconds;
+        return remaining > 0 ? (long)remaining : -2;
+    }
+    
+    /// <summary>
+    /// Gets field TTL in milliseconds.
+    /// </summary>
+    public long? GetFieldPttl(string field)
+    {
+        if (!_hash.ContainsKey(field))
+            return -2;
+        
+        if (!_fieldExpires.TryGetValue(field, out var expiry))
+            return -1;
+        
+        var remaining = (expiry - DateTime.UtcNow).TotalMilliseconds;
+        return remaining > 0 ? (long)remaining : -2;
+    }
+    
+    /// <summary>
+    /// Checks if a field has expired.
+    /// </summary>
+    private bool IsFieldExpired(string field)
+    {
+        if (_fieldExpires.TryGetValue(field, out var expiry))
+            return DateTime.UtcNow >= expiry;
+        return false;
+    }
+    
+    /// <summary>
+    /// Cleans up expired fields.
+    /// </summary>
+    public int CleanupExpiredFields()
+    {
+        int count = 0;
+        var now = DateTime.UtcNow;
+        var expiredFields = _fieldExpires.Where(kvp => now >= kvp.Value).Select(kvp => kvp.Key).ToList();
+        
+        foreach (var field in expiredFields)
+        {
+            if (Delete(field))
+                count++;
+        }
+        
+        return count;
     }
 }

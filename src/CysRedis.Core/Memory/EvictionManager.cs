@@ -145,7 +145,7 @@ public class EvictionManager
     {
         return keys
             .Where(k => _metadata.ContainsKey(k))
-            .OrderBy(k => _metadata[k].LastAccessTime)
+            .OrderByDescending(k => _metadata[k].IdleTimeSeconds) // 空闲时间越长越优先淘汰
             .Take(100) // 采样100个
             .ToList();
     }
@@ -158,7 +158,7 @@ public class EvictionManager
         return keys
             .Where(k => _metadata.ContainsKey(k))
             .OrderBy(k => _metadata[k].AccessFrequency)
-            .ThenBy(k => _metadata[k].LastAccessTime) // 频率相同时按LRU
+            .ThenByDescending(k => _metadata[k].IdleTimeSeconds) // 频率相同时按LRU（空闲时间长的优先）
             .Take(100)
             .ToList();
     }
@@ -238,14 +238,14 @@ public enum EvictionPolicy
 /// </summary>
 internal class EvictionMetadata
 {
-    public DateTime LastAccessTime { get; private set; }
+    public uint Lru { get; private set; } // 24-bit LRU clock value
     public long AccessCount { get; private set; }
     public byte LfuCounter { get; private set; }
     public long EstimatedSize { get; set; }
 
     public EvictionMetadata()
     {
-        LastAccessTime = DateTime.UtcNow;
+        Lru = LruClock.GetClock();
         AccessCount = 0;
         LfuCounter = 5; // 初始频率计数器
         EstimatedSize = 0;
@@ -256,7 +256,7 @@ internal class EvictionMetadata
     /// </summary>
     public void UpdateAccess(EvictionPolicy policy)
     {
-        LastAccessTime = DateTime.UtcNow;
+        Lru = LruClock.GetClock();
         AccessCount++;
 
         // LFU计数器更新（使用Morris计数器算法）
@@ -272,6 +272,11 @@ internal class EvictionMetadata
     }
 
     /// <summary>
+    /// 获取空闲时间（秒）
+    /// </summary>
+    public long IdleTimeSeconds => LruClock.EstimateIdleTime(Lru);
+
+    /// <summary>
     /// 访问频率（对数化的访问次数）
     /// </summary>
     public double AccessFrequency
@@ -279,7 +284,7 @@ internal class EvictionMetadata
         get
         {
             // 考虑时间衰减
-            var ageMinutes = (DateTime.UtcNow - LastAccessTime).TotalMinutes;
+            var ageMinutes = IdleTimeSeconds / 60.0;
             var decay = Math.Exp(-ageMinutes / 60.0); // 1小时半衰期
             return LfuCounter * decay;
         }

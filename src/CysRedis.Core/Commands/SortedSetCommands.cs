@@ -128,6 +128,31 @@ public class ZScoreCommand : ICommandHandler
 }
 
 /// <summary>
+/// ZMSCORE command - returns the scores of multiple members.
+/// </summary>
+public class ZMScoreCommand : ICommandHandler
+{
+    public async Task ExecuteAsync(CommandContext context, CancellationToken cancellationToken)
+    {
+        context.EnsureMinArgs(2);
+        var key = context.GetArg(0);
+        var zset = context.Database.Get<RedisSortedSet>(key);
+        
+        var results = new RespValue[context.ArgCount - 1];
+        for (int i = 1; i < context.ArgCount; i++)
+        {
+            var member = context.GetArg(i);
+            var score = zset?.GetScore(member);
+            results[i - 1] = score.HasValue 
+                ? RespValue.BulkString(score.Value.ToString("G17", System.Globalization.CultureInfo.InvariantCulture)) 
+                : RespValue.Null;
+        }
+        
+        await context.Client.WriteResponseAsync(RespValue.Array(results), cancellationToken);
+    }
+}
+
+/// <summary>
 /// ZRANK command.
 /// </summary>
 public class ZRankCommand : ICommandHandler

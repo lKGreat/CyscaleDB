@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 
 namespace CysRedis.Core.Common;
 
@@ -157,3 +158,98 @@ public readonly struct RentedBuffer : IDisposable
         BufferPool.Return(_buffer);
     }
 }
+
+/// <summary>
+/// Interface for objects that can be reset to their initial state for reuse.
+/// </summary>
+public interface IResettable
+{
+    /// <summary>
+    /// Resets the object to its initial state for reuse.
+    /// </summary>
+    void Reset();
+}
+
+/// <summary>
+/// Generic object pool for reducing GC pressure.
+/// </summary>
+public static class ObjectPool<T> where T : class, new()
+{
+    private static readonly ConcurrentQueue<T> _pool = new();
+    private const int MaxPoolSize = 1024;
+    private static int _poolCount;
+    
+    /// <summary>
+    /// Rents an object from the pool, or creates a new one if none available.
+    /// </summary>
+    public static T Rent()
+    {
+        if (_pool.TryDequeue(out var obj))
+        {
+            Interlocked.Decrement(ref _poolCount);
+            return obj;
+        }
+        return new T();
+    }
+    
+    /// <summary>
+    /// Returns an object to the pool for reuse.
+    /// </summary>
+    public static void Return(T obj)
+    {
+        if (obj == null) return;
+        
+        // Reset object state if it implements IResettable
+        if (obj is IResettable resettable)
+        {
+            resettable.Reset();
+        }
+        
+        // Don't grow the pool beyond MaxPoolSize
+        if (_poolCount < MaxPoolSize)
+        {
+            _pool.Enqueue(obj);
+            Interlocked.Increment(ref _poolCount);
+        }
+    }
+    
+    /// <summary>
+    /// Gets the current pool size.
+    /// </summary>
+    public static int PoolSize => _poolCount;
+    
+    /// <summary>
+    /// Clears all objects from the pool.
+    /// </summary>
+    public static void Clear()
+    {
+        while (_pool.TryDequeue(out _))
+        {
+            Interlocked.Decrement(ref _poolCount);
+        }
+    }
+}
+
+/// <summary>
+/// RAII-style pooled object rental.
+/// </summary>
+public readonly struct PooledObject<T> : IDisposable where T : class, new()
+{
+    private readonly T _obj;
+    
+    /// <summary>
+    /// Gets the pooled object.
+    /// </summary>
+    public T Value => _obj;
+    
+    public PooledObject()
+    {
+        _obj = ObjectPool<T>.Rent();
+    }
+    
+    public void Dispose()
+    {
+        ObjectPool<T>.Return(_obj);
+    }
+}
+

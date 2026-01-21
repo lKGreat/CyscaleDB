@@ -253,6 +253,7 @@ public class CommandDispatcher
         Register("PTTL", new PTtlCommand());
         Register("PERSIST", new PersistCommand());
         Register("EXPIRETIME", new ExpireTimeCommand());
+        Register("COPY", new CopyCommand());
 
         // Hash commands
         Register("HSET", new HSetCommand());
@@ -268,6 +269,11 @@ public class CommandDispatcher
         Register("HINCRBY", new HIncrByCommand());
         Register("HINCRBYFLOAT", new HIncrByFloatCommand());
         Register("HSETNX", new HSetNxCommand());
+        Register("HEXPIRE", new HExpireCommand());
+        Register("HPEXPIRE", new HPExpireCommand());
+        Register("HTTL", new HTtlCommand());
+        Register("HPTTL", new HPTtlCommand());
+        Register("HPERSIST", new HPersistCommand());
 
         // List commands
         Register("LPUSH", new LPushCommand());
@@ -279,6 +285,7 @@ public class CommandDispatcher
         Register("LSET", new LSetCommand());
         Register("LLEN", new LLenCommand());
         Register("LTRIM", new LTrimCommand());
+        Register("LPOS", new LPosCommand());
         
         // Blocking list commands
         Register("BLPOP", new BLPopCommand());
@@ -290,6 +297,7 @@ public class CommandDispatcher
         Register("SREM", new SRemCommand());
         Register("SMEMBERS", new SMembersCommand());
         Register("SISMEMBER", new SIsMemberCommand());
+        Register("SMISMEMBER", new SMIsMemberCommand());
         Register("SCARD", new SCardCommand());
         Register("SPOP", new SPopCommand());
         Register("SRANDMEMBER", new SRandMemberCommand());
@@ -301,6 +309,7 @@ public class CommandDispatcher
         Register("ZADD", new ZAddCommand());
         Register("ZREM", new ZRemCommand());
         Register("ZSCORE", new ZScoreCommand());
+        Register("ZMSCORE", new ZMScoreCommand());
         Register("ZRANK", new ZRankCommand());
         Register("ZREVRANK", new ZRevRankCommand());
         Register("ZRANGE", new ZRangeCommand());
@@ -492,5 +501,14 @@ public class CommandContext
             System.Globalization.CultureInfo.InvariantCulture, out var value))
             throw new NotFloatException();
         return value;
+    }
+    
+    /// <summary>
+    /// Gets an argument as bytes.
+    /// </summary>
+    public byte[] GetArgBytes(int index)
+    {
+        var str = GetArg(index);
+        return System.Text.Encoding.UTF8.GetBytes(str);
     }
 }
