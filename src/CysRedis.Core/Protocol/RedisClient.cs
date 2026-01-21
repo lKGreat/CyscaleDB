@@ -6,7 +6,7 @@ using CysRedis.Core.DataStructures;
 namespace CysRedis.Core.Protocol;
 
 /// <summary>
-/// Represents a connected Redis client.
+/// Represents a connected Redis client with optimized I/O using System.IO.Pipelines.
 /// </summary>
 public class RedisClient : IDisposable
 {
@@ -14,8 +14,8 @@ public class RedisClient : IDisposable
     
     private readonly TcpClient? _tcpClient;
     private readonly NetworkStream? _stream;
-    private readonly RespReader? _reader;
-    private readonly RespWriter? _writer;
+    private readonly RespPipeReader? _pipeReader;
+    private readonly RespPipeWriter? _pipeWriter;
     private bool _disposed;
 
     // Transaction state
@@ -49,9 +49,23 @@ public class RedisClient : IDisposable
     public DateTime ConnectedAt { get; }
 
     /// <summary>
-    /// Last command time.
+    /// Last activity time (command received or response sent).
     /// </summary>
-    public DateTime LastCommandAt { get; set; }
+    public DateTime LastActivityAt { get; private set; }
+
+    /// <summary>
+    /// Gets the idle time since last activity.
+    /// </summary>
+    public TimeSpan IdleTime => DateTime.UtcNow - LastActivityAt;
+
+    /// <summary>
+    /// Last command time (for backward compatibility).
+    /// </summary>
+    public DateTime LastCommandAt
+    {
+        get => LastActivityAt;
+        set => LastActivityAt = value;
+    }
 
     /// <summary>
     /// Whether the client is in a MULTI transaction.
@@ -79,14 +93,14 @@ public class RedisClient : IDisposable
     public int ProtocolVersion { get; set; } = 2;
 
     /// <summary>
-    /// Gets the RESP reader.
+    /// Gets the RESP pipe reader.
     /// </summary>
-    public RespReader? Reader => _reader;
+    public RespPipeReader? PipeReader => _pipeReader;
 
     /// <summary>
-    /// Gets the RESP writer.
+    /// Gets the RESP pipe writer.
     /// </summary>
-    public RespWriter? Writer => _writer;
+    public RespPipeWriter? PipeWriter => _pipeWriter;
 
     /// <summary>
     /// Gets whether the client is connected.
@@ -94,19 +108,22 @@ public class RedisClient : IDisposable
     public bool IsConnected => _tcpClient?.Connected == true && !_disposed;
 
     /// <summary>
-    /// Creates a new Redis client wrapper.
+    /// Creates a new Redis client wrapper with optimized I/O.
     /// </summary>
-    public RedisClient(TcpClient tcpClient)
+    public RedisClient(TcpClient tcpClient, RedisServerOptions? options = null)
     {
         _tcpClient = tcpClient ?? throw new ArgumentNullException(nameof(tcpClient));
         _stream = tcpClient.GetStream();
-        _reader = new RespReader(_stream);
-        _writer = new RespWriter(_stream);
+        
+        // Use Pipeline-based readers/writers for better performance
+        options ??= RedisServerOptions.Default;
+        _pipeReader = RespPipeReader.Create(_stream, options);
+        _pipeWriter = RespPipeWriter.Create(_stream, options);
         
         Id = Interlocked.Increment(ref _nextId);
         Address = tcpClient.Client.RemoteEndPoint?.ToString() ?? "unknown";
         ConnectedAt = DateTime.UtcNow;
-        LastCommandAt = DateTime.UtcNow;
+        LastActivityAt = DateTime.UtcNow;
         DatabaseIndex = 0;
         Flags = ClientFlags.None;
     }
@@ -121,9 +138,17 @@ public class RedisClient : IDisposable
         Address = other.Address;
         DatabaseIndex = other.DatabaseIndex;
         ConnectedAt = other.ConnectedAt;
-        LastCommandAt = other.LastCommandAt;
+        LastActivityAt = other.LastActivityAt;
         Flags = other.Flags;
         ProtocolVersion = other.ProtocolVersion;
+    }
+
+    /// <summary>
+    /// Updates the last activity timestamp.
+    /// </summary>
+    public void UpdateActivity()
+    {
+        LastActivityAt = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -207,10 +232,12 @@ public class RedisClient : IDisposable
     /// </summary>
     public async Task<string[]?> ReadCommandAsync(CancellationToken cancellationToken = default)
     {
-        if (_reader == null) return null;
-        var command = await _reader.ReadCommandAsync(cancellationToken);
+        if (_pipeReader == null) return null;
+        
+        var command = await _pipeReader.ReadCommandAsync(cancellationToken).ConfigureAwait(false);
         if (command != null)
-            LastCommandAt = DateTime.UtcNow;
+            UpdateActivity();
+        
         return command;
     }
 
@@ -219,9 +246,10 @@ public class RedisClient : IDisposable
     /// </summary>
     public virtual async Task WriteResponseAsync(RespValue value, CancellationToken cancellationToken = default)
     {
-        if (_writer == null) return;
-        await _writer.WriteValueAsync(value, cancellationToken);
-        await _writer.FlushAsync(cancellationToken);
+        if (_pipeWriter == null) return;
+        
+        await _pipeWriter.WriteValueAsync(value, cancellationToken).ConfigureAwait(false);
+        UpdateActivity();
     }
 
     /// <summary>
@@ -269,8 +297,10 @@ public class RedisClient : IDisposable
 
         try
         {
-            _stream.Close();
-            _tcpClient.Close();
+            _pipeReader?.Dispose();
+            _pipeWriter?.Dispose();
+            _stream?.Close();
+            _tcpClient?.Close();
         }
         catch
         {
@@ -282,7 +312,7 @@ public class RedisClient : IDisposable
 
     public override string ToString()
     {
-        return $"Client#{Id} [{Address}] db={DatabaseIndex}";
+        return $"Client#{Id} [{Address}] db={DatabaseIndex} idle={IdleTime.TotalSeconds:F0}s";
     }
 }
 
