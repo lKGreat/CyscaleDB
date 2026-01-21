@@ -1224,4 +1224,38 @@ public class ParserTests
     }
 
     #endregion
+
+    #region SHOW CHARACTER SET Tests
+
+    [Fact]
+    public void Parse_ShowCharacterSet_Success()
+    {
+        var parser = new Parser("SHOW CHARACTER SET");
+        var stmt = parser.Parse() as ShowCharsetStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Null(stmt.LikePattern);
+    }
+
+    [Fact]
+    public void Parse_ShowCharacterSetLike_Success()
+    {
+        var parser = new Parser("SHOW CHARACTER SET LIKE 'utf8%'");
+        var stmt = parser.Parse() as ShowCharsetStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Equal("utf8%", stmt.LikePattern);
+    }
+
+    [Fact]
+    public void Parse_ShowCharset_Success()
+    {
+        var parser = new Parser("SHOW CHARSET");
+        var stmt = parser.Parse() as ShowCharsetStatement;
+
+        Assert.NotNull(stmt);
+        Assert.Null(stmt.LikePattern);
+    }
+
+    #endregion
 }

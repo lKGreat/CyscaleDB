@@ -2373,15 +2373,16 @@ public sealed class Parser
             }
             return stmt;
         }
-        else if (Check(TokenType.CHARSET) || MatchIdentifier("CHARACTER"))
+        else if (Check(TokenType.CHARSET) || Check(TokenType.CHARACTER))
         {
-            if (Check(TokenType.CHARSET))
+            if (Match(TokenType.CHARSET))
             {
-                Advance();
+                // SHOW CHARSET
             }
             else
             {
-                // CHARACTER SET
+                // SHOW CHARACTER SET
+                Advance(); // consume CHARACTER
                 Expect(TokenType.SET);
             }
             var stmt = new ShowCharsetStatement();
