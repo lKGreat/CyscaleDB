@@ -46,6 +46,12 @@ public sealed class Row
     public bool IsDeleted { get; set; }
 
     /// <summary>
+    /// Set of column ordinals that should be lazily filled with default values.
+    /// This is used for online ADD COLUMN operations where old rows don't have the new column yet.
+    /// </summary>
+    private HashSet<int>? _lazyColumns;
+
+    /// <summary>
     /// Creates a new row with the given values.
     /// </summary>
     public Row(TableSchema schema, DataValue[] values)
@@ -85,16 +91,24 @@ public sealed class Row
         if (ordinal < 0)
             throw new ArgumentException($"Column not found: {columnName}");
 
-        return Values[ordinal];
+        return GetValue(ordinal);
     }
 
     /// <summary>
     /// Gets a value by column ordinal.
+    /// For lazy columns (added via online DDL), returns the default value if not yet filled.
     /// </summary>
     public DataValue GetValue(int ordinal)
     {
         if (ordinal < 0 || ordinal >= Values.Length)
             throw new ArgumentOutOfRangeException(nameof(ordinal));
+
+        // Check if this is a lazy column that needs default value
+        if (_lazyColumns?.Contains(ordinal) == true)
+        {
+            var column = Schema.Columns[ordinal];
+            return column.DefaultValue ?? DataValue.Null;
+        }
 
         return Values[ordinal];
     }
@@ -274,10 +288,18 @@ public sealed class Row
     {
         var newValues = new DataValue[Values.Length];
         Array.Copy(Values, newValues, Values.Length);
-        return new Row(Schema, newValues, TransactionId, RollPointer, IsDeleted)
+        var newRow = new Row(Schema, newValues, TransactionId, RollPointer, IsDeleted)
         {
             RowId = RowId
         };
+        
+        // Copy lazy column info
+        if (_lazyColumns != null)
+        {
+            newRow._lazyColumns = new HashSet<int>(_lazyColumns);
+        }
+        
+        return newRow;
     }
 
     /// <summary>
@@ -287,16 +309,67 @@ public sealed class Row
     {
         var newValues = new DataValue[Values.Length];
         Array.Copy(Values, newValues, Values.Length);
-        return new Row(Schema, newValues, newTransactionId, newRollPointer, IsDeleted)
+        var newRow = new Row(Schema, newValues, newTransactionId, newRollPointer, IsDeleted)
         {
             RowId = RowId
         };
+        
+        // Copy lazy column info
+        if (_lazyColumns != null)
+        {
+            newRow._lazyColumns = new HashSet<int>(_lazyColumns);
+        }
+        
+        return newRow;
     }
+
+    /// <summary>
+    /// Marks a column as lazy (will return default value until backfilled).
+    /// Used for online ADD COLUMN operations.
+    /// </summary>
+    public void MarkColumnAsLazy(int columnOrdinal)
+    {
+        _lazyColumns ??= new HashSet<int>();
+        _lazyColumns.Add(columnOrdinal);
+    }
+
+    /// <summary>
+    /// Backfills a lazy column with its actual value.
+    /// </summary>
+    public void BackfillColumn(int columnOrdinal, DataValue value)
+    {
+        if (_lazyColumns?.Remove(columnOrdinal) == true)
+        {
+            Values[columnOrdinal] = value;
+            
+            // Clean up the set if empty
+            if (_lazyColumns.Count == 0)
+            {
+                _lazyColumns = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Checks if a column is lazy (not yet backfilled).
+    /// </summary>
+    public bool IsColumnLazy(int columnOrdinal)
+    {
+        return _lazyColumns?.Contains(columnOrdinal) == true;
+    }
+
+    /// <summary>
+    /// Gets the number of lazy columns in this row.
+    /// </summary>
+    public int LazyColumnCount => _lazyColumns?.Count ?? 0;
 
     public override string ToString()
     {
         var values = string.Join(", ", Values.Select(v => v.ToString()));
-        return $"Row(TrxId={TransactionId}, RollPtr={RollPointer}, Deleted={IsDeleted}, Values=[{values}])";
+        var lazyInfo = _lazyColumns != null && _lazyColumns.Count > 0 
+            ? $", LazyColumns={_lazyColumns.Count}" 
+            : "";
+        return $"Row(TrxId={TransactionId}, RollPtr={RollPointer}, Deleted={IsDeleted}{lazyInfo}, Values=[{values}])";
     }
 }
 

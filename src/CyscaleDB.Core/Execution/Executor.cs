@@ -7,6 +7,7 @@ using CyscaleDB.Core.Parsing.Ast;
 using CyscaleDB.Core.Storage;
 using CyscaleDB.Core.Storage.Index;
 using CyscaleDB.Core.Storage.InformationSchema;
+using CyscaleDB.Core.Storage.OnlineDdl;
 using CyscaleDB.Core.Transactions;
 
 namespace CyscaleDB.Core.Execution;
@@ -20,6 +21,7 @@ public sealed class Executor
     private readonly TransactionManager? _transactionManager;
     private readonly RecordLockManager _recordLockManager;
     private readonly ForeignKeyManager _foreignKeyManager;
+    private readonly OnlineDdlManager _onlineDdlManager;
     private readonly Logger _logger;
     private string _currentDatabase;
     private Transaction? _currentTransaction;
@@ -75,6 +77,7 @@ public sealed class Executor
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _transactionManager = transactionManager;
         _foreignKeyManager = foreignKeyManager ?? new ForeignKeyManager();
+        _onlineDdlManager = new OnlineDdlManager();
         _recordLockManager = new RecordLockManager();
         _logger = LogManager.Default.GetLogger<Executor>();
         _currentDatabase = defaultDatabase ?? Constants.DefaultDatabaseName;

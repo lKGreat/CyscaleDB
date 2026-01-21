@@ -802,7 +802,38 @@ public class AlterTableStatement : Statement
     /// </summary>
     public List<AlterTableAction> Actions { get; set; } = [];
 
+    /// <summary>
+    /// The ALTER algorithm: INPLACE (online), COPY (traditional), or DEFAULT.
+    /// </summary>
+    public AlterAlgorithm? Algorithm { get; set; }
+
+    /// <summary>
+    /// The locking mode: NONE (no locks), SHARED (read locks), EXCLUSIVE, or DEFAULT.
+    /// </summary>
+    public AlterLockMode? Lock { get; set; }
+
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitAlterTableStatement(this);
+}
+
+/// <summary>
+/// ALTER TABLE algorithm options.
+/// </summary>
+public enum AlterAlgorithm
+{
+    Default,
+    Inplace,    // Online DDL - modify in place without copying
+    Copy        // Traditional DDL - copy entire table
+}
+
+/// <summary>
+/// ALTER TABLE locking modes.
+/// </summary>
+public enum AlterLockMode
+{
+    Default,
+    None,       // No locks - allow concurrent reads and writes
+    Shared,     // Shared locks - allow concurrent reads only
+    Exclusive   // Exclusive lock - no concurrent access
 }
 
 /// <summary>
