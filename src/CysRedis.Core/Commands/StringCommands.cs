@@ -94,6 +94,12 @@ public class SetCommand : ICommandHandler
             db.SetExpire(key, DateTime.UtcNow.Add(expiry.Value));
         }
 
+        // 发送Keyspace通知
+        if (set)
+        {
+            context.Server.KeyspaceNotifier.Notify(context.Client.DatabaseIndex, key, "set");
+        }
+
         if (get)
         {
             await context.Client.WriteBulkStringAsync(oldValue, cancellationToken);

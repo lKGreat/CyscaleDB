@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using CysRedis.Core.Common;
 
 namespace CysRedis.Core.Auth;
@@ -9,11 +10,16 @@ namespace CysRedis.Core.Auth;
 public class AclManager
 {
     private readonly ConcurrentDictionary<string, AclUser> _users;
+    private readonly List<AclLogEntry> _aclLog;
+    private readonly object _logLock = new();
+    private readonly int _maxLogEntries = 128;
     private const string DefaultUserName = "default";
+    private string? _aclFilePath;
 
     public AclManager()
     {
         _users = new ConcurrentDictionary<string, AclUser>(StringComparer.Ordinal);
+        _aclLog = new List<AclLogEntry>();
         
         // Create default user with full access
         var defaultUser = new AclUser(DefaultUserName)
@@ -23,6 +29,7 @@ public class AclManager
         };
         defaultUser.AllowAllCommands();
         defaultUser.AllowAllKeys();
+        defaultUser.AllowAllChannels();
         _users[DefaultUserName] = defaultUser;
     }
 
@@ -91,16 +98,233 @@ public class AclManager
     public bool CanExecute(AclUser user, string command, string? key)
     {
         if (!user.Enabled)
+        {
+            LogAuthFailure(user.Name, command, "User disabled");
             return false;
+        }
 
         if (!user.CanExecuteCommand(command))
+        {
+            LogAuthFailure(user.Name, command, $"Command '{command}' not allowed");
             return false;
+        }
 
         if (key != null && !user.CanAccessKey(key))
+        {
+            LogAuthFailure(user.Name, command, $"Key '{key}' not accessible");
             return false;
+        }
 
         return true;
     }
+
+    /// <summary>
+    /// Checks if a user can access a Pub/Sub channel.
+    /// </summary>
+    public bool CanAccessChannel(AclUser user, string channel)
+    {
+        if (!user.Enabled)
+            return false;
+
+        return user.CanAccessChannel(channel);
+    }
+
+    /// <summary>
+    /// Logs an ACL authentication failure.
+    /// </summary>
+    private void LogAuthFailure(string username, string command, string reason)
+    {
+        lock (_logLock)
+        {
+            var entry = new AclLogEntry
+            {
+                Timestamp = DateTime.UtcNow,
+                Username = username,
+                Command = command,
+                Reason = reason
+            };
+            
+            _aclLog.Add(entry);
+            
+            // 保持日志大小限制
+            if (_aclLog.Count > _maxLogEntries)
+            {
+                _aclLog.RemoveAt(0);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets ACL log entries.
+    /// </summary>
+    public List<AclLogEntry> GetLog(int? count = null)
+    {
+        lock (_logLock)
+        {
+            var entries = _aclLog.ToList();
+            if (count.HasValue && count.Value < entries.Count)
+            {
+                entries = entries.TakeLast(count.Value).ToList();
+            }
+            return entries;
+        }
+    }
+
+    /// <summary>
+    /// Clears the ACL log.
+    /// </summary>
+    public void ResetLog()
+    {
+        lock (_logLock)
+        {
+            _aclLog.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Saves ACL configuration to file.
+    /// </summary>
+    public void Save(string? filePath = null)
+    {
+        filePath ??= _aclFilePath ?? throw new InvalidOperationException("ACL file path not set");
+        _aclFilePath = filePath;
+
+        var sb = new StringBuilder();
+        
+        foreach (var user in _users.Values)
+        {
+            sb.Append("user ").Append(user.Name);
+            
+            if (user.Enabled)
+                sb.Append(" on");
+            else
+                sb.Append(" off");
+            
+            if (user.NoPassword)
+                sb.Append(" nopass");
+            
+            foreach (var password in user.GetPasswordHashes())
+            {
+                sb.Append(" >").Append(password);
+            }
+            
+            if (user.AllCommands)
+                sb.Append(" +@all");
+            else
+            {
+                foreach (var cmd in user.GetAllowedCommands())
+                {
+                    sb.Append(" +").Append(cmd);
+                }
+            }
+            
+            if (user.AllKeys)
+                sb.Append(" ~*");
+            else
+            {
+                foreach (var pattern in user.GetKeyPatterns())
+                {
+                    sb.Append(" ~").Append(pattern);
+                }
+            }
+            
+            if (user.AllChannels)
+                sb.Append(" &*");
+            else
+            {
+                foreach (var pattern in user.GetChannelPatterns())
+                {
+                    sb.Append(" &").Append(pattern);
+                }
+            }
+            
+            sb.AppendLine();
+        }
+        
+        File.WriteAllText(filePath, sb.ToString());
+        Logger.Info("ACL configuration saved to {0}", filePath);
+    }
+
+    /// <summary>
+    /// Loads ACL configuration from file.
+    /// </summary>
+    public void Load(string? filePath = null)
+    {
+        filePath ??= _aclFilePath ?? throw new InvalidOperationException("ACL file path not set");
+        _aclFilePath = filePath;
+
+        if (!File.Exists(filePath))
+        {
+            Logger.Warning("ACL file not found: {0}", filePath);
+            return;
+        }
+
+        var lines = File.ReadAllLines(filePath);
+        
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith('#'))
+                continue;
+
+            ParseAclRule(trimmed);
+        }
+        
+        Logger.Info("ACL configuration loaded from {0}", filePath);
+    }
+
+    /// <summary>
+    /// Parses an ACL rule string.
+    /// </summary>
+    private void ParseAclRule(string rule)
+    {
+        var parts = rule.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !parts[0].Equals("user", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var username = parts[1];
+        SetUser(username, user =>
+        {
+            for (int i = 2; i < parts.Length; i++)
+            {
+                var part = parts[i];
+                
+                if (part == "on")
+                    user.Enabled = true;
+                else if (part == "off")
+                    user.Enabled = false;
+                else if (part == "nopass")
+                    user.NoPassword = true;
+                else if (part.StartsWith('>'))
+                    user.AddPasswordHash(part[1..]);
+                else if (part == "+@all")
+                    user.AllowAllCommands();
+                else if (part.StartsWith('+'))
+                    user.AllowCommand(part[1..]);
+                else if (part.StartsWith('-'))
+                    user.DisallowCommand(part[1..]);
+                else if (part == "~*")
+                    user.AllowAllKeys();
+                else if (part.StartsWith('~'))
+                    user.AddKeyPattern(part[1..]);
+                else if (part == "&*")
+                    user.AllowAllChannels();
+                else if (part.StartsWith('&'))
+                    user.AddChannelPattern(part[1..]);
+            }
+        });
+    }
+}
+
+/// <summary>
+/// ACL log entry.
+/// </summary>
+public class AclLogEntry
+{
+    public DateTime Timestamp { get; set; }
+    public string Username { get; set; } = string.Empty;
+    public string Command { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -116,14 +340,21 @@ public class AclUser
     private readonly HashSet<string> _allowedCommands = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _disallowedCommands = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _keyPatterns = new();
+    private readonly List<string> _channelPatterns = new();
     private bool _allCommands;
     private bool _allKeys;
+    private bool _allChannels;
+
+    public bool AllCommands => _allCommands;
+    public bool AllKeys => _allKeys;
+    public bool AllChannels => _allChannels;
 
     public AclUser(string name)
     {
         Name = name;
         Enabled = false;
         NoPassword = false;
+        _allChannels = false;
     }
 
     /// <summary>
@@ -137,6 +368,15 @@ public class AclUser
     }
 
     /// <summary>
+    /// Adds a pre-hashed password.
+    /// </summary>
+    public void AddPasswordHash(string hash)
+    {
+        _passwords.Add(hash);
+        NoPassword = false;
+    }
+
+    /// <summary>
     /// Removes a password.
     /// </summary>
     public void RemovePassword(string password)
@@ -144,6 +384,11 @@ public class AclUser
         var hash = HashPassword(password);
         _passwords.Remove(hash);
     }
+
+    /// <summary>
+    /// Gets password hashes for persistence.
+    /// </summary>
+    public IEnumerable<string> GetPasswordHashes() => _passwords;
 
     /// <summary>
     /// Checks if password is valid.
@@ -195,6 +440,55 @@ public class AclUser
     public void AddKeyPattern(string pattern)
     {
         _keyPatterns.Add(pattern);
+    }
+
+    /// <summary>
+    /// Gets key patterns for persistence.
+    /// </summary>
+    public IEnumerable<string> GetKeyPatterns() => _keyPatterns;
+
+    /// <summary>
+    /// Gets allowed commands for persistence.
+    /// </summary>
+    public IEnumerable<string> GetAllowedCommands() => _allowedCommands;
+
+    /// <summary>
+    /// Allows all channels.
+    /// </summary>
+    public void AllowAllChannels()
+    {
+        _allChannels = true;
+        _channelPatterns.Clear();
+    }
+
+    /// <summary>
+    /// Adds a channel pattern.
+    /// </summary>
+    public void AddChannelPattern(string pattern)
+    {
+        _channelPatterns.Add(pattern);
+    }
+
+    /// <summary>
+    /// Gets channel patterns for persistence.
+    /// </summary>
+    public IEnumerable<string> GetChannelPatterns() => _channelPatterns;
+
+    /// <summary>
+    /// Checks if user can access channel.
+    /// </summary>
+    public bool CanAccessChannel(string channel)
+    {
+        if (_allChannels)
+            return true;
+
+        foreach (var pattern in _channelPatterns)
+        {
+            if (MatchPattern(pattern, channel))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>

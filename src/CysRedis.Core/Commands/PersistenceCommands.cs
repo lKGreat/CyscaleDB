@@ -52,7 +52,17 @@ public class BgRewriteAofCommand : ICommandHandler
             return;
         }
 
-        _ = context.Server.Aof.RewriteAsync(context.Server.Store, cancellationToken);
+        if (context.Server.Aof.IsRewriting)
+        {
+            await context.Client.WriteErrorAsync("ERR Background AOF rewrite already in progress", cancellationToken);
+            return;
+        }
+
+        _ = context.Server.Aof.RewriteBackgroundAsync(
+            context.Server.Store, 
+            context.Server.Persistence, 
+            cancellationToken);
+        
         await context.Client.WriteResponseAsync(
             RespValue.SimpleString("Background append only file rewriting started"), cancellationToken);
     }

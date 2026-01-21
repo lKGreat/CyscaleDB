@@ -4,10 +4,13 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using CysRedis.Core.Auth;
+using CysRedis.Core.Blocking;
+using CysRedis.Core.Cluster;
 using CysRedis.Core.Commands;
 using CysRedis.Core.Common;
 using CysRedis.Core.DataStructures;
 using CysRedis.Core.Monitoring;
+using CysRedis.Core.Notifications;
 using CysRedis.Core.PubSub;
 using CysRedis.Core.Replication;
 using CysRedis.Core.Scripting;
@@ -84,6 +87,21 @@ public class RedisServer : IDisposable
     /// ACL manager.
     /// </summary>
     public AclManager Acl { get; }
+
+    /// <summary>
+    /// Blocking manager for blocking commands.
+    /// </summary>
+    public BlockingManager Blocking { get; }
+
+    /// <summary>
+    /// Keyspace event notifier.
+    /// </summary>
+    public KeyspaceNotifier KeyspaceNotifier { get; }
+
+    /// <summary>
+    /// Cluster manager.
+    /// </summary>
+    public ClusterManager Cluster { get; }
 
     /// <summary>
     /// Slow log manager.
@@ -178,12 +196,18 @@ public class RedisServer : IDisposable
         
         _cts = new CancellationTokenSource();
         _clients = new ConcurrentDictionary<long, RedisClient>();
-        Store = new RedisStore();
+        Store = new RedisStore(
+            databaseCount: Constants.DefaultDatabaseCount,
+            evictionPolicy: _options.EvictionPolicy,
+            maxMemory: _options.MaxMemory);
         Dispatcher = new CommandDispatcher(this);
         PubSub = new PubSubManager();
         ScriptManager = new ScriptManager();
         Replication = new ReplicationManager(this);
         Acl = new AclManager();
+        Blocking = new BlockingManager();
+        KeyspaceNotifier = new KeyspaceNotifier(PubSub);
+        Cluster = new ClusterManager();
         SlowLog = new SlowLog(_options.SlowLogThreshold, _options.SlowLogMaxLen);
         LatencyMonitor = new LatencyMonitor(_options.LatencyMonitorThreshold);
         CommandLatency = new LatencyHistogram();

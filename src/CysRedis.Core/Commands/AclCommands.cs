@@ -36,10 +36,125 @@ public class AclCommand : ICommandHandler
             case "CAT":
                 await HandleCat(context, cancellationToken);
                 break;
+            case "LOAD":
+                await HandleLoad(context, cancellationToken);
+                break;
+            case "SAVE":
+                await HandleSave(context, cancellationToken);
+                break;
+            case "LOG":
+                await HandleLog(context, cancellationToken);
+                break;
+            case "DRYRUN":
+                await HandleDryRun(context, cancellationToken);
+                break;
             default:
                 await context.Client.WriteErrorAsync($"ERR Unknown ACL subcommand '{subCommand}'", cancellationToken);
                 break;
         }
+    }
+
+    private async Task HandleLoad(CommandContext context, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var filePath = context.ArgCount > 1 ? context.GetArg(1) : null;
+            context.Server.Acl.Load(filePath);
+            await context.Client.WriteOkAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            await context.Client.WriteErrorAsync($"ERR {ex.Message}", cancellationToken);
+        }
+    }
+
+    private async Task HandleSave(CommandContext context, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var filePath = context.ArgCount > 1 ? context.GetArg(1) : null;
+            context.Server.Acl.Save(filePath);
+            await context.Client.WriteOkAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            await context.Client.WriteErrorAsync($"ERR {ex.Message}", cancellationToken);
+        }
+    }
+
+    private async Task HandleLog(CommandContext context, CancellationToken cancellationToken)
+    {
+        if (context.ArgCount > 1)
+        {
+            var action = context.GetArg(1).ToUpperInvariant();
+            if (action == "RESET")
+            {
+                context.Server.Acl.ResetLog();
+                await context.Client.WriteOkAsync(cancellationToken);
+                return;
+            }
+            
+            // ACL LOG <count>
+            if (int.TryParse(action, out var count))
+            {
+                var entries = context.Server.Acl.GetLog(count);
+                var result = FormatLogEntries(entries);
+                await context.Client.WriteResponseAsync(result, cancellationToken);
+                return;
+            }
+        }
+
+        // ACL LOG (no args)
+        var logEntries = context.Server.Acl.GetLog();
+        var logResult = FormatLogEntries(logEntries);
+        await context.Client.WriteResponseAsync(logResult, cancellationToken);
+    }
+
+    private async Task HandleDryRun(CommandContext context, CancellationToken cancellationToken)
+    {
+        if (context.ArgCount < 3)
+            throw new WrongArityException("ACL DRYRUN");
+
+        var username = context.GetArg(1);
+        var command = context.GetArg(2);
+        var key = context.ArgCount > 3 ? context.GetArg(3) : null;
+
+        var user = context.Server.Acl.GetUser(username);
+        if (user == null)
+        {
+            await context.Client.WriteErrorAsync("ERR User not found", cancellationToken);
+            return;
+        }
+
+        var allowed = context.Server.Acl.CanExecute(user, command, key);
+        await context.Client.WriteBulkStringAsync(allowed ? "OK" : "This user has no permissions to run the command", cancellationToken);
+    }
+
+    private static RespValue FormatLogEntries(List<Auth.AclLogEntry> entries)
+    {
+        var result = entries.Select(entry =>
+        {
+            return RespValue.Array(
+                RespValue.BulkString("count"),
+                new RespValue(1),
+                RespValue.BulkString("reason"),
+                RespValue.BulkString(entry.Reason),
+                RespValue.BulkString("context"),
+                RespValue.BulkString("toplevel"),
+                RespValue.BulkString("object"),
+                RespValue.BulkString(entry.Command),
+                RespValue.BulkString("username"),
+                RespValue.BulkString(entry.Username),
+                RespValue.BulkString("age-seconds"),
+                RespValue.BulkString(((long)(DateTime.UtcNow - entry.Timestamp).TotalSeconds).ToString()),
+                RespValue.BulkString("client-info"),
+                RespValue.BulkString(""),
+                RespValue.BulkString("timestamp-created"),
+                new RespValue(new DateTimeOffset(entry.Timestamp).ToUnixTimeSeconds())
+            );
+        }).ToArray();
+
+        return RespValue.Array(result);
     }
 
     private async Task HandleList(CommandContext context, CancellationToken cancellationToken)
@@ -180,6 +295,10 @@ public class AclCommand : ICommandHandler
                     user.DisallowCommand(rule[1..]);
                 else if (rule.StartsWith('~'))
                     user.AddKeyPattern(rule[1..]);
+                else if (rule == "allchannels" || rule == "&*")
+                    user.AllowAllChannels();
+                else if (rule.StartsWith('&'))
+                    user.AddChannelPattern(rule[1..]);
                 break;
         }
     }

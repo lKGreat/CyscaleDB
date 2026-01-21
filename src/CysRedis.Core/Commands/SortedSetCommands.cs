@@ -68,6 +68,10 @@ public class ZAddCommand : ICommandHandler
                 changed++;
         }
 
+        // 唤醒阻塞在此键上的客户端
+        if (added > 0)
+            context.Server.Blocking.SignalKeyReady(key);
+
         return context.Client.WriteIntegerAsync(ch ? added + changed : added, cancellationToken);
     }
 }

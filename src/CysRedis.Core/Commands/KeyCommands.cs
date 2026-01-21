@@ -17,8 +17,13 @@ public class DelCommand : ICommandHandler
         
         for (int i = 0; i < context.ArgCount; i++)
         {
-            if (db.Delete(context.GetArg(i)))
+            var key = context.GetArg(i);
+            if (db.Delete(key))
+            {
                 deleted++;
+                // 发送Keyspace通知
+                context.Server.KeyspaceNotifier.Notify(context.Client.DatabaseIndex, key, "del");
+            }
         }
         
         return context.Client.WriteIntegerAsync(deleted, cancellationToken);

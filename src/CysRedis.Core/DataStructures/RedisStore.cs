@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using CysRedis.Core.Common;
+using CysRedis.Core.Memory;
 
 namespace CysRedis.Core.DataStructures;
 
@@ -9,6 +10,7 @@ namespace CysRedis.Core.DataStructures;
 public class RedisStore : IDisposable
 {
     private readonly RedisDatabase[] _databases;
+    private readonly EvictionManager _evictionManager;
     private bool _disposed;
 
     /// <summary>
@@ -17,14 +19,22 @@ public class RedisStore : IDisposable
     public int DatabaseCount => _databases.Length;
 
     /// <summary>
+    /// Eviction manager for memory management.
+    /// </summary>
+    public EvictionManager Eviction => _evictionManager;
+
+    /// <summary>
     /// Creates a new Redis store.
     /// </summary>
-    public RedisStore(int databaseCount = Constants.DefaultDatabaseCount)
+    public RedisStore(int databaseCount = Constants.DefaultDatabaseCount, 
+        EvictionPolicy evictionPolicy = EvictionPolicy.NoEviction,
+        long maxMemory = 0)
     {
+        _evictionManager = new EvictionManager(evictionPolicy, maxMemory);
         _databases = new RedisDatabase[databaseCount];
         for (int i = 0; i < databaseCount; i++)
         {
-            _databases[i] = new RedisDatabase(i);
+            _databases[i] = new RedisDatabase(i, _evictionManager);
         }
     }
 
@@ -75,6 +85,7 @@ public class RedisDatabase : IDisposable
 {
     private readonly ConcurrentDictionary<string, RedisObject> _data;
     private readonly ConcurrentDictionary<string, DateTime> _expires;
+    private readonly EvictionManager? _evictionManager;
     private bool _disposed;
 
     /// <summary>
@@ -90,11 +101,12 @@ public class RedisDatabase : IDisposable
     /// <summary>
     /// Creates a new Redis database.
     /// </summary>
-    public RedisDatabase(int index)
+    public RedisDatabase(int index, EvictionManager? evictionManager = null)
     {
         Index = index;
         _data = new ConcurrentDictionary<string, RedisObject>(StringComparer.Ordinal);
         _expires = new ConcurrentDictionary<string, DateTime>(StringComparer.Ordinal);
+        _evictionManager = evictionManager;
     }
 
     /// <summary>
@@ -108,8 +120,14 @@ public class RedisDatabase : IDisposable
             return null;
         }
 
-        _data.TryGetValue(key, out var value);
-        return value;
+        if (_data.TryGetValue(key, out var value))
+        {
+            // 记录访问用于LRU/LFU
+            _evictionManager?.OnKeyAccess(key);
+            return value;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -131,7 +149,14 @@ public class RedisDatabase : IDisposable
     /// </summary>
     public void Set(string key, RedisObject value)
     {
+        // 检查是否需要淘汰
+        TryEvictIfNeeded();
+
+        var estimatedSize = EvictionManager.EstimateSize(value);
         _data[key] = value;
+        
+        // 记录写入用于内存管理
+        _evictionManager?.OnKeySet(key, estimatedSize);
     }
 
     /// <summary>
@@ -169,7 +194,15 @@ public class RedisDatabase : IDisposable
     public bool Delete(string key)
     {
         _expires.TryRemove(key, out _);
-        return _data.TryRemove(key, out _);
+        var removed = _data.TryRemove(key, out _);
+        
+        if (removed)
+        {
+            // 记录删除用于内存管理
+            _evictionManager?.OnKeyDelete(key);
+        }
+        
+        return removed;
     }
 
     /// <summary>
@@ -346,9 +379,31 @@ public class RedisDatabase : IDisposable
             return typed;
         }
 
+        // 检查是否需要淘汰
+        TryEvictIfNeeded();
+
         var newValue = factory();
+        var estimatedSize = EvictionManager.EstimateSize(newValue);
         _data[key] = newValue;
+        
+        _evictionManager?.OnKeySet(key, estimatedSize);
+        
         return newValue;
+    }
+
+    /// <summary>
+    /// 尝试淘汰内存（如果需要）
+    /// </summary>
+    private void TryEvictIfNeeded()
+    {
+        if (_evictionManager != null && _evictionManager.NeedsEviction())
+        {
+            var evicted = _evictionManager.Evict(this, maxEvictions: 10);
+            if (evicted.Count == 0 && _evictionManager.Policy == EvictionPolicy.NoEviction)
+            {
+                throw new RedisException("OOM command not allowed when used memory > 'maxmemory'");
+            }
+        }
     }
 
     private static bool MatchPattern(string key, string pattern)

@@ -21,6 +21,9 @@ public class LPushCommand : ICommandHandler
             list.PushLeft(Encoding.UTF8.GetBytes(context.GetArg(i)));
         }
         
+        // 唤醒阻塞在此键上的客户端
+        context.Server.Blocking.SignalKeyReady(key);
+        
         return context.Client.WriteIntegerAsync(list.Count, cancellationToken);
     }
 }
@@ -40,6 +43,9 @@ public class RPushCommand : ICommandHandler
         {
             list.PushRight(Encoding.UTF8.GetBytes(context.GetArg(i)));
         }
+        
+        // 唤醒阻塞在此键上的客户端
+        context.Server.Blocking.SignalKeyReady(key);
         
         return context.Client.WriteIntegerAsync(list.Count, cancellationToken);
     }

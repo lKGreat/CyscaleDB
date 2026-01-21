@@ -1,5 +1,6 @@
 using CysRedis.Core.Security;
 using CysRedis.Core.Threading;
+using CysRedis.Core.Memory;
 
 namespace CysRedis.Core.Common;
 
@@ -197,6 +198,22 @@ public class RedisServerOptions
     /// I/O threading options.
     /// </summary>
     public IoThreadOptions IoThreading { get; set; } = new();
+
+    #endregion
+
+    #region Memory Management Options
+
+    /// <summary>
+    /// Maximum memory in bytes. Set to 0 for no limit.
+    /// Default: 0 (unlimited).
+    /// </summary>
+    public long MaxMemory { get; set; } = 0;
+
+    /// <summary>
+    /// Memory eviction policy.
+    /// Default: NoEviction.
+    /// </summary>
+    public EvictionPolicy EvictionPolicy { get; set; } = EvictionPolicy.NoEviction;
 
     #endregion
 

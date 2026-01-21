@@ -20,6 +20,7 @@ public class RdbPersistence
     private const byte RDB_TYPE_SET = 2;
     private const byte RDB_TYPE_ZSET = 3;
     private const byte RDB_TYPE_HASH = 4;
+    private const byte RDB_TYPE_STREAM_LISTPACKS = 15;
     
     // RDB opcodes
     private const byte RDB_OPCODE_EXPIRETIME_MS = 252;
@@ -92,6 +93,17 @@ public class RdbPersistence
     }
 
     /// <summary>
+    /// Saves the database to a byte array (for replication).
+    /// </summary>
+    public byte[] SaveToBytes()
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        WriteRdb(writer);
+        return stream.ToArray();
+    }
+
+    /// <summary>
     /// Loads the database from RDB file.
     /// </summary>
     public bool Load()
@@ -158,6 +170,7 @@ public class RdbPersistence
                     RedisSet => RDB_TYPE_SET,
                     RedisSortedSet => RDB_TYPE_ZSET,
                     RedisHash => RDB_TYPE_HASH,
+                    RedisStream => RDB_TYPE_STREAM_LISTPACKS,
                     _ => throw new NotSupportedException($"Unknown type: {obj.GetType()}")
                 };
                 writer.Write(typeCode);
@@ -183,6 +196,9 @@ public class RdbPersistence
                     case RedisHash hash:
                         WriteHash(writer, hash);
                         break;
+                    case RedisStream stream:
+                        WriteStream(writer, stream);
+                        break;
                 }
             }
         }
@@ -190,8 +206,15 @@ public class RdbPersistence
         // EOF
         writer.Write(RDB_OPCODE_EOF);
         
-        // Checksum (simplified - just write zeros)
-        writer.Write(0L);
+        // Calculate and write CRC64 checksum
+        var position = writer.BaseStream.Position;
+        writer.BaseStream.Position = 0;
+        var allData = new byte[position];
+        writer.BaseStream.Read(allData, 0, (int)position);
+        writer.BaseStream.Position = position;
+        
+        var checksum = Crc64.Compute(allData);
+        writer.Write(checksum);
     }
 
     private void ReadRdb(BinaryReader reader)
@@ -249,6 +272,7 @@ public class RdbPersistence
                         RDB_TYPE_SET => ReadSet(reader),
                         RDB_TYPE_ZSET => ReadZSet(reader),
                         RDB_TYPE_HASH => ReadHash(reader),
+                        RDB_TYPE_STREAM_LISTPACKS => ReadStream(reader),
                         _ => null
                     };
 
@@ -407,5 +431,111 @@ public class RdbPersistence
             hash.Set(field, value);
         }
         return hash;
+    }
+
+    private static void WriteStream(BinaryWriter writer, RedisStream stream)
+    {
+        // Write stream length
+        WriteLength(writer, (int)stream.Length);
+        
+        // Write last ID
+        writer.Write(stream.LastId?.Timestamp ?? 0);
+        writer.Write(stream.LastId?.Sequence ?? 0);
+
+        // Write entries
+        foreach (var entry in stream.Range(null, null))
+        {
+            writer.Write(entry.Id.Timestamp);
+            writer.Write(entry.Id.Sequence);
+            
+            WriteLength(writer, entry.Fields.Count);
+            foreach (var (key, value) in entry.Fields)
+            {
+                WriteString(writer, key);
+                WriteString(writer, value);
+            }
+        }
+
+        // Write consumer groups
+        var groups = stream.GetGroups().ToList();
+        WriteLength(writer, groups.Count);
+        
+        foreach (var group in groups)
+        {
+            WriteString(writer, group.Name);
+            writer.Write(group.LastDeliveredId.Timestamp);
+            writer.Write(group.LastDeliveredId.Sequence);
+            
+            // Write consumers
+            var consumers = group.GetConsumers().ToList();
+            WriteLength(writer, consumers.Count);
+            foreach (var consumer in consumers)
+            {
+                WriteString(writer, consumer.Name);
+                writer.Write(new DateTimeOffset(consumer.LastSeenTime).ToUnixTimeMilliseconds());
+                WriteLength(writer, consumer.PendingCount);
+            }
+        }
+    }
+
+    private static RedisStream ReadStream(BinaryReader reader)
+    {
+        var stream = new RedisStream();
+        var length = ReadLength(reader);
+        
+        // Read last ID (but don't use it for now)
+        reader.ReadInt64(); // timestamp
+        reader.ReadInt64(); // sequence
+
+        // Read entries
+        for (int i = 0; i < length; i++)
+        {
+            var timestamp = reader.ReadInt64();
+            var sequence = reader.ReadInt64();
+            var id = new StreamEntryId(timestamp, sequence);
+            
+            var fieldCount = ReadLength(reader);
+            var fields = new Dictionary<string, string>();
+            for (int j = 0; j < fieldCount; j++)
+            {
+                var key = ReadString(reader);
+                var value = ReadString(reader);
+                fields[key] = value;
+            }
+            
+            // Add entry directly (skip validation for loading)
+            stream.Add(id.ToString(), fields);
+        }
+
+        // Read consumer groups
+        var groupCount = ReadLength(reader);
+        for (int i = 0; i < groupCount; i++)
+        {
+            var groupName = ReadString(reader);
+            var lastTs = reader.ReadInt64();
+            var lastSeq = reader.ReadInt64();
+            var lastId = new StreamEntryId(lastTs, lastSeq);
+            
+            stream.CreateGroup(groupName, lastId);
+            var group = stream.GetGroup(groupName);
+            
+            if (group != null)
+            {
+                // Read consumers
+                var consumerCount = ReadLength(reader);
+                for (int j = 0; j < consumerCount; j++)
+                {
+                    var consumerName = ReadString(reader);
+                    var lastSeenMs = reader.ReadInt64();
+                    var pendingCount = ReadLength(reader);
+                    
+                    var consumer = group.GetOrCreateConsumer(consumerName);
+                    consumer.LastSeenTime = DateTimeOffset.FromUnixTimeMilliseconds(lastSeenMs).UtcDateTime;
+                    consumer.PendingCount = pendingCount;
+                }
+            }
+        }
+
+        return stream;
     }
 }

@@ -72,6 +72,38 @@ public class CommandDispatcher
 
         var context = new CommandContext(_server, client, commandName, args);
 
+        // 检查集群槽位（如果启用了集群模式）
+        if (_server.Cluster.IsEnabled && !IsClusterCommand(commandName) && !IsTransactionCommand(commandName))
+        {
+            // 检查命令涉及的键是否在当前节点上
+            var keys = ExtractKeys(commandName, args);
+            foreach (var key in keys)
+            {
+                if (!_server.Cluster.IsKeyInMySlots(key))
+                {
+                    var slot = Cluster.ClusterManager.GetSlot(key);
+                    var node = _server.Cluster.GetNodeForSlot(slot);
+                    
+                    if (node != null)
+                    {
+                        // 返回MOVED重定向
+                        await client.WriteErrorAsync(
+                            $"MOVED {slot} {node.IpAddress}:{node.Port}", 
+                            cancellationToken);
+                        return;
+                    }
+                    else
+                    {
+                        // 槽位未分配
+                        await client.WriteErrorAsync(
+                            $"CLUSTERDOWN Hash slot not served", 
+                            cancellationToken);
+                        return;
+                    }
+                }
+            }
+        }
+
         // Start timing for slow log
         var startTime = Stopwatch.GetTimestamp();
 
@@ -116,6 +148,58 @@ public class CommandDispatcher
             "MULTI" or "EXEC" or "DISCARD" or "WATCH" or "UNWATCH" => true,
             _ => false
         };
+    }
+
+    private static bool IsClusterCommand(string command)
+    {
+        return command switch
+        {
+            "CLUSTER" or "PING" or "INFO" or "COMMAND" or "AUTH" or "SELECT" or "CLIENT" => true,
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// 提取命令涉及的键
+    /// </summary>
+    private static List<string> ExtractKeys(string commandName, string[] args)
+    {
+        var keys = new List<string>();
+        
+        // 简化实现：根据命令类型提取键
+        // 第一个参数通常是键（对于大多数命令）
+        if (args.Length > 1)
+        {
+            switch (commandName)
+            {
+                case "GET" or "SET" or "DEL" or "EXISTS" or "EXPIRE" or "TTL" or "TYPE":
+                case "LPUSH" or "RPUSH" or "LPOP" or "RPOP" or "LRANGE" or "LLEN":
+                case "SADD" or "SREM" or "SMEMBERS" or "SISMEMBER":
+                case "ZADD" or "ZREM" or "ZRANGE" or "ZSCORE":
+                case "HSET" or "HGET" or "HDEL" or "HGETALL":
+                    keys.Add(args[1]); // 第一个参数是键
+                    break;
+                
+                case "MGET" or "MSET":
+                    // 多键命令
+                    for (int i = 1; i < args.Length; i += (commandName == "MSET" ? 2 : 1))
+                    {
+                        keys.Add(args[i]);
+                    }
+                    break;
+                
+                case "RENAME":
+                    // 两个键
+                    if (args.Length >= 3)
+                    {
+                        keys.Add(args[1]);
+                        keys.Add(args[2]);
+                    }
+                    break;
+            }
+        }
+        
+        return keys;
     }
 
     private void RegisterBuiltInCommands()
@@ -195,6 +279,11 @@ public class CommandDispatcher
         Register("LSET", new LSetCommand());
         Register("LLEN", new LLenCommand());
         Register("LTRIM", new LTrimCommand());
+        
+        // Blocking list commands
+        Register("BLPOP", new BLPopCommand());
+        Register("BRPOP", new BRPopCommand());
+        Register("BLMOVE", new BLMoveCommand());
 
         // Set commands
         Register("SADD", new SAddCommand());
@@ -220,6 +309,10 @@ public class CommandDispatcher
         Register("ZCARD", new ZCardCommand());
         Register("ZCOUNT", new ZCountCommand());
         Register("ZRANGEBYSCORE", new ZRangeByScoreCommand());
+        
+        // Blocking sorted set commands
+        Register("BZPOPMIN", new BZPopMinCommand());
+        Register("BZPOPMAX", new BZPopMaxCommand());
 
         // Transaction commands
         Register("MULTI", new MultiCommand());
@@ -255,6 +348,11 @@ public class CommandDispatcher
         Register("XGROUP", new XGroupCommand());
         Register("XACK", new XAckCommand());
         Register("XTRIM", new XTrimCommand());
+        Register("XINFO", new XInfoCommand());
+        Register("XCLAIM", new XClaimCommand());
+        Register("XAUTOCLAIM", new XAutoClaimCommand());
+        Register("XPENDING", new XPendingCommand());
+        Register("XSETID", new XSetIdCommand());
 
         // HyperLogLog commands
         Register("PFADD", new PfAddCommand());
@@ -277,9 +375,15 @@ public class CommandDispatcher
         // Replication commands
         Register("REPLICAOF", new ReplicaOfCommand());
         Register("SLAVEOF", new ReplicaOfCommand());
+        Register("PSYNC", new PsyncCommand());
+        Register("REPLCONF", new ReplConfCommand());
+        Register("WAIT", new WaitCommand());
 
         // ACL commands
         Register("ACL", new AclCommand());
+
+        // Cluster commands
+        Register("CLUSTER", new ClusterCommand());
 
         // Server commands
         Register("INFO", new InfoCommand());

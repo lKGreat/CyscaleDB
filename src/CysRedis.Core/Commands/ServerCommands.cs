@@ -193,6 +193,7 @@ public class ConfigCommand : ICommandHandler
             ["bind"] = "0.0.0.0",
             ["save"] = "",
             ["appendonly"] = "no",
+            ["notify-keyspace-events"] = context.Server.KeyspaceNotifier.GetNotifyConfig(),
         };
 
         foreach (var kvp in configs)
@@ -209,7 +210,21 @@ public class ConfigCommand : ICommandHandler
 
     private Task HandleSet(CommandContext context, CancellationToken cancellationToken)
     {
-        // Accept but ignore config set commands
+        if (context.ArgCount < 3)
+            throw new WrongArityException("CONFIG SET");
+
+        var parameter = context.GetArg(1).ToLowerInvariant();
+        var value = context.GetArg(2);
+
+        // 处理特定配置
+        switch (parameter)
+        {
+            case "notify-keyspace-events":
+                context.Server.KeyspaceNotifier.SetNotifyConfig(value);
+                break;
+            // 其他配置忽略
+        }
+
         return context.Client.WriteOkAsync(cancellationToken);
     }
 

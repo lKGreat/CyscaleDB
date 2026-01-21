@@ -4,34 +4,34 @@ overview: 对比 Redis 8.4.0 源码与 CysRedis 当前实现，识别未实现�
 todos:
   - id: blocking-cmds
     content: 实现阻塞命令 (BLPOP/BRPOP/BLMOVE/BZPOPMIN/BZPOPMAX/WAIT)
-    status: pending
+    status: completed
   - id: replication-psync
     content: 实现 PSYNC 增量复制协议和复制积压缓冲区
-    status: pending
+    status: completed
   - id: lua-execution
     content: 集成 MoonSharp 实现真实 Lua 脚本执行
-    status: pending
+    status: completed
   - id: eviction-policies
     content: 实现 LRU/LFU 内存淘汰策略
-    status: pending
+    status: completed
   - id: stream-enhance
     content: 完善 Stream (XINFO/XCLAIM/XAUTOCLAIM/XPENDING)
-    status: pending
+    status: completed
   - id: cluster-mode
     content: 实现 Redis Cluster 16384 槽位和 Gossip 协议
-    status: pending
+    status: completed
   - id: rdb-enhance
     content: 增强 RDB (LZF压缩/Stream存储/CRC校验)
-    status: pending
+    status: completed
   - id: aof-rewrite
     content: 实现完整 AOF 重写和混合持久化
-    status: pending
+    status: completed
   - id: acl-enhance
     content: 完善 ACL (持久化/日志/频道权限)
-    status: pending
+    status: completed
   - id: keyspace-notify
     content: 实现 Keyspace 事件通知
-    status: pending
+    status: completed
 ---
 
 # CysRedis 对比 Redis 8.4.0 差距分析报告
