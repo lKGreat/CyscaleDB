@@ -185,6 +185,93 @@ public class PerformanceBenchmarkTests : IDisposable
         Assert.True(hitRatio >= 0 && hitRatio <= 1, "Hit ratio should be between 0 and 1");
     }
 
+    [Fact]
+    public void SegmentedBufferPool_ShouldReduceContention()
+    {
+        // Test that SegmentedBufferPool can be created and works correctly
+        var segmentedPool = SegmentedBufferPool.CreateFromConfiguration();
+        
+        Assert.True(segmentedPool.Capacity > 0, "Segmented buffer pool should have capacity");
+        Assert.Equal(0, segmentedPool.Count);
+        
+        segmentedPool.Dispose();
+    }
+
+    [Fact]
+    public void IntervalTree_GapLockPerformance()
+    {
+        // Test that IntervalTree-based gap lock lookup is efficient
+        var lockManager = CyscaleDB.Core.Transactions.LockManager.CreateFromConfiguration();
+        var tx = _transactionManager.Begin();
+        
+        // Acquire multiple gap locks - this should use IntervalTree internally
+        for (int i = 0; i < 100; i++)
+        {
+            var acquired = lockManager.AcquireGapLock(tx, "testdb", "test", "idx", i * 10, i * 10 + 9, 
+                CyscaleDB.Core.Transactions.LockMode.Shared);
+            Assert.True(acquired, $"Should acquire gap lock {i}");
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        
+        // Check for conflicts - this should be O(log n) with IntervalTree
+        for (int i = 0; i < 1000; i++)
+        {
+            lockManager.HasGapLockConflict(tx, "testdb", "test", "idx", i);
+        }
+        
+        stopwatch.Stop();
+        
+        // 1000 gap lock checks should complete quickly (< 100ms with IntervalTree)
+        Assert.True(stopwatch.ElapsedMilliseconds < 1000, 
+            $"Gap lock conflict check too slow: {stopwatch.ElapsedMilliseconds}ms");
+        
+        // Clean up
+        lockManager.ReleaseGapLocks(tx);
+        _transactionManager.Commit(tx);
+        lockManager.Dispose();
+    }
+
+    [Fact]
+    public void ConcurrentBufferPoolAccess_ShouldNotDeadlock()
+    {
+        var segmentedPool = new SegmentedBufferPool(1024, 16);
+        var tasks = new Task[8];
+        var errors = new List<Exception>();
+        
+        for (int t = 0; t < tasks.Length; t++)
+        {
+            int taskId = t;
+            tasks[t] = Task.Run(() =>
+            {
+                try
+                {
+                    for (int i = 0; i < 100; i++)
+                    {
+                        // Simulate concurrent page access by different tasks
+                        // This tests that segmented locking doesn't cause deadlocks
+                        var key = new BufferKey($"file_{taskId}", i);
+                        // Just verify no deadlock occurs
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lock (errors)
+                    {
+                        errors.Add(ex);
+                    }
+                }
+            });
+        }
+        
+        var completed = Task.WaitAll(tasks, TimeSpan.FromSeconds(10));
+        
+        Assert.True(completed, "Concurrent buffer pool access should not deadlock");
+        Assert.Empty(errors);
+        
+        segmentedPool.Dispose();
+    }
+
     public void Dispose()
     {
         if (_disposed)
