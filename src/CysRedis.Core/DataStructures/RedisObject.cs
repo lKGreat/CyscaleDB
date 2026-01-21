@@ -232,6 +232,164 @@ public class RedisSet : RedisObject
 }
 
 /// <summary>
+/// Redis sorted set type.
+/// </summary>
+public class RedisSortedSet : RedisObject
+{
+    public override string TypeName => "zset";
+
+    // Dictionary for O(1) member->score lookup
+    private readonly Dictionary<string, double> _memberScores = new(StringComparer.Ordinal);
+    // SkipList for sorted traversal
+    private readonly SkipList<(double Score, string Member), string> _skipList;
+
+    public RedisSortedSet()
+    {
+        _skipList = new SkipList<(double Score, string Member), string>(
+            Comparer<(double Score, string Member)>.Create((a, b) =>
+            {
+                int cmp = a.Score.CompareTo(b.Score);
+                if (cmp != 0) return cmp;
+                return string.CompareOrdinal(a.Member, b.Member);
+            }));
+    }
+
+    public int Count => _memberScores.Count;
+
+    /// <summary>
+    /// Adds a member with a score. Returns true if new member, false if updated.
+    /// </summary>
+    public bool Add(string member, double score)
+    {
+        if (_memberScores.TryGetValue(member, out var oldScore))
+        {
+            // Update existing
+            if (Math.Abs(oldScore - score) > double.Epsilon)
+            {
+                _skipList.Remove((oldScore, member));
+                _skipList.Insert((score, member), member);
+                _memberScores[member] = score;
+            }
+            return false;
+        }
+
+        // New member
+        _memberScores[member] = score;
+        _skipList.Insert((score, member), member);
+        return true;
+    }
+
+    /// <summary>
+    /// Removes a member.
+    /// </summary>
+    public bool Remove(string member)
+    {
+        if (!_memberScores.TryGetValue(member, out var score))
+            return false;
+
+        _memberScores.Remove(member);
+        _skipList.Remove((score, member));
+        return true;
+    }
+
+    /// <summary>
+    /// Gets the score of a member.
+    /// </summary>
+    public double? GetScore(string member)
+    {
+        return _memberScores.TryGetValue(member, out var score) ? score : null;
+    }
+
+    /// <summary>
+    /// Increments the score of a member.
+    /// </summary>
+    public double IncrBy(string member, double increment)
+    {
+        double newScore;
+        if (_memberScores.TryGetValue(member, out var oldScore))
+        {
+            newScore = oldScore + increment;
+            _skipList.Remove((oldScore, member));
+        }
+        else
+        {
+            newScore = increment;
+        }
+
+        _memberScores[member] = newScore;
+        _skipList.Insert((newScore, member), member);
+        return newScore;
+    }
+
+    /// <summary>
+    /// Gets the rank of a member (0-based).
+    /// </summary>
+    public long? GetRank(string member, bool reverse = false)
+    {
+        if (!_memberScores.TryGetValue(member, out var score))
+            return null;
+
+        var rank = _skipList.GetRank((score, member));
+        if (rank < 0) return null;
+
+        return reverse ? _memberScores.Count - 1 - rank : rank;
+    }
+
+    /// <summary>
+    /// Gets members in a range by rank.
+    /// </summary>
+    public IEnumerable<(string Member, double Score)> GetRange(long start, long stop, bool reverse = false)
+    {
+        foreach (var item in _skipList.GetRange(start, stop, reverse))
+        {
+            yield return (item.Key.Member, item.Key.Score);
+        }
+    }
+
+    /// <summary>
+    /// Gets members in a score range.
+    /// </summary>
+    public IEnumerable<(string Member, double Score)> GetRangeByScore(double min, double max, bool reverse = false)
+    {
+        foreach (var item in _skipList.GetAll(reverse))
+        {
+            if (item.Key.Score >= min && item.Key.Score <= max)
+                yield return (item.Key.Member, item.Key.Score);
+            else if (!reverse && item.Key.Score > max)
+                break;
+            else if (reverse && item.Key.Score < min)
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Counts members in a score range.
+    /// </summary>
+    public int CountByScore(double min, double max)
+    {
+        int count = 0;
+        foreach (var item in _skipList.GetAll())
+        {
+            if (item.Key.Score >= min && item.Key.Score <= max)
+                count++;
+            else if (item.Key.Score > max)
+                break;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Checks if a member exists.
+    /// </summary>
+    public bool Contains(string member) => _memberScores.ContainsKey(member);
+
+    /// <summary>
+    /// Gets all members.
+    /// </summary>
+    public IEnumerable<string> Members => _memberScores.Keys;
+}
+
+/// <summary>
 /// Redis hash type.
 /// </summary>
 public class RedisHash : RedisObject

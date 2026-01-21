@@ -16,43 +16,43 @@ todos:
     status: completed
   - id: phase-1.3a
     content: "Phase 1.3a: TCP 服务器 - 异步连接接受与客户端管理"
-    status: in_progress
+    status: completed
   - id: phase-1.3b
     content: "Phase 1.3b: 命令框架 - 解析器、分发器、PING/ECHO 命令"
-    status: pending
+    status: completed
   - id: phase-2.1a
     content: "Phase 2.1a: String 基础 - GET/SET/MGET/MSET 实现"
-    status: pending
+    status: completed
   - id: phase-2.1b
     content: "Phase 2.1b: String 进阶 - INCR/DECR/APPEND/STRLEN 等"
-    status: pending
+    status: completed
   - id: phase-2.2a
     content: "Phase 2.2a: Hash 基础 - HSET/HGET/HMSET/HMGET/HGETALL"
-    status: pending
+    status: completed
   - id: phase-2.2b
     content: "Phase 2.2b: Hash 进阶 - HDEL/HINCRBY/HSCAN 等"
-    status: pending
+    status: completed
   - id: phase-2.3a
     content: "Phase 2.3a: List 基础 - LPUSH/RPUSH/LPOP/RPOP/LRANGE"
-    status: pending
+    status: completed
   - id: phase-2.3b
     content: "Phase 2.3b: List 进阶 - LINDEX/LINSERT/BLPOP 阻塞操作"
-    status: pending
+    status: completed
   - id: phase-2.4
     content: "Phase 2.4: Set 类型 - SADD/SREM/SMEMBERS/集合运算"
-    status: pending
+    status: completed
   - id: phase-2.5a
     content: "Phase 2.5a: 跳表数据结构实现"
-    status: pending
+    status: in_progress
   - id: phase-2.5b
     content: "Phase 2.5b: Sorted Set 命令实现"
     status: pending
   - id: phase-3.1
     content: "Phase 3.1: 键空间操作 - DEL/EXISTS/TYPE/KEYS/SCAN"
-    status: pending
+    status: completed
   - id: phase-3.2
     content: "Phase 3.2: 过期机制 - EXPIRE/TTL + 惰性删除 + 定期删除"
-    status: pending
+    status: completed
   - id: phase-4.1
     content: "Phase 4.1: RDB 持久化 - 文件格式 + SAVE/BGSAVE"
     status: pending

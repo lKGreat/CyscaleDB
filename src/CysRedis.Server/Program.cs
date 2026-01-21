@@ -1,4 +1,5 @@
 using CysRedis.Core.Common;
+using CysRedis.Core.Protocol;
 
 namespace CysRedis.Server;
 
@@ -9,15 +10,31 @@ public class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        Logger.Info("CysRedis Server v{0}", Constants.ServerVersion);
-        Logger.Info("Redis Protocol Compatible Server");
-        Logger.Info("Starting server on port {0}...", Constants.DefaultPort);
+        // Parse command line arguments
+        int port = Constants.DefaultPort;
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--port" && i + 1 < args.Length)
+            {
+                if (int.TryParse(args[i + 1], out var p))
+                    port = p;
+                i++;
+            }
+        }
+
+        Logger.Info("===========================================");
+        Logger.Info("  CysRedis Server v{0}", Constants.ServerVersion);
+        Logger.Info("  Redis Protocol Compatible Server");
+        Logger.Info("===========================================");
+        Logger.Info("Starting server on port {0}...", port);
+
+        RedisServer? server = null;
 
         try
         {
-            // TODO: Initialize Redis server
-            // var server = new RedisServer();
-            // server.Start();
+            // Initialize and start Redis server
+            server = new RedisServer(port);
+            server.Start();
 
             Logger.Info("Server is ready to accept connections.");
             Logger.Info("Press Ctrl+C to shutdown.");
@@ -41,6 +58,8 @@ public class Program
             }
 
             Logger.Info("Shutting down server...");
+            server?.Stop();
+
             Logger.Info("Server shutdown complete.");
             return 0;
         }
@@ -48,6 +67,10 @@ public class Program
         {
             Logger.Error("Server failed to start", ex);
             return 1;
+        }
+        finally
+        {
+            server?.Dispose();
         }
     }
 }

@@ -17,6 +17,7 @@ public class RedisServer : IDisposable
     private readonly ConcurrentDictionary<long, RedisClient> _clients;
     private Task? _acceptTask;
     private bool _disposed;
+    private long _totalCommandsProcessed;
 
     /// <summary>
     /// Server port.
@@ -46,7 +47,7 @@ public class RedisServer : IDisposable
     /// <summary>
     /// Total commands processed.
     /// </summary>
-    public long TotalCommandsProcessed { get; private set; }
+    public long TotalCommandsProcessed => Interlocked.Read(ref _totalCommandsProcessed);
 
     /// <summary>
     /// Creates a new Redis server.
@@ -157,7 +158,7 @@ public class RedisServer : IDisposable
                         break;
                     }
 
-                    Interlocked.Increment(ref TotalCommandsProcessed);
+                    Interlocked.Increment(ref _totalCommandsProcessed);
                     
                     // Dispatch command
                     await Dispatcher.ExecuteAsync(client, args, _cts.Token);
