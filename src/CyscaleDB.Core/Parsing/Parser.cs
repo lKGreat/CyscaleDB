@@ -3783,7 +3783,142 @@ public sealed class Parser
 
     private Statement ParseCreateEventStatement()
     {
-        throw new NotImplementedException("CREATE EVENT is not yet implemented (Phase 3)");
+        // CREATE [OR REPLACE] EVENT event_name
+        // ON SCHEDULE schedule_expr
+        // [ON COMPLETION [NOT] PRESERVE]
+        // [ENABLE | DISABLE]
+        // [COMMENT 'comment']
+        // DO event_body
+
+        // EVENT keyword (may have been consumed by MatchIdentifier)
+        if (Check(TokenType.EVENT))
+            Advance();
+
+        var stmt = new CreateEventStatement();
+
+        // Event name
+        stmt.EventName = ExpectIdentifier();
+
+        // ON SCHEDULE
+        Expect(TokenType.ON);
+        Expect(TokenType.SCHEDULE);
+
+        // Parse schedule expression (simplified - store as string)
+        stmt.Schedule = ParseScheduleExpression();
+
+        // Optional: ON COMPLETION [NOT] PRESERVE
+        if (Check(TokenType.ON))
+        {
+            Advance();
+            ExpectIdentifierValue("COMPLETION");
+            if (Match(TokenType.NOT))
+            {
+                ExpectIdentifierValue("PRESERVE");
+                stmt.OnCompletionPreserve = false;
+            }
+            else
+            {
+                ExpectIdentifierValue("PRESERVE");
+                stmt.OnCompletionPreserve = true;
+            }
+        }
+
+        // Optional: ENABLE or DISABLE
+        if (Match(TokenType.ENABLE))
+        {
+            stmt.Enabled = true;
+        }
+        else if (Match(TokenType.DISABLE))
+        {
+            stmt.Enabled = false;
+        }
+
+        // Optional: COMMENT
+        if (MatchIdentifier("COMMENT"))
+        {
+            if (Check(TokenType.StringLiteral))
+            {
+                stmt.Comment = _currentToken.Value;
+                Advance();
+            }
+        }
+
+        // DO event_body
+        Expect(TokenType.DO);
+
+        // Parse event body (single statement or BEGIN...END block)
+        if (Check(TokenType.BEGIN))
+        {
+            stmt.Body = ParseProcedureBody();
+        }
+        else
+        {
+            stmt.Body = [ParseStatement()];
+        }
+
+        return stmt;
+    }
+
+    /// <summary>
+    /// Parses a schedule expression (EVERY interval or AT timestamp).
+    /// Returns the schedule as a string representation.
+    /// </summary>
+    private string ParseScheduleExpression()
+    {
+        var parts = new List<string>();
+
+        // EVERY interval or AT timestamp
+        if (Match(TokenType.EVERY))
+        {
+            parts.Add("EVERY");
+
+            // Parse interval value
+            if (Check(TokenType.IntegerLiteral))
+            {
+                parts.Add(_currentToken.Value);
+                Advance();
+            }
+
+            // Parse interval unit (SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, YEAR)
+            if (Check(TokenType.Identifier))
+            {
+                parts.Add(_currentToken.Value.ToUpperInvariant());
+                Advance();
+            }
+
+            // Optional: STARTS timestamp
+            if (MatchIdentifier("STARTS"))
+            {
+                parts.Add("STARTS");
+                if (Check(TokenType.StringLiteral))
+                {
+                    parts.Add($"'{_currentToken.Value}'");
+                    Advance();
+                }
+            }
+
+            // Optional: ENDS timestamp
+            if (MatchIdentifier("ENDS"))
+            {
+                parts.Add("ENDS");
+                if (Check(TokenType.StringLiteral))
+                {
+                    parts.Add($"'{_currentToken.Value}'");
+                    Advance();
+                }
+            }
+        }
+        else if (Match(TokenType.AT))
+        {
+            parts.Add("AT");
+            if (Check(TokenType.StringLiteral))
+            {
+                parts.Add($"'{_currentToken.Value}'");
+                Advance();
+            }
+        }
+
+        return string.Join(" ", parts);
     }
 
     private Statement ParseDropProcedureStatement()
@@ -3833,7 +3968,22 @@ public sealed class Parser
 
     private Statement ParseDropEventStatement()
     {
-        throw new NotImplementedException("DROP EVENT is not yet implemented (Phase 3)");
+        // DROP EVENT [IF EXISTS] event_name
+        Expect(TokenType.EVENT);
+
+        var stmt = new DropEventStatement();
+
+        // Check for IF EXISTS
+        if (Match(TokenType.IF))
+        {
+            Expect(TokenType.EXISTS);
+            stmt.IfExists = true;
+        }
+
+        // Event name
+        stmt.EventName = ExpectIdentifier();
+
+        return stmt;
     }
 
     private Statement ParseCallStatement()

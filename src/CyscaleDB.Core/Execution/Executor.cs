@@ -166,6 +166,9 @@ public sealed class Executor
             // Trigger statements
             CreateTriggerStatement s => ExecuteCreateTrigger(s),
             DropTriggerStatement s => ExecuteDropTrigger(s),
+            // Event statements
+            CreateEventStatement s => ExecuteCreateEvent(s),
+            DropEventStatement s => ExecuteDropEvent(s),
             _ => throw new CyscaleException($"Unsupported statement type: {statement.GetType().Name}")
         };
     }
@@ -3424,6 +3427,114 @@ public sealed class Executor
             {
                 Execute(bodyStmt);
             }
+        }
+        finally
+        {
+            // Restore previous context
+            _procedureVariables = savedVariables;
+            _procedureReturnValue = savedReturnValue;
+            _leaveLabel = savedLeaveLabel;
+            _iterateLabel = savedIterateLabel;
+        }
+    }
+
+    #endregion
+
+    #region Event Execution
+
+    private ExecutionResult ExecuteCreateEvent(CreateEventStatement stmt)
+    {
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            throw new DatabaseNotFoundException(_currentDatabase);
+
+        // Check if event already exists
+        if (db.HasEvent(stmt.EventName) && !stmt.OrReplace)
+            throw new CyscaleException($"Event '{stmt.EventName}' already exists", ErrorCode.EventExists);
+
+        // Create event info
+        var eventInfo = new EventInfo(
+            db.GetNextEventId(),
+            stmt.EventName,
+            stmt.Schedule,
+            stmt.Body,
+            stmt.OnCompletionPreserve,
+            stmt.Enabled,
+            stmt.Comment,
+            stmt.Definer);
+
+        if (stmt.OrReplace)
+        {
+            db.AddOrReplaceEvent(eventInfo);
+        }
+        else
+        {
+            db.AddEvent(eventInfo);
+        }
+
+        // Save catalog
+        _catalog.SaveCatalog();
+
+        _logger.Info("Created event '{0}' in database '{1}'", stmt.EventName, _currentDatabase);
+        return ExecutionResult.Ddl($"Event '{stmt.EventName}' created successfully");
+    }
+
+    private ExecutionResult ExecuteDropEvent(DropEventStatement stmt)
+    {
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            throw new DatabaseNotFoundException(_currentDatabase);
+
+        if (!db.HasEvent(stmt.EventName))
+        {
+            if (stmt.IfExists)
+                return ExecutionResult.Ddl($"Event '{stmt.EventName}' does not exist");
+
+            throw new CyscaleException($"Event '{stmt.EventName}' does not exist", ErrorCode.EventNotFound);
+        }
+
+        db.RemoveEvent(stmt.EventName);
+
+        // Save catalog
+        _catalog.SaveCatalog();
+
+        _logger.Info("Dropped event '{0}' from database '{1}'", stmt.EventName, _currentDatabase);
+        return ExecutionResult.Ddl($"Event '{stmt.EventName}' dropped successfully");
+    }
+
+    /// <summary>
+    /// Executes a scheduled event.
+    /// </summary>
+    internal void ExecuteScheduledEvent(EventInfo eventInfo)
+    {
+        // Save current context
+        var savedVariables = _procedureVariables;
+        var savedReturnValue = _procedureReturnValue;
+        var savedLeaveLabel = _leaveLabel;
+        var savedIterateLabel = _iterateLabel;
+
+        try
+        {
+            // Initialize event execution context
+            _procedureVariables = new Dictionary<string, DataValue>(StringComparer.OrdinalIgnoreCase);
+            _procedureReturnValue = null;
+            _leaveLabel = null;
+            _iterateLabel = null;
+
+            // Execute event body
+            foreach (var bodyStmt in eventInfo.Body)
+            {
+                Execute(bodyStmt);
+            }
+
+            // Update event after execution
+            eventInfo.UpdateAfterExecution();
+
+            _logger.Info("Executed scheduled event '{0}'", eventInfo.EventName);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Error executing event '{0}': {1}", eventInfo.EventName, ex.Message);
         }
         finally
         {

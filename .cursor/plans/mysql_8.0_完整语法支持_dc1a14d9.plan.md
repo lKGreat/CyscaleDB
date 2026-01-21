@@ -304,19 +304,19 @@ todos:
     status: completed
   - id: 3.4.1
     content: EVENT/SCHEDULE/EVERY 关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 3.4.2
     content: CreateEventStatement AST - 新建 AST 节点
-    status: pending
+    status: completed
   - id: 3.4.3
     content: CREATE EVENT 解析 - 解析事件定义和调度
-    status: pending
+    status: completed
   - id: 3.4.4
     content: 事件调度器 - 后台线程执行定时事件
-    status: pending
+    status: completed
   - id: 3.4.5
     content: 事件执行 - 测试定时任务执行
-    status: pending
+    status: completed
   - id: 4.1.1
     content: INTERSECT/EXCEPT 关键字 - 添加到 Token.cs
     status: completed

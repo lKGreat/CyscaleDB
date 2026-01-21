@@ -59,6 +59,11 @@ public sealed class DatabaseInfo
     private readonly Dictionary<string, TriggerInfo> _triggers;
 
     /// <summary>
+    /// The events in this database, keyed by name (case-insensitive).
+    /// </summary>
+    private readonly Dictionary<string, EventInfo> _events;
+
+    /// <summary>
     /// Gets all tables in this database.
     /// </summary>
     public IReadOnlyCollection<TableSchema> Tables => _tables.Values;
@@ -87,6 +92,11 @@ public sealed class DatabaseInfo
     /// Gets all triggers in this database.
     /// </summary>
     public IReadOnlyCollection<TriggerInfo> Triggers => _triggers.Values;
+
+    /// <summary>
+    /// Gets all events in this database.
+    /// </summary>
+    public IReadOnlyCollection<EventInfo> Events => _events.Values;
 
     /// <summary>
     /// Gets the number of tables in this database.
@@ -124,6 +134,11 @@ public sealed class DatabaseInfo
     private int _nextTriggerId;
 
     /// <summary>
+    /// Counter for generating unique event IDs.
+    /// </summary>
+    private int _nextEventId;
+
+    /// <summary>
     /// Creates a new database info.
     /// </summary>
     public DatabaseInfo(
@@ -152,9 +167,11 @@ public sealed class DatabaseInfo
         _checkConstraints = new Dictionary<string, CheckConstraintDefinition>(StringComparer.OrdinalIgnoreCase);
         _procedures = new Dictionary<string, ProcedureInfo>(StringComparer.OrdinalIgnoreCase);
         _triggers = new Dictionary<string, TriggerInfo>(StringComparer.OrdinalIgnoreCase);
+        _events = new Dictionary<string, EventInfo>(StringComparer.OrdinalIgnoreCase);
         _nextTableId = 1;
         _nextViewId = 1;
         _nextTriggerId = 1;
+        _nextEventId = 1;
         _nextProcedureId = 1;
     }
 
@@ -504,6 +521,72 @@ public sealed class DatabaseInfo
             string.Equals(t.TableName, tableName, StringComparison.OrdinalIgnoreCase) &&
             t.Timing == timing &&
             t.Event == @event);
+    }
+
+    #endregion
+
+    #region Event Management
+
+    /// <summary>
+    /// Gets an event by name.
+    /// </summary>
+    public EventInfo? GetEvent(string eventName)
+    {
+        return _events.TryGetValue(eventName, out var evt) ? evt : null;
+    }
+
+    /// <summary>
+    /// Checks if an event exists.
+    /// </summary>
+    public bool HasEvent(string eventName) => _events.ContainsKey(eventName);
+
+    /// <summary>
+    /// Adds an event to this database.
+    /// </summary>
+    public void AddEvent(EventInfo eventInfo)
+    {
+        if (_events.ContainsKey(eventInfo.EventName))
+            throw new CyscaleException($"Event '{eventInfo.EventName}' already exists", ErrorCode.EventExists);
+
+        _events[eventInfo.EventName] = eventInfo;
+    }
+
+    /// <summary>
+    /// Adds or replaces an event in this database.
+    /// </summary>
+    public void AddOrReplaceEvent(EventInfo eventInfo)
+    {
+        _events[eventInfo.EventName] = eventInfo;
+    }
+
+    /// <summary>
+    /// Removes an event from this database.
+    /// </summary>
+    public bool RemoveEvent(string eventName)
+    {
+        return _events.Remove(eventName);
+    }
+
+    /// <summary>
+    /// Gets the next unique event ID.
+    /// </summary>
+    public int GetNextEventId() => _nextEventId++;
+
+    /// <summary>
+    /// Sets the next event ID (used during deserialization).
+    /// </summary>
+    internal void SetNextEventId(int nextId) => _nextEventId = nextId;
+
+    /// <summary>
+    /// Gets all enabled events that are due for execution.
+    /// </summary>
+    public IEnumerable<EventInfo> GetDueEvents()
+    {
+        var now = DateTime.UtcNow;
+        return _events.Values.Where(e => 
+            e.Enabled && 
+            e.NextExecutionTime.HasValue && 
+            e.NextExecutionTime.Value <= now);
     }
 
     #endregion
