@@ -1,3 +1,4 @@
+using CyscaleDB.Core.Auth;
 using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Execution.Expressions;
 using CyscaleDB.Core.Execution.Operators;
@@ -24,6 +25,10 @@ public sealed class Executor
     private Transaction? _currentTransaction;
     private long _lastInsertId;
     private readonly SystemVariables _systemVariables = new();
+
+    // Current session user info
+    private string _currentUser = "root";
+    private string _currentHost = "localhost";
     
     // Locking context for current SELECT statement
     private LockingOptions? _currentLockingOptions;
@@ -81,6 +86,103 @@ public sealed class Executor
     public ForeignKeyManager ForeignKeyManager => _foreignKeyManager;
 
     /// <summary>
+    /// Sets the current session user for privilege checking.
+    /// </summary>
+    public void SetSessionUser(string username, string host = "localhost")
+    {
+        _currentUser = username;
+        _currentHost = host;
+    }
+
+    /// <summary>
+    /// Checks if the current user has the required privilege.
+    /// Throws CyscaleException if the privilege is not granted.
+    /// </summary>
+    private void CheckPrivilege(PrivilegeType privilege, string? database = null, string? table = null)
+    {
+        if (!UserManager.Instance.HasPrivilege(_currentUser, _currentHost, privilege, database, table))
+        {
+            throw new CyscaleException(
+                $"Access denied for user '{_currentUser}'@'{_currentHost}' to {privilege} on {database ?? "*"}.{table ?? "*"}",
+                ErrorCode.AccessDenied);
+        }
+    }
+
+    /// <summary>
+    /// Determines the required privilege for a statement and checks it.
+    /// </summary>
+    private void CheckStatementPrivilege(Statement statement)
+    {
+        var (privilege, database, table) = GetRequiredPrivilege(statement);
+        if (privilege.HasValue)
+        {
+            CheckPrivilege(privilege.Value, database, table);
+        }
+    }
+
+    /// <summary>
+    /// Extracts the database name from a table reference.
+    /// </summary>
+    private static string? GetDatabaseFromTableRef(TableReference? tableRef)
+    {
+        return tableRef switch
+        {
+            SimpleTableReference simple => simple.DatabaseName,
+            JoinTableReference joined => GetDatabaseFromTableRef(joined.Left),
+            SubqueryTableReference => null,
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// Extracts the table name from a table reference.
+    /// </summary>
+    private static string? GetTableNameFromTableRef(TableReference? tableRef)
+    {
+        return tableRef switch
+        {
+            SimpleTableReference simple => simple.TableName,
+            JoinTableReference joined => GetTableNameFromTableRef(joined.Left),
+            SubqueryTableReference => null,
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// Determines the required privilege for executing a statement.
+    /// </summary>
+    private (PrivilegeType? privilege, string? database, string? table) GetRequiredPrivilege(Statement statement)
+    {
+        return statement switch
+        {
+            SelectStatement s => (PrivilegeType.Select, GetDatabaseFromTableRef(s.From) ?? _currentDatabase, GetTableNameFromTableRef(s.From)),
+            InsertStatement s => (PrivilegeType.Insert, s.DatabaseName ?? _currentDatabase, s.TableName),
+            UpdateStatement s => (PrivilegeType.Update, s.DatabaseName ?? _currentDatabase, s.TableName),
+            DeleteStatement s => (PrivilegeType.Delete, s.DatabaseName ?? _currentDatabase, s.TableName),
+            CreateTableStatement s => (PrivilegeType.Create, s.DatabaseName ?? _currentDatabase, null),
+            CreateDatabaseStatement => (PrivilegeType.Create, null, null),
+            CreateViewStatement s => (PrivilegeType.CreateView, s.DatabaseName ?? _currentDatabase, null),
+            CreateIndexStatement s => (PrivilegeType.Index, s.DatabaseName ?? _currentDatabase, s.TableName),
+            DropTableStatement s => (PrivilegeType.Drop, s.DatabaseName ?? _currentDatabase, s.TableName),
+            DropDatabaseStatement => (PrivilegeType.Drop, null, null),
+            DropViewStatement => (PrivilegeType.Drop, _currentDatabase, null),
+            DropIndexStatement s => (PrivilegeType.Index, s.DatabaseName ?? _currentDatabase, null),
+            AlterTableStatement s => (PrivilegeType.Alter, s.DatabaseName ?? _currentDatabase, s.TableName),
+            CreateProcedureStatement => (PrivilegeType.CreateRoutine, _currentDatabase, null),
+            DropProcedureStatement => (PrivilegeType.AlterRoutine, _currentDatabase, null),
+            CallStatement => (PrivilegeType.Execute, _currentDatabase, null),
+            CreateTriggerStatement s => (PrivilegeType.Trigger, _currentDatabase, s.TableName),
+            DropTriggerStatement => (PrivilegeType.Trigger, _currentDatabase, null),
+            CreateEventStatement => (PrivilegeType.Event, _currentDatabase, null),
+            DropEventStatement => (PrivilegeType.Event, _currentDatabase, null),
+            GrantStatement => (PrivilegeType.Grant, null, null),
+            RevokeStatement => (PrivilegeType.Grant, null, null),
+            // SHOW statements and others generally don't require specific privileges
+            _ => (null, null, null)
+        };
+    }
+
+    /// <summary>
     /// Executes a SQL string. Supports multiple statements separated by semicolons.
     /// </summary>
     public ExecutionResult Execute(string sql)
@@ -107,6 +209,9 @@ public sealed class Executor
     /// </summary>
     public ExecutionResult Execute(Statement statement)
     {
+        // Check privileges before execution
+        CheckStatementPrivilege(statement);
+
         return statement switch
         {
             SelectStatement s => ExecuteSelect(s),
@@ -3135,27 +3240,45 @@ public sealed class Executor
 
     private ExecutionResult ExecuteGrant(GrantStatement stmt)
     {
+        foreach (var privilegeStr in stmt.Privileges)
+        {
+            var privilege = UserManager.ParsePrivilege(privilegeStr);
+            UserManager.Instance.GrantPrivilege(
+                stmt.UserName, 
+                stmt.Host, 
+                privilege, 
+                stmt.DatabaseName, 
+                stmt.TableName);
+        }
+
         var privileges = string.Join(", ", stmt.Privileges);
         var target = stmt.TableName != null 
             ? $"{stmt.DatabaseName ?? "*"}.{stmt.TableName}" 
             : $"{stmt.DatabaseName ?? "*"}.*";
         
         _logger.Info("GRANT {0} ON {1} TO {2}@{3}", privileges, target, stmt.UserName, stmt.Host);
-        
-        // Simplified stub implementation
         return ExecutionResult.Ddl($"Granted {privileges} on {target} to '{stmt.UserName}'@'{stmt.Host}'");
     }
 
     private ExecutionResult ExecuteRevoke(RevokeStatement stmt)
     {
+        foreach (var privilegeStr in stmt.Privileges)
+        {
+            var privilege = UserManager.ParsePrivilege(privilegeStr);
+            UserManager.Instance.RevokePrivilege(
+                stmt.UserName, 
+                stmt.Host, 
+                privilege, 
+                stmt.DatabaseName, 
+                stmt.TableName);
+        }
+
         var privileges = string.Join(", ", stmt.Privileges);
         var target = stmt.TableName != null 
             ? $"{stmt.DatabaseName ?? "*"}.{stmt.TableName}" 
             : $"{stmt.DatabaseName ?? "*"}.*";
         
         _logger.Info("REVOKE {0} ON {1} FROM {2}@{3}", privileges, target, stmt.UserName, stmt.Host);
-        
-        // Simplified stub implementation
         return ExecutionResult.Ddl($"Revoked {privileges} on {target} from '{stmt.UserName}'@'{stmt.Host}'");
     }
 

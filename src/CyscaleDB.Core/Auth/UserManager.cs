@@ -261,9 +261,198 @@ public sealed class UserManager
         }
         return true;
     }
+
+    #region Privilege Management
+
+    /// <summary>
+    /// Grants a privilege to a user.
+    /// </summary>
+    public void GrantPrivilege(string username, string host, PrivilegeType privilege, string? database = null, string? table = null)
+    {
+        _lock.EnterWriteLock();
+        try
+        {
+            var user = FindUser(username, host);
+            if (user == null)
+                throw new CyscaleException($"User '{username}'@'{host}' does not exist", ErrorCode.UserNotFound);
+
+            var key = GetUserKey(username, host);
+            var priv = new UserPrivilege(privilege, database, table);
+            user.Privileges.Add(priv);
+            _logger.Info("Granted {0} to '{1}'@'{2}' on {3}.{4}", 
+                privilege, username, host, database ?? "*", table ?? "*");
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Revokes a privilege from a user.
+    /// </summary>
+    public void RevokePrivilege(string username, string host, PrivilegeType privilege, string? database = null, string? table = null)
+    {
+        _lock.EnterWriteLock();
+        try
+        {
+            var user = FindUser(username, host);
+            if (user == null)
+                throw new CyscaleException($"User '{username}'@'{host}' does not exist", ErrorCode.UserNotFound);
+
+            var priv = new UserPrivilege(privilege, database, table);
+            user.Privileges.Remove(priv);
+            _logger.Info("Revoked {0} from '{1}'@'{2}' on {3}.{4}", 
+                privilege, username, host, database ?? "*", table ?? "*");
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Checks if a user has a specific privilege.
+    /// </summary>
+    public bool HasPrivilege(string username, string host, PrivilegeType privilege, string? database = null, string? table = null)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            var user = FindUser(username, host);
+            if (user == null)
+                return false;
+
+            // Root user has all privileges
+            if (user.Username.Equals("root", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // Check if any granted privilege covers the requested one
+            foreach (var p in user.Privileges)
+            {
+                if (p.Covers(privilege, database, table))
+                    return true;
+            }
+
+            return false;
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Gets all privileges for a user.
+    /// </summary>
+    public IEnumerable<UserPrivilege> GetPrivileges(string username, string host)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            var user = FindUser(username, host);
+            return user?.Privileges.ToList() ?? [];
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Parses a privilege string to PrivilegeType.
+    /// </summary>
+    public static PrivilegeType ParsePrivilege(string privilegeStr)
+    {
+        return privilegeStr.ToUpperInvariant() switch
+        {
+            "ALL" or "ALL PRIVILEGES" => PrivilegeType.All,
+            "SELECT" => PrivilegeType.Select,
+            "INSERT" => PrivilegeType.Insert,
+            "UPDATE" => PrivilegeType.Update,
+            "DELETE" => PrivilegeType.Delete,
+            "CREATE" => PrivilegeType.Create,
+            "DROP" => PrivilegeType.Drop,
+            "ALTER" => PrivilegeType.Alter,
+            "INDEX" => PrivilegeType.Index,
+            "CREATE VIEW" => PrivilegeType.CreateView,
+            "SHOW VIEW" => PrivilegeType.ShowView,
+            "CREATE ROUTINE" => PrivilegeType.CreateRoutine,
+            "ALTER ROUTINE" => PrivilegeType.AlterRoutine,
+            "EXECUTE" => PrivilegeType.Execute,
+            "TRIGGER" => PrivilegeType.Trigger,
+            "EVENT" => PrivilegeType.Event,
+            "GRANT OPTION" => PrivilegeType.Grant,
+            "REFERENCES" => PrivilegeType.References,
+            _ => throw new CyscaleException($"Unknown privilege: {privilegeStr}")
+        };
+    }
+
+    #endregion
 }
 
 /// <summary>
 /// Represents a user account.
 /// </summary>
-public record UserInfo(string Username, string Host, byte[]? PasswordHash);
+public record UserInfo(string Username, string Host, byte[]? PasswordHash)
+{
+    /// <summary>
+    /// The privileges granted to this user.
+    /// </summary>
+    public HashSet<UserPrivilege> Privileges { get; init; } = [];
+}
+
+/// <summary>
+/// Represents a privilege granted to a user.
+/// </summary>
+public record UserPrivilege(
+    PrivilegeType Type,
+    string? DatabaseName = null,  // null = all databases (*.*)
+    string? TableName = null      // null = all tables (db.*)
+)
+{
+    /// <summary>
+    /// Checks if this privilege covers the specified target.
+    /// </summary>
+    public bool Covers(PrivilegeType requiredType, string? database, string? table)
+    {
+        // Check privilege type
+        if (Type != PrivilegeType.All && Type != requiredType)
+            return false;
+
+        // Check database scope
+        if (DatabaseName != null && !string.Equals(DatabaseName, database, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        // Check table scope
+        if (TableName != null && !string.Equals(TableName, table, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return true;
+    }
+}
+
+/// <summary>
+/// Types of privileges that can be granted.
+/// </summary>
+public enum PrivilegeType
+{
+    All,
+    Select,
+    Insert,
+    Update,
+    Delete,
+    Create,
+    Drop,
+    Alter,
+    Index,
+    CreateView,
+    ShowView,
+    CreateRoutine,
+    AlterRoutine,
+    Execute,
+    Trigger,
+    Event,
+    Grant,
+    References
+}

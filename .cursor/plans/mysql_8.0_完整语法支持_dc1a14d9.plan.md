@@ -424,7 +424,7 @@ todos:
     status: completed
   - id: 6.1.9
     content: 权限检查集成 - 执行语句前检查权限，测试
-    status: pending
+    status: completed
   - id: 6.2.1
     content: ANALYZE/FLUSH/LOCK 关键字 - 添加到 Token.cs
     status: completed
