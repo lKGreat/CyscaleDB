@@ -179,6 +179,32 @@ public sealed class RespPipeWriter : IDisposable
         var written = FormatInteger(span, value);
         _pipeWriter.Advance(written);
     }
+    
+    /// <summary>
+    /// Fast integer write using stackalloc (for hot paths).
+    /// </summary>
+    public unsafe void WriteIntegerFast(long value)
+    {
+        // Optimized common cases
+        if (value == 0)
+        {
+            WriteRaw(ZeroResponse);
+            return;
+        }
+        if (value == 1)
+        {
+            WriteRaw(OneResponse);
+            return;
+        }
+
+        // Use stackalloc for small buffers
+        Span<byte> buffer = stackalloc byte[24];
+        fixed (byte* ptr = buffer)
+        {
+            int len = FormatIntegerUnsafe(buffer, value);
+            WriteRaw(new ReadOnlySpan<byte>(ptr, len));
+        }
+    }
 
     /// <summary>
     /// Writes a bulk string ($6\r\nfoobar\r\n).
@@ -420,6 +446,14 @@ public sealed class RespPipeWriter : IDisposable
     /// </summary>
     private static int FormatInteger(Span<byte> span, long value)
     {
+        return FormatIntegerUnsafe(span, value);
+    }
+    
+    /// <summary>
+    /// Unsafe optimized integer formatting using stackalloc.
+    /// </summary>
+    private static unsafe int FormatIntegerUnsafe(Span<byte> span, long value)
+    {
         span[0] = (byte)':';
         var pos = 1;
         
@@ -429,21 +463,21 @@ public sealed class RespPipeWriter : IDisposable
             value = -value;
         }
 
-        // Write digits in reverse, then reverse them
-        var digitStart = pos;
+        // Use stackalloc for digit buffer
+        Span<byte> digits = stackalloc byte[20];
+        int digitCount = 0;
+        
+        // Write digits in reverse
         do
         {
-            span[pos++] = (byte)('0' + value % 10);
+            digits[digitCount++] = (byte)('0' + value % 10);
             value /= 10;
         } while (value > 0);
 
-        // Reverse the digits
-        var digitEnd = pos - 1;
-        while (digitStart < digitEnd)
+        // Copy digits in reverse order
+        for (int i = digitCount - 1; i >= 0; i--)
         {
-            (span[digitStart], span[digitEnd]) = (span[digitEnd], span[digitStart]);
-            digitStart++;
-            digitEnd--;
+            span[pos++] = digits[i];
         }
 
         span[pos++] = (byte)'\r';
