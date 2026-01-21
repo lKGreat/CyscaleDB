@@ -10,6 +10,20 @@ namespace CyscaleDB.Core.Common;
 /// </summary>
 public sealed class CyscaleDbConfiguration
 {
+    /// <summary>
+    /// The current active configuration. Defaults to a new instance with default values.
+    /// </summary>
+    private static CyscaleDbConfiguration _current = new();
+    
+    /// <summary>
+    /// Gets or sets the current active configuration.
+    /// </summary>
+    public static CyscaleDbConfiguration Current
+    {
+        get => _current;
+        set => _current = value ?? new CyscaleDbConfiguration();
+    }
+
     // Buffer Pool Configuration
     public int BufferPoolSizePages { get; set; } = 1024;  // Default 16MB (16KB per page)
     public double BufferPoolYoungRatio { get; set; } = 5.0 / 8.0;  // 62.5% young region

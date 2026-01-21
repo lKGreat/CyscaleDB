@@ -500,6 +500,145 @@ public sealed class FullTextIndex : IDisposable
         }
     }
 
+    /// <summary>
+    /// Saves the full-text index to a file.
+    /// </summary>
+    /// <param name="filePath">The file path to save to</param>
+    public void Save(string filePath)
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            // Ensure directory exists
+            var directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            using var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write);
+            using var writer = new BinaryWriter(stream);
+
+            // Write header/version
+            writer.Write((byte)1); // Version 1
+
+            // Write documents
+            writer.Write(_documents.Count);
+            foreach (var doc in _documents.Values)
+            {
+                writer.Write(doc.DocumentId);
+                writer.Write(doc.TokenCount);
+            }
+
+            // Write inverted index
+            writer.Write(_invertedIndex.Count);
+            foreach (var kvp in _invertedIndex)
+            {
+                // Write term
+                writer.Write(kvp.Key);
+
+                // Write posting list
+                var postings = kvp.Value.GetPostings().ToList();
+                writer.Write(postings.Count);
+                foreach (var posting in postings)
+                {
+                    writer.Write(posting.DocumentId);
+                    writer.Write(posting.Positions.Count);
+                    foreach (var pos in posting.Positions)
+                    {
+                        writer.Write(pos);
+                    }
+                }
+            }
+
+            _logger.Info("Saved full-text index to {0} ({1} documents, {2} terms)",
+                filePath, _documents.Count, _invertedIndex.Count);
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Loads the full-text index from a file.
+    /// </summary>
+    /// <param name="filePath">The file path to load from</param>
+    public void Load(string filePath)
+    {
+        if (!File.Exists(filePath))
+        {
+            _logger.Warning("Full-text index file not found: {0}", filePath);
+            return;
+        }
+
+        _lock.EnterWriteLock();
+        try
+        {
+            _invertedIndex.Clear();
+            _documents.Clear();
+
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+            using var reader = new BinaryReader(stream);
+
+            // Read and validate version
+            var version = reader.ReadByte();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported full-text index version: {version}");
+            }
+
+            // Read documents
+            var docCount = reader.ReadInt32();
+            for (int i = 0; i < docCount; i++)
+            {
+                var docId = reader.ReadInt32();
+                var tokenCount = reader.ReadInt32();
+                _documents[docId] = new DocumentInfo(docId, tokenCount);
+            }
+
+            // Read inverted index
+            var termCount = reader.ReadInt32();
+            for (int i = 0; i < termCount; i++)
+            {
+                var term = reader.ReadString();
+                var postingList = new PostingList();
+
+                var postingCount = reader.ReadInt32();
+                for (int j = 0; j < postingCount; j++)
+                {
+                    var docId = reader.ReadInt32();
+                    var positionCount = reader.ReadInt32();
+                    var positions = new List<int>(positionCount);
+                    for (int k = 0; k < positionCount; k++)
+                    {
+                        positions.Add(reader.ReadInt32());
+                    }
+                    postingList.Add(docId, positions);
+                }
+
+                _invertedIndex[term] = postingList;
+            }
+
+            _logger.Info("Loaded full-text index from {0} ({1} documents, {2} terms)",
+                filePath, _documents.Count, _invertedIndex.Count);
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Creates a new FullTextIndex by loading from a file.
+    /// </summary>
+    public static FullTextIndex LoadFromFile(string filePath)
+    {
+        var index = new FullTextIndex();
+        index.Load(filePath);
+        return index;
+    }
+
     public void Dispose()
     {
         if (_disposed)

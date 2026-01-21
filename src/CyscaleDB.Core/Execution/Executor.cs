@@ -215,6 +215,78 @@ public sealed class Executor
         // Check privileges before execution
         CheckStatementPrivilege(statement);
 
+        // Start timing for metrics
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var metrics = Monitoring.MetricsCollector.Instance;
+        var sql = statement.ToString() ?? statement.GetType().Name;
+        
+        try
+        {
+            var result = ExecuteInternal(statement);
+            stopwatch.Stop();
+            
+            // Record successful query
+            metrics.RecordQuery(sql, stopwatch.Elapsed, null, failed: false);
+            
+            // Check for slow query and log it
+            CheckAndLogSlowQuery(sql, stopwatch.Elapsed, null);
+            
+            return result;
+        }
+        catch
+        {
+            stopwatch.Stop();
+            
+            // Record failed query
+            metrics.RecordQuery(sql, stopwatch.Elapsed, null, failed: true);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Singleton slow query log instance.
+    /// </summary>
+    private static Monitoring.SlowQueryLog? _slowQueryLog;
+    private static readonly object _slowQueryLogLock = new();
+
+    /// <summary>
+    /// Gets or creates the slow query log instance.
+    /// </summary>
+    public static Monitoring.SlowQueryLog SlowQueryLog
+    {
+        get
+        {
+            if (_slowQueryLog == null)
+            {
+                lock (_slowQueryLogLock)
+                {
+                    _slowQueryLog ??= new Monitoring.SlowQueryLog(
+                        Path.Combine(Environment.CurrentDirectory, "logs", "slow_query.log"));
+                }
+            }
+            return _slowQueryLog;
+        }
+    }
+
+    /// <summary>
+    /// Checks if a query exceeded the slow query threshold and logs it.
+    /// </summary>
+    private void CheckAndLogSlowQuery(string sql, TimeSpan duration, Monitoring.ExecutionPlan? plan)
+    {
+        var config = Common.CyscaleDbConfiguration.Current;
+        var thresholdMs = config?.SlowQueryThresholdMs ?? 1000;
+        
+        if (duration.TotalMilliseconds >= thresholdMs)
+        {
+            SlowQueryLog.LogSlowQuery(sql, duration, plan, _currentUser, _currentDatabase);
+        }
+    }
+
+    /// <summary>
+    /// Internal execution method that dispatches to specific handlers.
+    /// </summary>
+    private ExecutionResult ExecuteInternal(Statement statement)
+    {
         return statement switch
         {
             SelectStatement s => ExecuteSelect(s),
@@ -282,6 +354,7 @@ public sealed class Executor
             FlushStatement s => ExecuteFlush(s),
             LockTablesStatement s => ExecuteLockTables(s),
             UnlockTablesStatement => ExecuteUnlockTables(),
+            ExplainStatement s => ExecuteExplain(s),
             _ => throw new CyscaleException($"Unsupported statement type: {statement.GetType().Name}")
         };
     }
@@ -2667,9 +2740,58 @@ public sealed class Executor
         {
             object? value = EvaluateSetValue(setVar.Value);
             _systemVariables.Set(setVar.Name, value, setVar.Scope == SetScope.Global);
+            
+            // Update configuration for certain global variables
+            if (setVar.Scope == SetScope.Global)
+            {
+                UpdateGlobalConfiguration(setVar.Name, value);
+            }
         }
 
         return ExecutionResult.Empty();
+    }
+
+    /// <summary>
+    /// Updates the global configuration when SET GLOBAL is used for configuration variables.
+    /// </summary>
+    private void UpdateGlobalConfiguration(string variableName, object? value)
+    {
+        var config = Common.CyscaleDbConfiguration.Current;
+        var varNameLower = variableName.ToLowerInvariant();
+        
+        switch (varNameLower)
+        {
+            case "slow_query_threshold" or "slow_query_threshold_ms":
+                if (value is long longVal)
+                    config.SlowQueryThresholdMs = (int)longVal;
+                else if (value is int intVal)
+                    config.SlowQueryThresholdMs = intVal;
+                break;
+            case "slow_query_log":
+                if (value is bool boolVal)
+                    config.EnableSlowQueryLog = boolVal;
+                else if (value is string strVal)
+                    config.EnableSlowQueryLog = strVal.Equals("ON", StringComparison.OrdinalIgnoreCase) || strVal == "1";
+                break;
+            case "buffer_pool_size" or "buffer_pool_size_pages":
+                if (value is long bpLong)
+                    config.BufferPoolSizePages = (int)bpLong;
+                else if (value is int bpInt)
+                    config.BufferPoolSizePages = bpInt;
+                break;
+            case "lock_wait_timeout" or "lock_wait_timeout_ms":
+                if (value is long lwLong)
+                    config.LockWaitTimeoutMs = (int)lwLong;
+                else if (value is int lwInt)
+                    config.LockWaitTimeoutMs = lwInt;
+                break;
+            case "enable_metrics":
+                if (value is bool mBool)
+                    config.EnableMetrics = mBool;
+                else if (value is string mStr)
+                    config.EnableMetrics = mStr.Equals("ON", StringComparison.OrdinalIgnoreCase) || mStr == "1";
+                break;
+        }
     }
 
     private ExecutionResult ExecuteSetTransaction(SetTransactionStatement stmt)
@@ -3918,6 +4040,116 @@ public sealed class Executor
         // In a real implementation, this would release all table-level locks
         _logger.Info("Unlocked all tables");
         return ExecutionResult.Ddl("Unlocked all tables");
+    }
+
+    private ExecutionResult ExecuteExplain(ExplainStatement stmt)
+    {
+        // Build the execution plan result
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "id", DataType = DataType.Int });
+        result.Columns.Add(new ResultColumn { Name = "select_type", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "table", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "type", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "possible_keys", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "key", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "key_len", DataType = DataType.Int });
+        result.Columns.Add(new ResultColumn { Name = "ref", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "rows", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "Extra", DataType = DataType.VarChar });
+
+        if (stmt.Statement is SelectStatement selectStmt)
+        {
+            // Get table name
+            var tableName = GetTableNameFromTableRef(selectStmt.From);
+            var dbName = GetDatabaseFromTableRef(selectStmt.From) ?? _currentDatabase;
+            
+            // Determine access type and index usage
+            string accessType = "ALL";  // Full table scan by default
+            string? possibleKeys = null;
+            string? usedKey = null;
+            long estimatedRows = 0;
+            var extra = new List<string>();
+
+            var schema = _catalog.GetTableSchema(dbName, tableName ?? "");
+            if (schema != null)
+            {
+                // Check for primary key usage in WHERE
+                var pkCol = schema.Columns.FirstOrDefault(c => c.IsPrimaryKey);
+                if (pkCol != null && selectStmt.Where != null)
+                {
+                    var referencedColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    CollectReferencedColumns(selectStmt.Where, referencedColumns);
+                    
+                    if (referencedColumns.Contains(pkCol.Name))
+                    {
+                        possibleKeys = "PRIMARY";
+                        usedKey = "PRIMARY";
+                        accessType = "ref";
+                    }
+                }
+
+                if (selectStmt.Where != null && usedKey == null)
+                {
+                    extra.Add("Using where");
+                }
+                if (selectStmt.OrderBy.Count > 0)
+                {
+                    extra.Add("Using filesort");
+                }
+                if (selectStmt.IsDistinct || selectStmt.GroupBy.Count > 0)
+                {
+                    extra.Add("Using temporary");
+                }
+            }
+
+            result.Rows.Add([
+                DataValue.FromInt(1),  // id
+                DataValue.FromVarChar("SIMPLE"),  // select_type
+                DataValue.FromVarChar(tableName ?? ""),  // table
+                DataValue.FromVarChar(accessType),  // type
+                possibleKeys != null ? DataValue.FromVarChar(possibleKeys) : DataValue.Null,  // possible_keys
+                usedKey != null ? DataValue.FromVarChar(usedKey) : DataValue.Null,  // key
+                usedKey != null ? DataValue.FromInt(8) : DataValue.Null,  // key_len
+                DataValue.Null,  // ref
+                DataValue.FromBigInt(estimatedRows),  // rows
+                extra.Count > 0 ? DataValue.FromVarChar(string.Join("; ", extra)) : DataValue.Null  // Extra
+            ]);
+        }
+        else
+        {
+            // For non-SELECT statements, return a simplified output
+            result.Rows.Add([
+                DataValue.FromInt(1),
+                DataValue.FromVarChar(stmt.Statement.GetType().Name.Replace("Statement", "").ToUpperInvariant()),
+                DataValue.Null,
+                DataValue.Null,
+                DataValue.Null,
+                DataValue.Null,
+                DataValue.Null,
+                DataValue.Null,
+                DataValue.Null,
+                DataValue.Null
+            ]);
+        }
+
+        return ExecutionResult.Query(result);
+    }
+
+    private void CollectReferencedColumns(Expression expr, HashSet<string> columns)
+    {
+        switch (expr)
+        {
+            case ColumnReference colRef:
+                columns.Add(colRef.ColumnName);
+                break;
+            case BinaryExpression binary:
+                CollectReferencedColumns(binary.Left, columns);
+                CollectReferencedColumns(binary.Right, columns);
+                break;
+            case UnaryExpression unary:
+                CollectReferencedColumns(unary.Operand, columns);
+                break;
+        }
     }
 
     #endregion

@@ -15,6 +15,10 @@ public sealed class LockManager : IDisposable
     private readonly TimeSpan _lockTimeout;
     private bool _disposed;
 
+    // Gap lock management using IntervalTree for O(log n) conflict detection
+    private readonly Dictionary<string, IntervalTree<long, GapLockInfo>> _gapLocks;
+    private readonly Dictionary<long, List<GapLockKey>> _transactionGapLocks;
+
     /// <summary>
     /// Creates a new lock manager.
     /// </summary>
@@ -22,9 +26,21 @@ public sealed class LockManager : IDisposable
     {
         _locks = new Dictionary<LockKey, LockState>();
         _transactionLocks = new Dictionary<long, HashSet<LockKey>>();
+        _gapLocks = new Dictionary<string, IntervalTree<long, GapLockInfo>>();
+        _transactionGapLocks = new Dictionary<long, List<GapLockKey>>();
         _lock = new ReaderWriterLockSlim();
         _logger = LogManager.Default.GetLogger<LockManager>();
         _lockTimeout = lockTimeout ?? TimeSpan.FromSeconds(30);
+    }
+
+    /// <summary>
+    /// Creates a LockManager using the current configuration settings.
+    /// </summary>
+    public static LockManager CreateFromConfiguration()
+    {
+        var config = Common.CyscaleDbConfiguration.Current;
+        var timeout = TimeSpan.FromMilliseconds(config.LockWaitTimeoutMs);
+        return new LockManager(timeout);
     }
 
     /// <summary>
@@ -43,6 +59,136 @@ public sealed class LockManager : IDisposable
     {
         var key = new LockKey(databaseName, tableName, pageId, slotNumber);
         return AcquireLock(transaction, key, mode);
+    }
+
+    /// <summary>
+    /// Acquires a gap lock on a key range. Uses IntervalTree for O(log n) conflict detection.
+    /// </summary>
+    /// <param name="transaction">The transaction acquiring the lock</param>
+    /// <param name="databaseName">Database name</param>
+    /// <param name="tableName">Table name</param>
+    /// <param name="indexName">Index name</param>
+    /// <param name="lowKey">Lower bound of the key range</param>
+    /// <param name="highKey">Upper bound of the key range</param>
+    /// <param name="mode">Lock mode (typically Shared or Exclusive)</param>
+    /// <returns>True if the gap lock was acquired</returns>
+    public bool AcquireGapLock(Transaction transaction, string databaseName, string tableName, 
+        string indexName, long lowKey, long highKey, LockMode mode)
+    {
+        var treeKey = $"{databaseName}.{tableName}.{indexName}";
+        
+        _lock.EnterWriteLock();
+        try
+        {
+            // Get or create the interval tree for this index
+            if (!_gapLocks.TryGetValue(treeKey, out var tree))
+            {
+                tree = new IntervalTree<long, GapLockInfo>();
+                _gapLocks[treeKey] = tree;
+            }
+
+            // Check for conflicts using the interval tree (O(log n))
+            var overlapping = tree.QueryRange(lowKey, highKey);
+            foreach (var existing in overlapping)
+            {
+                if (existing.TransactionId != transaction.TransactionId)
+                {
+                    // Conflict: another transaction holds a gap lock on overlapping range
+                    if (mode == LockMode.Exclusive || existing.Mode == LockMode.Exclusive)
+                    {
+                        _logger.Debug("Gap lock conflict: Transaction {0} blocked by {1} on range [{2}, {3}]",
+                            transaction.TransactionId, existing.TransactionId, lowKey, highKey);
+                        return false;
+                    }
+                }
+            }
+
+            // Insert the gap lock
+            var lockInfo = new GapLockInfo(transaction.TransactionId, mode);
+            tree.Insert(lowKey, highKey, lockInfo);
+
+            // Track for transaction cleanup
+            if (!_transactionGapLocks.TryGetValue(transaction.TransactionId, out var gapList))
+            {
+                gapList = new List<GapLockKey>();
+                _transactionGapLocks[transaction.TransactionId] = gapList;
+            }
+            gapList.Add(new GapLockKey(treeKey, lowKey, highKey));
+
+            _logger.Trace("Acquired gap lock: Transaction {0} on [{1}, {2}] mode {3}",
+                transaction.TransactionId, lowKey, highKey, mode);
+
+            return true;
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Releases all gap locks held by a transaction.
+    /// </summary>
+    public void ReleaseGapLocks(Transaction transaction)
+    {
+        _lock.EnterWriteLock();
+        try
+        {
+            if (!_transactionGapLocks.TryGetValue(transaction.TransactionId, out var gapList))
+            {
+                return;
+            }
+
+            foreach (var gapKey in gapList)
+            {
+                if (_gapLocks.TryGetValue(gapKey.TreeKey, out var tree))
+                {
+                    tree.Remove(gapKey.LowKey, gapKey.HighKey);
+                }
+            }
+
+            _transactionGapLocks.Remove(transaction.TransactionId);
+            _logger.Trace("Released {0} gap locks for transaction {1}", 
+                gapList.Count, transaction.TransactionId);
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Checks if inserting a key would conflict with any gap lock.
+    /// </summary>
+    public bool HasGapLockConflict(Transaction transaction, string databaseName, string tableName, 
+        string indexName, long key)
+    {
+        var treeKey = $"{databaseName}.{tableName}.{indexName}";
+
+        _lock.EnterReadLock();
+        try
+        {
+            if (!_gapLocks.TryGetValue(treeKey, out var tree))
+            {
+                return false; // No gap locks on this index
+            }
+
+            // Query for gap locks containing this key (O(log n))
+            var overlapping = tree.Query(key);
+            foreach (var lockInfo in overlapping)
+            {
+                if (lockInfo.TransactionId != transaction.TransactionId)
+                {
+                    return true; // Conflict with another transaction's gap lock
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
     }
 
     /// <summary>
@@ -887,5 +1033,37 @@ public sealed class IntentLockManager
             // Otherwise use requested
             _ => requested
         };
+    }
+}
+
+/// <summary>
+/// Information about a gap lock.
+/// </summary>
+public sealed class GapLockInfo
+{
+    public long TransactionId { get; }
+    public LockMode Mode { get; }
+
+    public GapLockInfo(long transactionId, LockMode mode)
+    {
+        TransactionId = transactionId;
+        Mode = mode;
+    }
+}
+
+/// <summary>
+/// Key for tracking gap locks held by a transaction.
+/// </summary>
+internal readonly struct GapLockKey
+{
+    public string TreeKey { get; }
+    public long LowKey { get; }
+    public long HighKey { get; }
+
+    public GapLockKey(string treeKey, long lowKey, long highKey)
+    {
+        TreeKey = treeKey;
+        LowKey = lowKey;
+        HighKey = highKey;
     }
 }

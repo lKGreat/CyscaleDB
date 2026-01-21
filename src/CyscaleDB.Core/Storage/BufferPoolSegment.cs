@@ -424,6 +424,16 @@ public sealed class SegmentedBufferPool : IDisposable
     }
 
     /// <summary>
+    /// Creates a SegmentedBufferPool using the current configuration settings.
+    /// Uses 16 segments by default for optimal concurrency.
+    /// </summary>
+    public static SegmentedBufferPool CreateFromConfiguration()
+    {
+        var config = Common.CyscaleDbConfiguration.Current;
+        return new SegmentedBufferPool(config.BufferPoolSizePages, DefaultSegmentCount);
+    }
+
+    /// <summary>
     /// Gets a page from the segmented buffer pool.
     /// </summary>
     public Page? GetPage(PageManager pageManager, int pageId)

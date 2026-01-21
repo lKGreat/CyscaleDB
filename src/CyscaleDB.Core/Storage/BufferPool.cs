@@ -161,6 +161,16 @@ public sealed class BufferPool : IDisposable
     }
 
     /// <summary>
+    /// Creates a BufferPool using the current configuration settings.
+    /// </summary>
+    public static BufferPool CreateFromConfiguration()
+    {
+        var config = Common.CyscaleDbConfiguration.Current;
+        var capacity = config.BufferPoolSizePages;
+        return new BufferPool(capacity);
+    }
+
+    /// <summary>
     /// Gets a page from the buffer pool or loads it from disk.
     /// Uses midpoint insertion strategy for new pages.
     /// </summary>

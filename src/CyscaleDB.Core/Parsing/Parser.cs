@@ -128,6 +128,7 @@ public sealed class Parser
             TokenType.FLUSH => ParseFlushStatement(),
             TokenType.LOCK => ParseLockTablesStatement(),
             TokenType.UNLOCK => ParseUnlockTablesStatement(),
+            TokenType.EXPLAIN => ParseExplainStatement(),
             _ => throw Error($"Unexpected token at start of statement: {_currentToken.Value}")
         };
     }
@@ -4405,6 +4406,48 @@ public sealed class Parser
         Expect(TokenType.TABLES);
 
         return new UnlockTablesStatement();
+    }
+
+    private Statement ParseExplainStatement()
+    {
+        // EXPLAIN [ANALYZE] [FORMAT = {TRADITIONAL | JSON | TREE}] statement
+        Expect(TokenType.EXPLAIN);
+
+        var stmt = new ExplainStatement();
+
+        // Check for ANALYZE
+        if (MatchIdentifier("ANALYZE"))
+        {
+            stmt.Analyze = true;
+        }
+
+        // Check for FORMAT
+        if (MatchIdentifier("FORMAT"))
+        {
+            Match(TokenType.Equal);  // Optional = sign
+
+            if (MatchIdentifier("TRADITIONAL"))
+            {
+                stmt.Format = ExplainFormat.Traditional;
+            }
+            else if (MatchIdentifier("JSON"))
+            {
+                stmt.Format = ExplainFormat.Json;
+            }
+            else if (MatchIdentifier("TREE"))
+            {
+                stmt.Format = ExplainFormat.Tree;
+            }
+            else
+            {
+                throw Error($"Expected TRADITIONAL, JSON, or TREE after FORMAT =, got: {_currentToken.Value}");
+            }
+        }
+
+        // Parse the statement to explain
+        stmt.Statement = ParseStatement();
+
+        return stmt;
     }
 
     #endregion

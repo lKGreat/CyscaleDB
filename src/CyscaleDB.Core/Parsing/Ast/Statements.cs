@@ -2348,3 +2348,40 @@ public class UnlockTablesStatement : Statement
 }
 
 #endregion
+
+#region EXPLAIN Statements
+
+/// <summary>
+/// Represents an EXPLAIN statement.
+/// </summary>
+public class ExplainStatement : Statement
+{
+    /// <summary>
+    /// The statement to explain.
+    /// </summary>
+    public Statement Statement { get; set; } = null!;
+
+    /// <summary>
+    /// The explain format (TRADITIONAL, JSON, TREE).
+    /// </summary>
+    public ExplainFormat Format { get; set; } = ExplainFormat.Traditional;
+
+    /// <summary>
+    /// Whether ANALYZE is specified (actually executes and shows real stats).
+    /// </summary>
+    public bool Analyze { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitExplainStatement(this);
+}
+
+/// <summary>
+/// EXPLAIN output format.
+/// </summary>
+public enum ExplainFormat
+{
+    Traditional,
+    Json,
+    Tree
+}
+
+#endregion

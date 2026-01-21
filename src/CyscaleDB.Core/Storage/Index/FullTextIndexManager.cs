@@ -426,6 +426,195 @@ public sealed class FullTextIndexManager : IDisposable
         return Path.Combine(_dataDirectory, databaseName, $"{tableName}_{indexName}.fti");
     }
 
+    private string GetMetadataFilePath(string databaseName, string tableName, string indexName)
+    {
+        return Path.Combine(_dataDirectory, databaseName, $"{tableName}_{indexName}.ftm");
+    }
+
+    /// <summary>
+    /// Saves a specific full-text index to disk.
+    /// </summary>
+    public void SaveIndex(string databaseName, string tableName, string indexName)
+    {
+        var key = new FullTextIndexKey(databaseName, tableName, indexName);
+
+        _lock.EnterReadLock();
+        try
+        {
+            if (!_indexes.TryGetValue(key, out var info))
+            {
+                _logger.Warning("Full-text index {0}.{1}.{2} not found for saving", 
+                    databaseName, tableName, indexName);
+                return;
+            }
+
+            var indexPath = GetIndexFilePath(databaseName, tableName, indexName);
+            var metadataPath = GetMetadataFilePath(databaseName, tableName, indexName);
+
+            // Ensure directory exists
+            var directory = Path.GetDirectoryName(indexPath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            // Save the index data
+            info.Index.Save(indexPath);
+
+            // Save metadata (column names and ordinals)
+            using var metaStream = new FileStream(metadataPath, FileMode.Create, FileAccess.Write);
+            using var writer = new BinaryWriter(metaStream);
+            
+            writer.Write((byte)1); // Version
+            writer.Write(info.Columns.Count);
+            foreach (var col in info.Columns)
+            {
+                writer.Write(col);
+            }
+            writer.Write(info.ColumnOrdinals.Count);
+            foreach (var ordinal in info.ColumnOrdinals)
+            {
+                writer.Write(ordinal);
+            }
+
+            _logger.Info("Saved full-text index {0}.{1}.{2} to disk", databaseName, tableName, indexName);
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Saves all full-text indexes to disk.
+    /// </summary>
+    public void SaveAllIndexes()
+    {
+        _lock.EnterReadLock();
+        try
+        {
+            foreach (var key in _indexes.Keys)
+            {
+                SaveIndex(key.DatabaseName, key.TableName, key.IndexName);
+            }
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// Loads a full-text index from disk.
+    /// </summary>
+    public bool LoadIndex(string databaseName, string tableName, string indexName)
+    {
+        var key = new FullTextIndexKey(databaseName, tableName, indexName);
+        var indexPath = GetIndexFilePath(databaseName, tableName, indexName);
+        var metadataPath = GetMetadataFilePath(databaseName, tableName, indexName);
+
+        if (!File.Exists(indexPath) || !File.Exists(metadataPath))
+        {
+            _logger.Warning("Full-text index files not found for {0}.{1}.{2}", 
+                databaseName, tableName, indexName);
+            return false;
+        }
+
+        _lock.EnterWriteLock();
+        try
+        {
+            // Remove existing if present
+            if (_indexes.TryGetValue(key, out var existingInfo))
+            {
+                existingInfo.Index.Dispose();
+                _indexes.Remove(key);
+            }
+
+            // Load metadata
+            using var metaStream = new FileStream(metadataPath, FileMode.Open, FileAccess.Read);
+            using var reader = new BinaryReader(metaStream);
+
+            var version = reader.ReadByte();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported metadata version: {version}");
+            }
+
+            var columnCount = reader.ReadInt32();
+            var columns = new List<string>(columnCount);
+            for (int i = 0; i < columnCount; i++)
+            {
+                columns.Add(reader.ReadString());
+            }
+
+            var ordinalCount = reader.ReadInt32();
+            var ordinals = new List<int>(ordinalCount);
+            for (int i = 0; i < ordinalCount; i++)
+            {
+                ordinals.Add(reader.ReadInt32());
+            }
+
+            // Load index
+            var index = FullTextIndex.LoadFromFile(indexPath);
+            var info = new FullTextIndexInfo(index, columns)
+            {
+                ColumnOrdinals = ordinals
+            };
+
+            _indexes[key] = info;
+
+            // Track by table
+            var tableKey = (databaseName, tableName);
+            if (!_tableIndexes.TryGetValue(tableKey, out var indexList))
+            {
+                indexList = new List<FullTextIndexKey>();
+                _tableIndexes[tableKey] = indexList;
+            }
+            if (!indexList.Contains(key))
+            {
+                indexList.Add(key);
+            }
+
+            _logger.Info("Loaded full-text index {0}.{1}.{2} from disk", databaseName, tableName, indexName);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to load full-text index {0}.{1}.{2}: {3}", 
+                databaseName, tableName, indexName, ex.Message);
+            return false;
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Loads all full-text indexes for a database from disk.
+    /// </summary>
+    public void LoadDatabaseIndexes(string databaseName)
+    {
+        var dbDir = Path.Combine(_dataDirectory, databaseName);
+        if (!Directory.Exists(dbDir))
+        {
+            return;
+        }
+
+        // Find all .ftm (metadata) files
+        foreach (var metaFile in Directory.GetFiles(dbDir, "*.ftm"))
+        {
+            var fileName = Path.GetFileNameWithoutExtension(metaFile);
+            var parts = fileName.Split('_', 2);
+            if (parts.Length == 2)
+            {
+                var tableName = parts[0];
+                var indexName = parts[1];
+                LoadIndex(databaseName, tableName, indexName);
+            }
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed)

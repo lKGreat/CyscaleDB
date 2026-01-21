@@ -91,6 +91,7 @@ public interface IAstVisitor<T>
     T VisitFlushStatement(FlushStatement node);
     T VisitLockTablesStatement(LockTablesStatement node);
     T VisitUnlockTablesStatement(UnlockTablesStatement node);
+    T VisitExplainStatement(ExplainStatement node);
     
     T VisitBinaryExpression(BinaryExpression node);
     T VisitUnaryExpression(UnaryExpression node);
