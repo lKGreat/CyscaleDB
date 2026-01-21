@@ -4,6 +4,9 @@ using System.Net.Sockets;
 using CysRedis.Core.Commands;
 using CysRedis.Core.Common;
 using CysRedis.Core.DataStructures;
+using CysRedis.Core.PubSub;
+using CysRedis.Core.Scripting;
+using CysRedis.Core.Storage;
 
 namespace CysRedis.Core.Protocol;
 
@@ -35,6 +38,26 @@ public class RedisServer : IDisposable
     public CommandDispatcher Dispatcher { get; }
 
     /// <summary>
+    /// RDB persistence.
+    /// </summary>
+    public RdbPersistence? Persistence { get; private set; }
+
+    /// <summary>
+    /// AOF persistence.
+    /// </summary>
+    public AofPersistence? Aof { get; private set; }
+
+    /// <summary>
+    /// Pub/Sub manager.
+    /// </summary>
+    public PubSubManager PubSub { get; }
+
+    /// <summary>
+    /// Script manager.
+    /// </summary>
+    public ScriptManager ScriptManager { get; }
+
+    /// <summary>
     /// Number of connected clients.
     /// </summary>
     public int ClientCount => _clients.Count;
@@ -45,6 +68,11 @@ public class RedisServer : IDisposable
     public DateTime StartTime { get; private set; }
 
     /// <summary>
+    /// Last save time.
+    /// </summary>
+    public DateTime LastSaveTime { get; internal set; }
+
+    /// <summary>
     /// Total commands processed.
     /// </summary>
     public long TotalCommandsProcessed => Interlocked.Read(ref _totalCommandsProcessed);
@@ -52,7 +80,7 @@ public class RedisServer : IDisposable
     /// <summary>
     /// Creates a new Redis server.
     /// </summary>
-    public RedisServer(int port = Constants.DefaultPort)
+    public RedisServer(int port = Constants.DefaultPort, string? dataDir = null)
     {
         Port = port;
         _listener = new TcpListener(IPAddress.Any, port);
@@ -60,6 +88,16 @@ public class RedisServer : IDisposable
         _clients = new ConcurrentDictionary<long, RedisClient>();
         Store = new RedisStore();
         Dispatcher = new CommandDispatcher(this);
+        PubSub = new PubSubManager();
+        ScriptManager = new ScriptManager();
+        LastSaveTime = DateTime.UtcNow;
+
+        // Initialize persistence if data directory is provided
+        if (!string.IsNullOrEmpty(dataDir))
+        {
+            Persistence = new RdbPersistence(Store, dataDir);
+            Aof = new AofPersistence(dataDir);
+        }
     }
 
     /// <summary>

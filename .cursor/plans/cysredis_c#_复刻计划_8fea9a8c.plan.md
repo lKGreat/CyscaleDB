@@ -43,10 +43,10 @@ todos:
     status: completed
   - id: phase-2.5a
     content: "Phase 2.5a: 跳表数据结构实现"
-    status: in_progress
+    status: completed
   - id: phase-2.5b
     content: "Phase 2.5b: Sorted Set 命令实现"
-    status: pending
+    status: completed
   - id: phase-3.1
     content: "Phase 3.1: 键空间操作 - DEL/EXISTS/TYPE/KEYS/SCAN"
     status: completed
@@ -55,25 +55,25 @@ todos:
     status: completed
   - id: phase-4.1
     content: "Phase 4.1: RDB 持久化 - 文件格式 + SAVE/BGSAVE"
-    status: pending
+    status: completed
   - id: phase-4.2
     content: "Phase 4.2: AOF 持久化 - 命令日志 + 重写"
-    status: pending
+    status: completed
   - id: phase-5.1
     content: "Phase 5.1: 事务支持 - MULTI/EXEC/WATCH"
-    status: pending
+    status: completed
   - id: phase-5.2
     content: "Phase 5.2: Lua 脚本 - EVAL/EVALSHA"
-    status: pending
+    status: completed
   - id: phase-6.1
     content: "Phase 6.1: Pub/Sub - SUBSCRIBE/PUBLISH/PSUBSCRIBE"
-    status: pending
+    status: completed
   - id: phase-6.2
     content: "Phase 6.2: Stream 类型 - XADD/XREAD/消费者组"
-    status: pending
+    status: completed
   - id: phase-7.1
     content: "Phase 7.1: 主从复制 - REPLICAOF + 全量/增量同步"
-    status: pending
+    status: in_progress
   - id: phase-7.2
     content: "Phase 7.2: Redis Cluster - 槽位分配 + 节点通信"
     status: pending
@@ -82,7 +82,7 @@ todos:
     status: pending
   - id: phase-8.2
     content: "Phase 8.2: 扩展类型 - HyperLogLog/Geo/Bitmap"
-    status: pending
+    status: completed
   - id: phase-8.3
     content: "Phase 8.3: 监控管理 - INFO/CLIENT/CONFIG/SLOWLOG"
     status: pending

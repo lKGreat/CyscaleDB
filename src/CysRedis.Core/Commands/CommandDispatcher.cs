@@ -29,6 +29,14 @@ public class CommandDispatcher
     }
 
     /// <summary>
+    /// Gets a command handler by name.
+    /// </summary>
+    public bool TryGetHandler(string commandName, out ICommandHandler handler)
+    {
+        return _handlers.TryGetValue(commandName.ToUpperInvariant(), out handler!);
+    }
+
+    /// <summary>
     /// Executes a command.
     /// </summary>
     public async Task ExecuteAsync(RedisClient client, string[] args, CancellationToken cancellationToken)
@@ -40,6 +48,19 @@ public class CommandDispatcher
         }
 
         var commandName = args[0].ToUpperInvariant();
+
+        // Handle transaction queueing
+        if (client.InTransaction && !IsTransactionCommand(commandName))
+        {
+            if (!_handlers.ContainsKey(commandName))
+            {
+                await client.WriteErrorAsync($"ERR unknown command '{args[0]}'", cancellationToken);
+                return;
+            }
+            client.QueueCommand(args);
+            await client.WriteResponseAsync(RespValue.SimpleString("QUEUED"), cancellationToken);
+            return;
+        }
 
         if (!_handlers.TryGetValue(commandName, out var handler))
         {
@@ -65,6 +86,15 @@ public class CommandDispatcher
         {
             await client.WriteErrorAsync(ex.GetRespError(), cancellationToken);
         }
+    }
+
+    private static bool IsTransactionCommand(string command)
+    {
+        return command switch
+        {
+            "MULTI" or "EXEC" or "DISCARD" or "WATCH" or "UNWATCH" => true,
+            _ => false
+        };
     }
 
     private void RegisterBuiltInCommands()
@@ -169,6 +199,59 @@ public class CommandDispatcher
         Register("ZCARD", new ZCardCommand());
         Register("ZCOUNT", new ZCountCommand());
         Register("ZRANGEBYSCORE", new ZRangeByScoreCommand());
+
+        // Transaction commands
+        Register("MULTI", new MultiCommand());
+        Register("EXEC", new ExecCommand());
+        Register("DISCARD", new DiscardCommand());
+        Register("WATCH", new WatchCommand());
+        Register("UNWATCH", new UnwatchCommand());
+
+        // Pub/Sub commands
+        Register("SUBSCRIBE", new SubscribeCommand());
+        Register("UNSUBSCRIBE", new UnsubscribeCommand());
+        Register("PSUBSCRIBE", new PSubscribeCommand());
+        Register("PUNSUBSCRIBE", new PUnsubscribeCommand());
+        Register("PUBLISH", new PublishCommand());
+        Register("PUBSUB", new PubSubInfoCommand());
+
+        // Scripting commands
+        Register("EVAL", new EvalCommand());
+        Register("EVALSHA", new EvalShaCommand());
+        Register("SCRIPT", new ScriptCommand());
+
+        // Persistence commands
+        Register("SAVE", new SaveCommand());
+        Register("BGSAVE", new BgSaveCommand());
+        Register("BGREWRITEAOF", new BgRewriteAofCommand());
+        Register("LASTSAVE", new LastSaveCommand());
+
+        // Stream commands
+        Register("XADD", new XAddCommand());
+        Register("XREAD", new XReadCommand());
+        Register("XRANGE", new XRangeCommand());
+        Register("XLEN", new XLenCommand());
+        Register("XGROUP", new XGroupCommand());
+        Register("XACK", new XAckCommand());
+        Register("XTRIM", new XTrimCommand());
+
+        // HyperLogLog commands
+        Register("PFADD", new PfAddCommand());
+        Register("PFCOUNT", new PfCountCommand());
+        Register("PFMERGE", new PfMergeCommand());
+
+        // Geo commands
+        Register("GEOADD", new GeoAddCommand());
+        Register("GEOPOS", new GeoPosCommand());
+        Register("GEODIST", new GeoDistCommand());
+        Register("GEOSEARCH", new GeoSearchCommand());
+        Register("GEOHASH", new GeoHashCommand());
+
+        // Bitmap commands
+        Register("SETBIT", new SetBitCommand());
+        Register("GETBIT", new GetBitCommand());
+        Register("BITCOUNT", new BitCountCommand());
+        Register("BITOP", new BitOpCommand());
 
         // Server commands
         Register("INFO", new InfoCommand());

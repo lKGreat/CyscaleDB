@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using CysRedis.Core.Common;
+using CysRedis.Core.DataStructures;
 
 namespace CysRedis.Core.Protocol;
 
@@ -11,11 +12,16 @@ public class RedisClient : IDisposable
 {
     private static long _nextId = 0;
     
-    private readonly TcpClient _tcpClient;
-    private readonly NetworkStream _stream;
-    private readonly RespReader _reader;
-    private readonly RespWriter _writer;
+    private readonly TcpClient? _tcpClient;
+    private readonly NetworkStream? _stream;
+    private readonly RespReader? _reader;
+    private readonly RespWriter? _writer;
     private bool _disposed;
+
+    // Transaction state
+    private List<string[]>? _transactionQueue;
+    private Dictionary<string, long>? _watchedKeys;
+    private bool _transactionAborted;
 
     /// <summary>
     /// Unique client ID.
@@ -50,7 +56,12 @@ public class RedisClient : IDisposable
     /// <summary>
     /// Whether the client is in a MULTI transaction.
     /// </summary>
-    public bool InTransaction { get; set; }
+    public bool InTransaction => _transactionQueue != null;
+
+    /// <summary>
+    /// Whether the transaction was aborted (due to WATCH).
+    /// </summary>
+    public bool TransactionAborted => _transactionAborted;
 
     /// <summary>
     /// Whether the client is in SUBSCRIBE mode.
@@ -70,17 +81,17 @@ public class RedisClient : IDisposable
     /// <summary>
     /// Gets the RESP reader.
     /// </summary>
-    public RespReader Reader => _reader;
+    public RespReader? Reader => _reader;
 
     /// <summary>
     /// Gets the RESP writer.
     /// </summary>
-    public RespWriter Writer => _writer;
+    public RespWriter? Writer => _writer;
 
     /// <summary>
     /// Gets whether the client is connected.
     /// </summary>
-    public bool IsConnected => _tcpClient.Connected && !_disposed;
+    public bool IsConnected => _tcpClient?.Connected == true && !_disposed;
 
     /// <summary>
     /// Creates a new Redis client wrapper.
@@ -101,10 +112,102 @@ public class RedisClient : IDisposable
     }
 
     /// <summary>
+    /// Creates a client wrapper from another client (for transaction execution).
+    /// </summary>
+    protected RedisClient(RedisClient other)
+    {
+        Id = other.Id;
+        Name = other.Name;
+        Address = other.Address;
+        DatabaseIndex = other.DatabaseIndex;
+        ConnectedAt = other.ConnectedAt;
+        LastCommandAt = other.LastCommandAt;
+        Flags = other.Flags;
+        ProtocolVersion = other.ProtocolVersion;
+    }
+
+    /// <summary>
+    /// Starts a transaction (MULTI).
+    /// </summary>
+    public void StartTransaction()
+    {
+        _transactionQueue = new List<string[]>();
+        _transactionAborted = false;
+        Flags |= ClientFlags.Multi;
+    }
+
+    /// <summary>
+    /// Queues a command in the transaction.
+    /// </summary>
+    public void QueueCommand(string[] args)
+    {
+        _transactionQueue?.Add(args);
+    }
+
+    /// <summary>
+    /// Gets queued commands.
+    /// </summary>
+    public List<string[]> GetQueuedCommands()
+    {
+        return _transactionQueue ?? new List<string[]>();
+    }
+
+    /// <summary>
+    /// Discards the transaction.
+    /// </summary>
+    public void DiscardTransaction()
+    {
+        _transactionQueue = null;
+        _transactionAborted = false;
+        _watchedKeys = null;
+        Flags &= ~ClientFlags.Multi;
+    }
+
+    /// <summary>
+    /// Watches a key for modifications.
+    /// </summary>
+    public void Watch(string key, RedisDatabase db)
+    {
+        _watchedKeys ??= new Dictionary<string, long>();
+        // Store the key version (use hash code of value as simple version)
+        var obj = db.Get(key);
+        _watchedKeys[key] = obj?.GetHashCode() ?? 0;
+    }
+
+    /// <summary>
+    /// Unwatches all keys.
+    /// </summary>
+    public void Unwatch()
+    {
+        _watchedKeys = null;
+    }
+
+    /// <summary>
+    /// Checks if watched keys have been modified.
+    /// </summary>
+    public bool CheckWatchedKeys(RedisDatabase db)
+    {
+        if (_watchedKeys == null) return true;
+
+        foreach (var (key, version) in _watchedKeys)
+        {
+            var obj = db.Get(key);
+            var currentVersion = obj?.GetHashCode() ?? 0;
+            if (currentVersion != version)
+            {
+                _transactionAborted = true;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
     /// Reads the next command from the client.
     /// </summary>
     public async Task<string[]?> ReadCommandAsync(CancellationToken cancellationToken = default)
     {
+        if (_reader == null) return null;
         var command = await _reader.ReadCommandAsync(cancellationToken);
         if (command != null)
             LastCommandAt = DateTime.UtcNow;
@@ -114,8 +217,9 @@ public class RedisClient : IDisposable
     /// <summary>
     /// Writes a response to the client.
     /// </summary>
-    public async Task WriteResponseAsync(RespValue value, CancellationToken cancellationToken = default)
+    public virtual async Task WriteResponseAsync(RespValue value, CancellationToken cancellationToken = default)
     {
+        if (_writer == null) return;
         await _writer.WriteValueAsync(value, cancellationToken);
         await _writer.FlushAsync(cancellationToken);
     }
@@ -123,31 +227,31 @@ public class RedisClient : IDisposable
     /// <summary>
     /// Writes an OK response.
     /// </summary>
-    public Task WriteOkAsync(CancellationToken cancellationToken = default)
+    public virtual Task WriteOkAsync(CancellationToken cancellationToken = default)
         => WriteResponseAsync(RespValue.Ok, cancellationToken);
 
     /// <summary>
     /// Writes an error response.
     /// </summary>
-    public Task WriteErrorAsync(string message, CancellationToken cancellationToken = default)
+    public virtual Task WriteErrorAsync(string message, CancellationToken cancellationToken = default)
         => WriteResponseAsync(RespValue.Error(message), cancellationToken);
 
     /// <summary>
     /// Writes an integer response.
     /// </summary>
-    public Task WriteIntegerAsync(long value, CancellationToken cancellationToken = default)
+    public virtual Task WriteIntegerAsync(long value, CancellationToken cancellationToken = default)
         => WriteResponseAsync(new RespValue(value), cancellationToken);
 
     /// <summary>
     /// Writes a bulk string response.
     /// </summary>
-    public Task WriteBulkStringAsync(string? value, CancellationToken cancellationToken = default)
+    public virtual Task WriteBulkStringAsync(string? value, CancellationToken cancellationToken = default)
         => WriteResponseAsync(value == null ? RespValue.Null : RespValue.BulkString(value), cancellationToken);
 
     /// <summary>
     /// Writes a null response.
     /// </summary>
-    public Task WriteNullAsync(CancellationToken cancellationToken = default)
+    public virtual Task WriteNullAsync(CancellationToken cancellationToken = default)
         => WriteResponseAsync(RespValue.Null, cancellationToken);
 
     /// <summary>
