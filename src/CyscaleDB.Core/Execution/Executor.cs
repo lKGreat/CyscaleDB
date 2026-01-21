@@ -5045,6 +5045,21 @@ public sealed class Executor
             ordinal = schema.GetColumnOrdinal(col.ColumnName);
         }
 
+        // If not found directly, search for columns ending with _ColumnName (for joined schemas)
+        if (ordinal < 0)
+        {
+            var suffix = $"_{col.ColumnName}";
+            for (int i = 0; i < schema.Columns.Count; i++)
+            {
+                if (schema.Columns[i].Name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) ||
+                    schema.Columns[i].Name.Equals(col.ColumnName, StringComparison.OrdinalIgnoreCase))
+                {
+                    ordinal = i;
+                    break;
+                }
+            }
+        }
+
         if (ordinal < 0)
             throw new ColumnNotFoundException(col.ColumnName);
 

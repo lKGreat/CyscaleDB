@@ -3628,9 +3628,9 @@ public sealed class Parser
 
     private static bool IsKeyword(TokenType type)
     {
-        // Check if it's a keyword (all keywords are >= SELECT and < AtAt)
-        // AtAt is the last non-keyword token before keywords start
-        return type >= TokenType.SELECT && type < TokenType.AtAt;
+        // Check if it's a keyword (all keywords are >= SELECT and <= ENUM, but not AtAt)
+        // AtAt is a special token for @@ system variable prefix, not a keyword
+        return type >= TokenType.SELECT && type <= TokenType.ENUM && type != TokenType.AtAt;
     }
 
     private SqlSyntaxException Error(string message)

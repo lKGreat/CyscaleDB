@@ -47,7 +47,7 @@ public readonly struct Token
     /// <summary>
     /// Checks if this token is a keyword.
     /// </summary>
-    public bool IsKeyword => Type >= TokenType.SELECT && Type <= TokenType.OUT;
+    public bool IsKeyword => Type >= TokenType.SELECT && Type <= TokenType.ENUM && Type != TokenType.AtAt;
 }
 
 /// <summary>
