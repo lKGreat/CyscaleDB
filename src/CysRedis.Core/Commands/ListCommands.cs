@@ -14,7 +14,7 @@ public class LPushCommand : ICommandHandler
     {
         context.EnsureMinArgs(2);
         var key = context.GetArg(0);
-        var list = context.Database.GetOrCreate(key, () => new RedisList());
+        var list = context.Database.GetOrCreateList(key);
         
         for (int i = 1; i < context.ArgCount; i++)
         {
@@ -37,7 +37,7 @@ public class RPushCommand : ICommandHandler
     {
         context.EnsureMinArgs(2);
         var key = context.GetArg(0);
-        var list = context.Database.GetOrCreate(key, () => new RedisList());
+        var list = context.Database.GetOrCreateList(key);
         
         for (int i = 1; i < context.ArgCount; i++)
         {

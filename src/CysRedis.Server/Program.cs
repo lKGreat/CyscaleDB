@@ -22,6 +22,7 @@ public class Program
         Logger.Info("  Redis Protocol Compatible Server");
         Logger.Info("  with High-Performance Network Stack");
         Logger.Info("===========================================");
+        Logger.Info("Data structures: {0}", options.UseUnsafeDataStructures ? "Unsafe (high performance)" : "Managed (safe)");
         Logger.Info("Starting server on port {0}...", options.Port);
 
         RedisServer? server = null;
@@ -189,6 +190,7 @@ public class Program
         Console.WriteLine("  --tcp-keepalive <sec>  TCP keep-alive interval (default: 60)");
         Console.WriteLine("  --low-latency          Optimize for low latency");
         Console.WriteLine("  --high-throughput      Optimize for high throughput");
+        Console.WriteLine("  --unsafe, --use-unsafe Use unsafe pointer-based data structures (high performance)");
         Console.WriteLine("  --help, -h             Show this help message");
     }
 }

@@ -36,7 +36,7 @@ public class ZAddCommand : ICommandHandler
         if ((context.ArgCount - startIndex) < 2 || (context.ArgCount - startIndex) % 2 != 0)
             throw new WrongArityException("ZADD");
 
-        var zset = context.Database.GetOrCreate(key, () => new RedisSortedSet());
+        var zset = context.Database.GetOrCreateSortedSet(key);
         int added = 0, changed = 0;
 
         for (int i = startIndex; i < context.ArgCount; i += 2)
@@ -292,7 +292,7 @@ public class ZIncrByCommand : ICommandHandler
         var increment = context.GetArgAsDouble(1);
         var member = context.GetArg(2);
 
-        var zset = context.Database.GetOrCreate(key, () => new RedisSortedSet());
+        var zset = context.Database.GetOrCreateSortedSet(key);
         var newScore = zset.IncrBy(member, increment);
 
         return context.Client.WriteBulkStringAsync(

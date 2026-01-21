@@ -206,10 +206,17 @@ public class RedisServer : IDisposable
         
         _cts = new CancellationTokenSource();
         _clients = new ConcurrentDictionary<long, RedisClient>();
+        
+        // Create data structure factory based on configuration
+        IDataStructureFactory factory = _options.UseUnsafeDataStructures
+            ? new DataStructures.UnsafeDataStructureFactory()
+            : new DataStructures.ManagedDataStructureFactory();
+        
         Store = new RedisStore(
             databaseCount: Constants.DefaultDatabaseCount,
             evictionPolicy: _options.EvictionPolicy,
-            maxMemory: _options.MaxMemory);
+            maxMemory: _options.MaxMemory,
+            factory: factory);
         Dispatcher = new CommandDispatcher(this);
         PubSub = new PubSubManager();
         ScriptManager = new ScriptManager();

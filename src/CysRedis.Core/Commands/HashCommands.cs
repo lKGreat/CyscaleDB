@@ -15,7 +15,7 @@ public class HSetCommand : ICommandHandler
             throw new Common.WrongArityException("HSET");
 
         var key = context.GetArg(0);
-        var hash = context.Database.GetOrCreate(key, () => new RedisHash());
+        var hash = context.Database.GetOrCreateHash(key);
         
         int newFields = 0;
         for (int i = 1; i < context.ArgCount; i += 2)
@@ -63,7 +63,7 @@ public class HMSetCommand : ICommandHandler
             throw new Common.WrongArityException("HMSET");
 
         var key = context.GetArg(0);
-        var hash = context.Database.GetOrCreate(key, () => new RedisHash());
+        var hash = context.Database.GetOrCreateHash(key);
         
         for (int i = 1; i < context.ArgCount; i += 2)
         {
@@ -231,7 +231,7 @@ public class HIncrByCommand : ICommandHandler
         var field = context.GetArg(1);
         var increment = context.GetArgAsInt(2);
         
-        var hash = context.Database.GetOrCreate(key, () => new RedisHash());
+        var hash = context.Database.GetOrCreateHash(key);
         var result = hash.IncrBy(field, increment);
         
         return context.Client.WriteIntegerAsync(result, cancellationToken);
@@ -250,7 +250,7 @@ public class HIncrByFloatCommand : ICommandHandler
         var field = context.GetArg(1);
         var increment = context.GetArgAsDouble(2);
         
-        var hash = context.Database.GetOrCreate(key, () => new RedisHash());
+        var hash = context.Database.GetOrCreateHash(key);
         var result = hash.IncrByFloat(field, increment);
         
         return context.Client.WriteBulkStringAsync(
@@ -271,7 +271,7 @@ public class HSetNxCommand : ICommandHandler
         var field = context.GetArg(1);
         var value = Encoding.UTF8.GetBytes(context.GetArg(2));
         
-        var hash = context.Database.GetOrCreate(key, () => new RedisHash());
+        var hash = context.Database.GetOrCreateHash(key);
         var set = hash.SetNx(field, value);
         
         return context.Client.WriteIntegerAsync(set ? 1 : 0, cancellationToken);

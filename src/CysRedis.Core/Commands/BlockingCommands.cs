@@ -209,7 +209,7 @@ public class BLMoveCommand : ICommandHandler
                 if (sourceList.Count == 0 && source != destination)
                     context.Database.Delete(source);
 
-                var destList = context.Database.GetOrCreate(destination, () => new RedisList());
+                var destList = context.Database.GetOrCreateList(destination);
                 if (whereTo == "LEFT")
                     destList.PushLeft(value);
                 else
@@ -239,7 +239,7 @@ public class BLMoveCommand : ICommandHandler
                     if (sourceList.Count == 0 && source != destination)
                         context.Database.Delete(source);
 
-                    var destList = context.Database.GetOrCreate(destination, () => new RedisList());
+                    var destList = context.Database.GetOrCreateList(destination);
                     if (whereTo == "LEFT")
                         destList.PushLeft(value);
                     else

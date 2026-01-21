@@ -215,6 +215,12 @@ public class RedisServerOptions
     /// </summary>
     public EvictionPolicy EvictionPolicy { get; set; } = EvictionPolicy.NoEviction;
 
+    /// <summary>
+    /// Use unsafe pointer-based data structures for maximum performance.
+    /// Default: false (use managed implementations).
+    /// </summary>
+    public bool UseUnsafeDataStructures { get; set; } = false;
+
     #endregion
 
     /// <summary>

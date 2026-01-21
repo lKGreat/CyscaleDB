@@ -28,13 +28,15 @@ public class RedisStore : IDisposable
     /// </summary>
     public RedisStore(int databaseCount = Constants.DefaultDatabaseCount, 
         EvictionPolicy evictionPolicy = EvictionPolicy.NoEviction,
-        long maxMemory = 0)
+        long maxMemory = 0,
+        IDataStructureFactory? factory = null)
     {
         _evictionManager = new EvictionManager(evictionPolicy, maxMemory);
+        var dataStructureFactory = factory ?? new ManagedDataStructureFactory();
         _databases = new RedisDatabase[databaseCount];
         for (int i = 0; i < databaseCount; i++)
         {
-            _databases[i] = new RedisDatabase(i, _evictionManager);
+            _databases[i] = new RedisDatabase(i, _evictionManager, dataStructureFactory);
         }
     }
 
@@ -86,6 +88,7 @@ public class RedisDatabase : IDisposable
     private readonly ConcurrentDictionary<string, RedisObject> _data;
     private readonly ConcurrentDictionary<string, DateTime> _expires;
     private readonly EvictionManager? _evictionManager;
+    private readonly IDataStructureFactory _factory;
     private bool _disposed;
 
     /// <summary>
@@ -99,14 +102,20 @@ public class RedisDatabase : IDisposable
     public int KeyCount => _data.Count;
 
     /// <summary>
+    /// Data structure factory for creating new data structures.
+    /// </summary>
+    public IDataStructureFactory Factory => _factory;
+
+    /// <summary>
     /// Creates a new Redis database.
     /// </summary>
-    public RedisDatabase(int index, EvictionManager? evictionManager = null)
+    public RedisDatabase(int index, EvictionManager? evictionManager = null, IDataStructureFactory? factory = null)
     {
         Index = index;
         _data = new ConcurrentDictionary<string, RedisObject>(StringComparer.Ordinal);
         _expires = new ConcurrentDictionary<string, DateTime>(StringComparer.Ordinal);
         _evictionManager = evictionManager;
+        _factory = factory ?? new ManagedDataStructureFactory();
     }
 
     /// <summary>
@@ -390,6 +399,26 @@ public class RedisDatabase : IDisposable
         
         return newValue;
     }
+
+    /// <summary>
+    /// Gets or creates a hash.
+    /// </summary>
+    public RedisHash GetOrCreateHash(string key) => GetOrCreate(key, () => _factory.CreateHash());
+
+    /// <summary>
+    /// Gets or creates a set.
+    /// </summary>
+    public RedisSet GetOrCreateSet(string key) => GetOrCreate(key, () => _factory.CreateSet());
+
+    /// <summary>
+    /// Gets or creates a list.
+    /// </summary>
+    public RedisList GetOrCreateList(string key) => GetOrCreate(key, () => _factory.CreateList());
+
+    /// <summary>
+    /// Gets or creates a sorted set.
+    /// </summary>
+    public RedisSortedSet GetOrCreateSortedSet(string key) => GetOrCreate(key, () => _factory.CreateSortedSet());
 
     /// <summary>
     /// 尝试淘汰内存（如果需要）
