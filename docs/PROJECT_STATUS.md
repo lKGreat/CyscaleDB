@@ -154,6 +154,7 @@ CyscaleDB 是一个使用纯 C# 实现的 MySQL 兼容关系型数据库系统�
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2026-01-21 | **重大更新**: information_schema 完整支持 (MySQL 8.0 兼容, 70+ 虚拟表) |
 | 2026-01-21 | **重大更新**: 在线 DDL 框架实现 (ADD COLUMN/INDEX 不锁表) |
 | 2026-01-21 | **新增**: 配置系统 (CyscaleDbConfiguration, JSON 配置文件) |
 | 2026-01-21 | **新增**: 性能监控系统 (MetricsCollector, 慢查询日志, SHOW STATUS) |

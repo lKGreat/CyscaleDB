@@ -43,22 +43,152 @@
 | SHOW TABLES | ✅ |
 | DESCRIBE table | ✅ |
 
-### information_schema 虚拟表
+### information_schema 虚拟表 (MySQL 8.0 完整支持)
+
+#### 核心元数据表
 
 | 表名 | 状态 | 说明 |
 |------|------|------|
 | SCHEMATA | ✅ | 数据库列表 |
-| TABLES | ✅ | 表列表 |
-| COLUMNS | ✅ | 列信息 |
+| TABLES | ✅ | 表列表 (21列完整) |
+| COLUMNS | ✅ | 列信息 (22列完整) |
 | STATISTICS | ✅ | 索引统计 |
 | ENGINES | ✅ | 存储引擎信息 |
 | VIEWS | ✅ | 视图定义 |
-| TRIGGERS | ✅ | 触发器定义 (空表桩) |
-| ROUTINES | ✅ | 存储过程 (空表桩) |
-| PARAMETERS | ✅ | 存储过程参数 (空表桩) |
-| FILES | ✅ | 表空间文件 (空表桩) |
-| KEY_COLUMN_USAGE | ✅ | 外键信息 (空表桩) |
+
+#### 字符集与排序规则表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| CHARACTER_SETS | ✅ | 可用字符集列表 |
+| COLLATIONS | ✅ | 排序规则列表 |
+| COLLATION_CHARACTER_SET_APPLICABILITY | ✅ | 字符集-排序规则映射 |
+
+#### 约束表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| TABLE_CONSTRAINTS | ✅ | 表约束 (PRIMARY KEY, UNIQUE) |
+| CHECK_CONSTRAINTS | ✅ | CHECK 约束 (空表桩) |
+| KEY_COLUMN_USAGE | ✅ | 键列使用 (空表桩) |
 | REFERENTIAL_CONSTRAINTS | ✅ | 外键约束 (空表桩) |
+
+#### 系统表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| PROCESSLIST | ✅ | 进程列表 |
+| PLUGINS | ✅ | 服务器插件 |
+| EVENTS | ✅ | 事件调度器 (空表桩) |
+| PARTITIONS | ✅ | 分区信息 (空表桩) |
+
+#### 例程表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| ROUTINES | ✅ | 存储过程/函数 (空表桩) |
+| PARAMETERS | ✅ | 存储过程参数 (空表桩) |
+| TRIGGERS | ✅ | 触发器定义 (空表桩) |
+
+#### 权限表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| COLUMN_PRIVILEGES | ✅ | 列级权限 (空表桩) |
+| TABLE_PRIVILEGES | ✅ | 表级权限 (空表桩) |
+| SCHEMA_PRIVILEGES | ✅ | 库级权限 (空表桩) |
+| USER_PRIVILEGES | ✅ | 用户全局权限 |
+| USER_ATTRIBUTES | ✅ | 用户属性 |
+
+#### 角色表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| ADMINISTRABLE_ROLE_AUTHORIZATIONS | ✅ | 可授予角色 (空表桩) |
+| APPLICABLE_ROLES | ✅ | 适用角色 (空表桩) |
+| ENABLED_ROLES | ✅ | 已启用角色 (空表桩) |
+| ROLE_COLUMN_GRANTS | ✅ | 角色列授权 (空表桩) |
+| ROLE_ROUTINE_GRANTS | ✅ | 角色例程授权 (空表桩) |
+| ROLE_TABLE_GRANTS | ✅ | 角色表授权 (空表桩) |
+
+#### 扩展表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| SCHEMATA_EXTENSIONS | ✅ | 库扩展属性 |
+| TABLES_EXTENSIONS | ✅ | 表扩展属性 |
+| COLUMNS_EXTENSIONS | ✅ | 列扩展属性 (空表桩) |
+| TABLE_CONSTRAINTS_EXTENSIONS | ✅ | 约束扩展 (空表桩) |
+| TABLESPACES | ✅ | 表空间 (空表桩) |
+| TABLESPACES_EXTENSIONS | ✅ | 表空间扩展 (空表桩) |
+| VIEW_ROUTINE_USAGE | ✅ | 视图引用例程 (空表桩) |
+| VIEW_TABLE_USAGE | ✅ | 视图引用表 (空表桩) |
+
+#### 其他系统表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| COLUMN_STATISTICS | ✅ | 直方图统计 (空表桩) |
+| KEYWORDS | ✅ | MySQL 关键字列表 |
+| OPTIMIZER_TRACE | ✅ | 优化器追踪 (空表桩) |
+| PROFILING | ✅ | 语句分析 (空表桩) |
+| RESOURCE_GROUPS | ✅ | 资源组 |
+| FILES | ✅ | 表空间文件 (空表桩) |
+
+#### InnoDB Buffer Pool 表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| INNODB_BUFFER_PAGE | ✅ | 缓冲页 (空表桩) |
+| INNODB_BUFFER_PAGE_LRU | ✅ | LRU 缓冲页 (空表桩) |
+| INNODB_BUFFER_POOL_STATS | ✅ | 缓冲池统计 |
+| INNODB_CACHED_INDEXES | ✅ | 缓存索引 (空表桩) |
+
+#### InnoDB 压缩表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| INNODB_CMP | ✅ | 压缩统计 (空表桩) |
+| INNODB_CMP_RESET | ✅ | 压缩统计重置 (空表桩) |
+| INNODB_CMP_PER_INDEX | ✅ | 按索引压缩统计 (空表桩) |
+| INNODB_CMP_PER_INDEX_RESET | ✅ | 按索引压缩重置 (空表桩) |
+| INNODB_CMPMEM | ✅ | 压缩内存统计 (空表桩) |
+| INNODB_CMPMEM_RESET | ✅ | 压缩内存重置 (空表桩) |
+
+#### InnoDB 元数据表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| INNODB_COLUMNS | ✅ | InnoDB 列信息 |
+| INNODB_DATAFILES | ✅ | 数据文件 (空表桩) |
+| INNODB_FIELDS | ✅ | 索引字段 (空表桩) |
+| INNODB_FOREIGN | ✅ | 外键 (空表桩) |
+| INNODB_FOREIGN_COLS | ✅ | 外键列 (空表桩) |
+| INNODB_INDEXES | ✅ | 索引 (空表桩) |
+| INNODB_TABLES | ✅ | InnoDB 表信息 |
+
+#### InnoDB 全文索引表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| INNODB_FT_BEING_DELETED | ✅ | 正在删除 (空表桩) |
+| INNODB_FT_CONFIG | ✅ | 全文配置 (空表桩) |
+| INNODB_FT_DEFAULT_STOPWORD | ✅ | 默认停用词 |
+| INNODB_FT_DELETED | ✅ | 已删除 (空表桩) |
+| INNODB_FT_INDEX_CACHE | ✅ | 索引缓存 (空表桩) |
+| INNODB_FT_INDEX_TABLE | ✅ | 索引表 (空表桩) |
+
+#### InnoDB 表空间与事务表
+
+| 表名 | 状态 | 说明 |
+|------|------|------|
+| INNODB_METRICS | ✅ | 性能指标 (空表桩) |
+| INNODB_SESSION_TEMP_TABLESPACES | ✅ | 会话临时表空间 (空表桩) |
+| INNODB_TABLESPACES | ✅ | 表空间 (空表桩) |
+| INNODB_TABLESPACES_BRIEF | ✅ | 表空间简要 (空表桩) |
+| INNODB_TABLESTATS | ✅ | 表统计 |
+| INNODB_TEMP_TABLE_INFO | ✅ | 临时表信息 (空表桩) |
+| INNODB_TRX | ✅ | 事务 (空表桩) |
 
 ---
 
