@@ -232,22 +232,22 @@ todos:
     status: completed
   - id: 3.1.1
     content: PROCEDURE/CALL/DECLARE 等关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 3.1.2
     content: CreateProcedureStatement AST - 新建 AST 节点
-    status: pending
+    status: completed
   - id: 3.1.3
     content: CREATE PROCEDURE 解析 - 解析过程定义
-    status: pending
+    status: completed
   - id: 3.1.4
     content: 过程体 BEGIN...END 解析 - 解析过程体语句
-    status: pending
+    status: completed
   - id: 3.1.5
     content: DECLARE 变量解析 - 解析局部变量声明
-    status: pending
+    status: completed
   - id: 3.1.6
     content: SET 变量赋值 - 过程内变量赋值
-    status: pending
+    status: completed
   - id: 3.1.7
     content: IF...THEN...ELSE 解析执行 - 条件分支
     status: pending

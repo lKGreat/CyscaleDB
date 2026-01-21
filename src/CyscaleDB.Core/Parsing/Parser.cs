@@ -897,11 +897,57 @@ public sealed class Parser
         {
             return ParseCreateIndexStatement(isUnique);
         }
-        else if (Check(TokenType.VIEW) || Check(TokenType.OR))
+        else if (Check(TokenType.VIEW))
         {
             if (isUnique)
                 throw Error("UNIQUE cannot be used with CREATE VIEW");
             return ParseCreateViewStatement();
+        }
+        else if (Check(TokenType.OR))
+        {
+            // CREATE OR REPLACE can be followed by VIEW, PROCEDURE, FUNCTION, TRIGGER, or EVENT
+            if (isUnique)
+                throw Error("UNIQUE cannot be used with CREATE OR REPLACE");
+            
+            Advance(); // OR
+            Expect(TokenType.REPLACE);
+            
+            // Now check what type of object to create and set OrReplace flag
+            if (Check(TokenType.VIEW))
+            {
+                var stmt = ParseCreateViewStatement();
+                if (stmt is CreateViewStatement viewStmt)
+                    viewStmt.OrReplace = true;
+                return stmt;
+            }
+            else if (Check(TokenType.PROCEDURE))
+            {
+                var stmt = (CreateProcedureStatement)ParseCreateProcedureStatement();
+                stmt.OrReplace = true;
+                return stmt;
+            }
+            else if (Check(TokenType.FUNCTION))
+            {
+                var stmt = (CreateFunctionStatement)ParseCreateFunctionStatement();
+                stmt.OrReplace = true;
+                return stmt;
+            }
+            else if (Check(TokenType.TRIGGER))
+            {
+                var stmt = (CreateTriggerStatement)ParseCreateTriggerStatement();
+                stmt.OrReplace = true;
+                return stmt;
+            }
+            else if (MatchIdentifier("EVENT") || Check(TokenType.EVENT))
+            {
+                var stmt = (CreateEventStatement)ParseCreateEventStatement();
+                stmt.OrReplace = true;
+                return stmt;
+            }
+            else
+            {
+                throw Error($"Unexpected token after CREATE OR REPLACE: {_currentToken.Value}");
+            }
         }
         else if (Check(TokenType.USER))
         {
@@ -2441,6 +2487,21 @@ public sealed class Parser
         return false;
     }
 
+    /// <summary>
+    /// Expects a string literal and returns its value.
+    /// </summary>
+    private string ExpectStringLiteral()
+    {
+        if (!Check(TokenType.StringLiteral))
+        {
+            throw Error($"Expected string literal, got: {_currentToken.Value}");
+        }
+
+        var value = _currentToken.Value;
+        Advance();
+        return value;
+    }
+
     #endregion
 
     #region Expression Parsing
@@ -3291,7 +3352,206 @@ public sealed class Parser
 
     private Statement ParseCreateProcedureStatement()
     {
-        throw new NotImplementedException("CREATE PROCEDURE is not yet implemented (Phase 3)");
+        // CREATE [OR REPLACE] PROCEDURE name ([param [, param] ...]) [characteristics] body
+        // Note: OR REPLACE might have already been consumed by ParseCreateStatement
+        var stmt = new CreateProcedureStatement();
+
+        Expect(TokenType.PROCEDURE);
+
+        // Procedure name
+        stmt.ProcedureName = ExpectIdentifier();
+
+        // Parameters
+        Expect(TokenType.LeftParen);
+        
+        if (!Check(TokenType.RightParen))
+        {
+            do
+            {
+                var param = new ProcedureParameter();
+
+                // Parameter mode (IN, OUT, INOUT) - default is IN
+                if (Check(TokenType.IN) || MatchIdentifier("IN"))
+                {
+                    Advance();
+                    param.Mode = ParameterMode.In;
+                }
+                else if (Check(TokenType.OUT))
+                {
+                    Advance();
+                    param.Mode = ParameterMode.Out;
+                }
+                else if (Check(TokenType.INOUT))
+                {
+                    Advance();
+                    param.Mode = ParameterMode.InOut;
+                }
+
+                // Parameter name
+                param.Name = ExpectIdentifier();
+
+                // Parameter type
+                param.DataType = ParseDataType(out var length, out var precision, out var scale);
+                // For parameters, use length/precision interchangeably as "size"
+                param.Size = length ?? precision;
+                param.Scale = scale;
+
+                stmt.Parameters.Add(param);
+            } while (Match(TokenType.Comma));
+        }
+
+        Expect(TokenType.RightParen);
+
+        // Optional characteristics
+        while (true)
+        {
+            if (MatchIdentifier("COMMENT"))
+            {
+                stmt.Comment = ExpectStringLiteral();
+            }
+            else if (MatchIdentifier("LANGUAGE"))
+            {
+                Expect(TokenType.SQL);
+            }
+            else if (Check(TokenType.DETERMINISTIC))
+            {
+                Advance();
+                // Note: This is typically for functions, but MySQL allows it for procedures
+            }
+            else if (MatchIdentifier("NOT"))
+            {
+                // Check if next token is DETERMINISTIC
+                if (Check(TokenType.DETERMINISTIC))
+                {
+                    Advance(); // DETERMINISTIC
+                }
+                else
+                {
+                    throw Error("Expected DETERMINISTIC after NOT");
+                }
+            }
+            else if (Check(TokenType.CONTAINS))
+            {
+                Advance();
+                Expect(TokenType.SQL);
+            }
+            else if (MatchIdentifier("NO"))
+            {
+                Advance();
+                Expect(TokenType.SQL);
+            }
+            else if (MatchIdentifier("READS"))
+            {
+                Advance();
+                Expect(TokenType.SQL);
+                MatchIdentifier("DATA"); // Optional DATA keyword
+            }
+            else if (MatchIdentifier("MODIFIES"))
+            {
+                Advance();
+                Expect(TokenType.SQL);
+                MatchIdentifier("DATA"); // Optional DATA keyword
+            }
+            else if (Check(TokenType.SQL))
+            {
+                Advance();
+                Expect(TokenType.SECURITY);
+                if (Check(TokenType.DEFINER))
+                {
+                    Advance();
+                    stmt.SqlSecurity = "DEFINER";
+                }
+                else if (Check(TokenType.INVOKER))
+                {
+                    Advance();
+                    stmt.SqlSecurity = "INVOKER";
+                }
+                else
+                {
+                    throw Error("Expected DEFINER or INVOKER after SQL SECURITY");
+                }
+            }
+            else if (Check(TokenType.DEFINER))
+            {
+                Advance();
+                Expect(TokenType.Equal);
+                stmt.Definer = ParseDefinerClause();
+            }
+            else
+            {
+                break; // No more characteristics
+            }
+        }
+
+        // Procedure body - must be BEGIN...END block
+        stmt.Body = ParseProcedureBody();
+
+        return stmt;
+    }
+
+    /// <summary>
+    /// Parses a definer clause (user@host or CURRENT_USER).
+    /// </summary>
+    private string ParseDefinerClause()
+    {
+        if (MatchIdentifier("CURRENT_USER"))
+        {
+            return "CURRENT_USER";
+        }
+
+        var user = ExpectIdentifierOrKeyword();
+        if (Match(TokenType.AtAt))
+        {
+            var host = ExpectIdentifierOrKeyword();
+            return $"{user}@{host}";
+        }
+        return user;
+    }
+
+    /// <summary>
+    /// Parses a procedure body (BEGIN...END block with statements).
+    /// </summary>
+    private List<Statement> ParseProcedureBody()
+    {
+        // MySQL procedure body must be a BEGIN...END block
+        Expect(TokenType.BEGIN);
+
+        var statements = new List<Statement>();
+
+        // Parse statements until we hit END
+        while (!Check(TokenType.END))
+        {
+            if (Check(TokenType.EOF))
+            {
+                throw Error("Unexpected end of input in procedure body. Expected END.");
+            }
+
+            statements.Add(ParseProcedureStatement());
+
+            // Consume optional semicolon between statements
+            if (Check(TokenType.Semicolon))
+            {
+                Advance();
+            }
+        }
+
+        Expect(TokenType.END);
+
+        return statements;
+    }
+
+    /// <summary>
+    /// Parses a statement within a procedure body.
+    /// This includes all normal SQL statements plus procedure-specific control flow.
+    /// </summary>
+    private Statement ParseProcedureStatement()
+    {
+        // Procedure statements can be:
+        // - Regular SQL statements (SELECT, INSERT, UPDATE, DELETE, etc.)
+        // - Procedure control flow (DECLARE, SET, IF, WHILE, LOOP, etc.)
+        // - Other procedure-specific statements (LEAVE, ITERATE, RETURN)
+        
+        return ParseStatement();
     }
 
     private Statement ParseCreateFunctionStatement()
@@ -3331,12 +3591,56 @@ public sealed class Parser
 
     private Statement ParseCallStatement()
     {
-        throw new NotImplementedException("CALL is not yet implemented (Phase 3)");
+        // CALL procedure_name([argument [, argument] ...])
+        Expect(TokenType.CALL);
+
+        var stmt = new CallStatement
+        {
+            ProcedureName = ExpectIdentifier()
+        };
+
+        Expect(TokenType.LeftParen);
+
+        // Parse arguments
+        if (!Check(TokenType.RightParen))
+        {
+            do
+            {
+                stmt.Arguments.Add(ParseExpression());
+            } while (Match(TokenType.Comma));
+        }
+
+        Expect(TokenType.RightParen);
+
+        return stmt;
     }
 
     private Statement ParseDeclareVariableStatement()
     {
-        throw new NotImplementedException("DECLARE is not yet implemented (Phase 3)");
+        // DECLARE var_name [, var_name] ... type [DEFAULT value]
+        Expect(TokenType.DECLARE);
+
+        var stmt = new DeclareVariableStatement();
+
+        // Parse variable names
+        do
+        {
+            stmt.VariableNames.Add(ExpectIdentifier());
+        } while (Match(TokenType.Comma));
+
+        // Parse data type
+        stmt.DataType = ParseDataType(out var length, out var precision, out var scale);
+        // For variables, use length/precision interchangeably as "size"
+        stmt.Size = length ?? precision;
+        stmt.Scale = scale;
+
+        // Optional DEFAULT clause
+        if (Match(TokenType.DEFAULT))
+        {
+            stmt.DefaultValue = ParseExpression();
+        }
+
+        return stmt;
     }
 
     private Statement ParseIfStatement()
