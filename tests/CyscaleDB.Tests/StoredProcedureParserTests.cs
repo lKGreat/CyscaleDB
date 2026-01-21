@@ -249,4 +249,191 @@ END;";
         Assert.Equal(2, proc.Parameters.Count);
         Assert.True(proc.Body.Count >= 4); // At least 2 DECLARE + 2 SET statements
     }
+
+    [Fact]
+    public void ParseIfStatement_Simple_Success()
+    {
+        // Arrange
+        var sql = @"CREATE PROCEDURE test_if(IN p_value INT)
+BEGIN
+    IF p_value > 0 THEN
+        SELECT 'positive';
+    END IF;
+END;";
+        var parser = new Parser(sql);
+
+        // Act
+        var statement = parser.Parse();
+
+        // Assert
+        Assert.IsType<CreateProcedureStatement>(statement);
+        var proc = (CreateProcedureStatement)statement;
+        Assert.Single(proc.Body);
+        Assert.IsType<IfStatement>(proc.Body[0]);
+        var ifStmt = (IfStatement)proc.Body[0];
+        Assert.NotNull(ifStmt.Condition);
+        Assert.Single(ifStmt.ThenStatements);
+    }
+
+    [Fact]
+    public void ParseIfStatement_WithElseIf_Success()
+    {
+        // Arrange
+        var sql = @"CREATE PROCEDURE test_if(IN p_value INT)
+BEGIN
+    IF p_value > 0 THEN
+        SELECT 'positive';
+    ELSEIF p_value < 0 THEN
+        SELECT 'negative';
+    ELSE
+        SELECT 'zero';
+    END IF;
+END;";
+        var parser = new Parser(sql);
+
+        // Act
+        var statement = parser.Parse();
+
+        // Assert
+        Assert.IsType<CreateProcedureStatement>(statement);
+        var proc = (CreateProcedureStatement)statement;
+        Assert.Single(proc.Body);
+        Assert.IsType<IfStatement>(proc.Body[0]);
+        var ifStmt = (IfStatement)proc.Body[0];
+        Assert.NotNull(ifStmt.Condition);
+        Assert.Single(ifStmt.ThenStatements);
+        Assert.Single(ifStmt.ElseIfClauses);
+        Assert.NotNull(ifStmt.ElseStatements);
+        Assert.Single(ifStmt.ElseStatements);
+    }
+
+    [Fact]
+    public void ParseWhileStatement_Success()
+    {
+        // Arrange
+        var sql = @"CREATE PROCEDURE test_while()
+BEGIN
+    DECLARE v_count INT DEFAULT 0;
+    WHILE v_count < 10 DO
+        SET v_count = v_count + 1;
+    END WHILE;
+END;";
+        var parser = new Parser(sql);
+
+        // Act
+        var statement = parser.Parse();
+
+        // Assert
+        Assert.IsType<CreateProcedureStatement>(statement);
+        var proc = (CreateProcedureStatement)statement;
+        Assert.Equal(2, proc.Body.Count);
+        Assert.IsType<WhileStatement>(proc.Body[1]);
+        var whileStmt = (WhileStatement)proc.Body[1];
+        Assert.NotNull(whileStmt.Condition);
+        Assert.Single(whileStmt.Body);
+    }
+
+    [Fact]
+    public void ParseDropProcedure_Simple_Success()
+    {
+        // Arrange
+        var sql = "DROP PROCEDURE test_proc;";
+        var parser = new Parser(sql);
+
+        // Act
+        var statement = parser.Parse();
+
+        // Assert
+        Assert.IsType<DropProcedureStatement>(statement);
+        var drop = (DropProcedureStatement)statement;
+        Assert.Equal("test_proc", drop.ProcedureName);
+        Assert.False(drop.IfExists);
+    }
+
+    [Fact]
+    public void ParseDropProcedure_IfExists_Success()
+    {
+        // Arrange
+        var sql = "DROP PROCEDURE IF EXISTS test_proc;";
+        var parser = new Parser(sql);
+
+        // Act
+        var statement = parser.Parse();
+
+        // Assert
+        Assert.IsType<DropProcedureStatement>(statement);
+        var drop = (DropProcedureStatement)statement;
+        Assert.Equal("test_proc", drop.ProcedureName);
+        Assert.True(drop.IfExists);
+    }
+
+    [Fact]
+    public void ParseCreateFunction_Simple_Success()
+    {
+        // Arrange
+        var sql = @"CREATE FUNCTION test_func(p_value INT) RETURNS INT
+BEGIN
+    RETURN p_value * 2;
+END;";
+        var parser = new Parser(sql);
+
+        // Act
+        var statement = parser.Parse();
+
+        // Assert
+        Assert.IsType<CreateFunctionStatement>(statement);
+        var func = (CreateFunctionStatement)statement;
+        Assert.Equal("test_func", func.FunctionName);
+        Assert.Single(func.Parameters);
+        Assert.Equal("p_value", func.Parameters[0].Name);
+        Assert.Equal(DataType.Int, func.ReturnType);
+        Assert.Single(func.Body);
+    }
+
+    [Fact]
+    public void ParseCreateFunction_Deterministic_Success()
+    {
+        // Arrange
+        var sql = @"CREATE FUNCTION add_numbers(a INT, b INT) RETURNS INT DETERMINISTIC
+BEGIN
+    RETURN a + b;
+END;";
+        var parser = new Parser(sql);
+
+        // Act
+        var statement = parser.Parse();
+
+        // Assert
+        Assert.IsType<CreateFunctionStatement>(statement);
+        var func = (CreateFunctionStatement)statement;
+        Assert.Equal("add_numbers", func.FunctionName);
+        Assert.Equal(2, func.Parameters.Count);
+        Assert.Equal(DataType.Int, func.ReturnType);
+        Assert.True(func.IsDeterministic);
+    }
+
+    [Fact]
+    public void ParseCreateFunction_WithVarcharReturn_Success()
+    {
+        // Arrange
+        var sql = @"CREATE FUNCTION get_name(id INT) RETURNS VARCHAR(100)
+BEGIN
+    DECLARE result VARCHAR(100);
+    SELECT name INTO result FROM users WHERE user_id = id;
+    RETURN result;
+END;";
+        var parser = new Parser(sql);
+
+        // Act
+        var statement = parser.Parse();
+
+        // Assert
+        Assert.IsType<CreateFunctionStatement>(statement);
+        var func = (CreateFunctionStatement)statement;
+        Assert.Equal("get_name", func.FunctionName);
+        Assert.Single(func.Parameters);
+        Assert.Equal(DataType.VarChar, func.ReturnType);
+        Assert.Equal(100, func.ReturnSize);
+        Assert.Equal(3, func.Body.Count);
+    }
 }

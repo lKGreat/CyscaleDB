@@ -331,6 +331,8 @@ public enum ErrorCode
     ViewExists = 1206,
     IndexNotFound = 1207,
     IndexExists = 1208,
+    ProcedureNotFound = 1209,
+    ProcedureExists = 1210,
     
     // Auth errors (1250-1299)
     UserNotFound = 1250,

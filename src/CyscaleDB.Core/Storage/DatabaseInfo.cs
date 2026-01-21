@@ -48,6 +48,11 @@ public sealed class DatabaseInfo
     private readonly Dictionary<string, CheckConstraintDefinition> _checkConstraints;
 
     /// <summary>
+    /// The stored procedures and functions in this database, keyed by name (case-insensitive).
+    /// </summary>
+    private readonly Dictionary<string, ProcedureInfo> _procedures;
+
+    /// <summary>
     /// Gets all tables in this database.
     /// </summary>
     public IReadOnlyCollection<TableSchema> Tables => _tables.Values;
@@ -66,6 +71,11 @@ public sealed class DatabaseInfo
     /// Gets all CHECK constraints in this database.
     /// </summary>
     public IReadOnlyCollection<CheckConstraintDefinition> CheckConstraints => _checkConstraints.Values;
+
+    /// <summary>
+    /// Gets all stored procedures and functions in this database.
+    /// </summary>
+    public IReadOnlyCollection<ProcedureInfo> Procedures => _procedures.Values;
 
     /// <summary>
     /// Gets the number of tables in this database.
@@ -91,6 +101,11 @@ public sealed class DatabaseInfo
     /// Counter for generating unique view IDs.
     /// </summary>
     private int _nextViewId;
+
+    /// <summary>
+    /// Counter for generating unique procedure IDs.
+    /// </summary>
+    private int _nextProcedureId;
 
     /// <summary>
     /// Creates a new database info.
@@ -119,8 +134,10 @@ public sealed class DatabaseInfo
         _views = new Dictionary<string, ViewInfo>(StringComparer.OrdinalIgnoreCase);
         _foreignKeys = new Dictionary<string, ForeignKeyDefinition>(StringComparer.OrdinalIgnoreCase);
         _checkConstraints = new Dictionary<string, CheckConstraintDefinition>(StringComparer.OrdinalIgnoreCase);
+        _procedures = new Dictionary<string, ProcedureInfo>(StringComparer.OrdinalIgnoreCase);
         _nextTableId = 1;
         _nextViewId = 1;
+        _nextProcedureId = 1;
     }
 
     /// <summary>
@@ -345,6 +362,60 @@ public sealed class DatabaseInfo
 
     #endregion
 
+    #region Stored Procedure Management
+
+    /// <summary>
+    /// Gets a stored procedure or function by name.
+    /// </summary>
+    public ProcedureInfo? GetProcedure(string procedureName)
+    {
+        return _procedures.TryGetValue(procedureName, out var proc) ? proc : null;
+    }
+
+    /// <summary>
+    /// Checks if a stored procedure or function exists.
+    /// </summary>
+    public bool HasProcedure(string procedureName) => _procedures.ContainsKey(procedureName);
+
+    /// <summary>
+    /// Adds a stored procedure or function to this database.
+    /// </summary>
+    public void AddProcedure(ProcedureInfo procedure)
+    {
+        if (_procedures.ContainsKey(procedure.ProcedureName))
+            throw new CyscaleException($"Procedure or function '{procedure.ProcedureName}' already exists", ErrorCode.ProcedureExists);
+
+        _procedures[procedure.ProcedureName] = procedure;
+    }
+
+    /// <summary>
+    /// Adds or replaces a stored procedure or function in this database.
+    /// </summary>
+    public void AddOrReplaceProcedure(ProcedureInfo procedure)
+    {
+        _procedures[procedure.ProcedureName] = procedure;
+    }
+
+    /// <summary>
+    /// Removes a stored procedure or function from this database.
+    /// </summary>
+    public bool RemoveProcedure(string procedureName)
+    {
+        return _procedures.Remove(procedureName);
+    }
+
+    /// <summary>
+    /// Gets the next unique procedure ID.
+    /// </summary>
+    public int GetNextProcedureId() => _nextProcedureId++;
+
+    /// <summary>
+    /// Sets the next procedure ID (used during deserialization).
+    /// </summary>
+    internal void SetNextProcedureId(int nextId) => _nextProcedureId = nextId;
+
+    #endregion
+
     /// <summary>
     /// Serializes this database info to bytes.
     /// </summary>
@@ -361,6 +432,7 @@ public sealed class DatabaseInfo
         writer.Write(Collation);
         writer.Write(_nextTableId);
         writer.Write(_nextViewId);
+        writer.Write(_nextProcedureId);
 
         // Write tables
         writer.Write(_tables.Count);
@@ -398,6 +470,15 @@ public sealed class DatabaseInfo
             writer.Write(chkBytes);
         }
 
+        // Write stored procedures and functions
+        writer.Write(_procedures.Count);
+        foreach (var proc in _procedures.Values)
+        {
+            var procBytes = proc.Serialize();
+            writer.Write(procBytes.Length);
+            writer.Write(procBytes);
+        }
+
         return stream.ToArray();
     }
 
@@ -432,9 +513,25 @@ public sealed class DatabaseInfo
             }
         }
 
+        // Try to read nextProcedureId - may not exist in older formats
+        var nextProcedureId = 1;
+        if (stream.Position < stream.Length)
+        {
+            try
+            {
+                nextProcedureId = reader.ReadInt32();
+            }
+            catch
+            {
+                // Older format without procedures - reset position and continue
+                nextProcedureId = 1;
+            }
+        }
+
         var db = new DatabaseInfo(databaseId, name, dataDirectory, createdAt, characterSet, collation);
         db.SetNextTableId(nextTableId);
         db.SetNextViewId(nextViewId);
+        db.SetNextProcedureId(nextProcedureId);
 
         var tableCount = reader.ReadInt32();
         for (int i = 0; i < tableCount; i++)
@@ -502,6 +599,26 @@ public sealed class DatabaseInfo
             catch
             {
                 // Older format without CHECK constraints - ignore
+            }
+        }
+
+        // Try to read stored procedures - may not exist in older formats
+        if (stream.Position < stream.Length)
+        {
+            try
+            {
+                var procCount = reader.ReadInt32();
+                for (int i = 0; i < procCount; i++)
+                {
+                    var procLength = reader.ReadInt32();
+                    var procBytes = reader.ReadBytes(procLength);
+                    var proc = ProcedureInfo.Deserialize(procBytes);
+                    db._procedures[proc.ProcedureName] = proc;
+                }
+            }
+            catch
+            {
+                // Older format without procedures - ignore
             }
         }
 

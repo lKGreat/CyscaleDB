@@ -149,6 +149,20 @@ public sealed class Executor
             ShowErrorsStatement => ExecuteShowErrors(),
             ShowCollationStatement s => ExecuteShowCollation(s),
             ShowCharsetStatement s => ExecuteShowCharset(s),
+            // Stored procedure/function statements
+            CreateProcedureStatement s => ExecuteCreateProcedure(s),
+            DropProcedureStatement s => ExecuteDropProcedure(s),
+            CreateFunctionStatement s => ExecuteCreateFunction(s),
+            DropFunctionStatement s => ExecuteDropFunction(s),
+            CallStatement s => ExecuteCall(s),
+            DeclareVariableStatement s => ExecuteDeclareVariable(s),
+            IfStatement s => ExecuteIf(s),
+            WhileStatement s => ExecuteWhile(s),
+            RepeatStatement s => ExecuteRepeat(s),
+            LoopStatement s => ExecuteLoop(s),
+            LeaveStatement s => ExecuteLeave(s),
+            IterateStatement s => ExecuteIterate(s),
+            ReturnStatement s => ExecuteReturn(s),
             _ => throw new CyscaleException($"Unsupported statement type: {statement.GetType().Name}")
         };
     }
@@ -3114,6 +3128,447 @@ public sealed class Executor
         
         // Simplified stub implementation
         return ExecutionResult.Ddl($"Revoked {privileges} on {target} from '{stmt.UserName}'@'{stmt.Host}'");
+    }
+
+    #endregion
+
+    #region Stored Procedures and Functions
+
+    // Context for procedure execution
+    private Dictionary<string, DataValue>? _procedureVariables;
+    private DataValue? _procedureReturnValue;
+    private string? _leaveLabel;
+    private string? _iterateLabel;
+
+    private ExecutionResult ExecuteCreateProcedure(CreateProcedureStatement stmt)
+    {
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            throw new DatabaseNotFoundException(_currentDatabase);
+
+        // Check if procedure already exists
+        if (db.HasProcedure(stmt.ProcedureName) && !stmt.OrReplace)
+            throw new CyscaleException($"Procedure '{stmt.ProcedureName}' already exists", ErrorCode.ProcedureExists);
+
+        // Create procedure info
+        var procInfo = new ProcedureInfo(
+            db.GetNextProcedureId(),
+            stmt.ProcedureName,
+            isFunction: false,
+            stmt.Parameters,
+            stmt.Body,
+            definer: stmt.Definer,
+            sqlSecurity: stmt.SqlSecurity,
+            comment: stmt.Comment);
+
+        if (stmt.OrReplace)
+        {
+            db.AddOrReplaceProcedure(procInfo);
+        }
+        else
+        {
+            db.AddProcedure(procInfo);
+        }
+
+        // Save catalog
+        _catalog.SaveCatalog();
+
+        _logger.Info("Created procedure '{0}' in database '{1}'", stmt.ProcedureName, _currentDatabase);
+        return ExecutionResult.Ddl($"Procedure '{stmt.ProcedureName}' created successfully");
+    }
+
+    private ExecutionResult ExecuteDropProcedure(DropProcedureStatement stmt)
+    {
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            throw new DatabaseNotFoundException(_currentDatabase);
+
+        if (!db.HasProcedure(stmt.ProcedureName))
+        {
+            if (stmt.IfExists)
+            {
+                _logger.Info("Procedure '{0}' does not exist (IF EXISTS specified)", stmt.ProcedureName);
+                return ExecutionResult.Ddl($"Procedure '{stmt.ProcedureName}' does not exist");
+            }
+            throw new CyscaleException($"Procedure '{stmt.ProcedureName}' does not exist", ErrorCode.ProcedureNotFound);
+        }
+
+        db.RemoveProcedure(stmt.ProcedureName);
+
+        // Save catalog
+        _catalog.SaveCatalog();
+
+        _logger.Info("Dropped procedure '{0}' from database '{1}'", stmt.ProcedureName, _currentDatabase);
+        return ExecutionResult.Ddl($"Procedure '{stmt.ProcedureName}' dropped successfully");
+    }
+
+    private ExecutionResult ExecuteCreateFunction(CreateFunctionStatement stmt)
+    {
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            throw new DatabaseNotFoundException(_currentDatabase);
+
+        // Check if function already exists
+        if (db.HasProcedure(stmt.FunctionName) && !stmt.OrReplace)
+            throw new CyscaleException($"Function '{stmt.FunctionName}' already exists", ErrorCode.ProcedureExists);
+
+        // Create function info
+        var funcInfo = new ProcedureInfo(
+            db.GetNextProcedureId(),
+            stmt.FunctionName,
+            isFunction: true,
+            stmt.Parameters,
+            stmt.Body,
+            returnType: stmt.ReturnType,
+            returnSize: stmt.ReturnSize,
+            returnScale: stmt.ReturnScale,
+            isDeterministic: stmt.IsDeterministic,
+            definer: stmt.Definer,
+            sqlSecurity: stmt.SqlSecurity,
+            comment: stmt.Comment);
+
+        if (stmt.OrReplace)
+        {
+            db.AddOrReplaceProcedure(funcInfo);
+        }
+        else
+        {
+            db.AddProcedure(funcInfo);
+        }
+
+        // Save catalog
+        _catalog.SaveCatalog();
+
+        _logger.Info("Created function '{0}' in database '{1}'", stmt.FunctionName, _currentDatabase);
+        return ExecutionResult.Ddl($"Function '{stmt.FunctionName}' created successfully");
+    }
+
+    private ExecutionResult ExecuteDropFunction(DropFunctionStatement stmt)
+    {
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            throw new DatabaseNotFoundException(_currentDatabase);
+
+        if (!db.HasProcedure(stmt.FunctionName))
+        {
+            if (stmt.IfExists)
+            {
+                _logger.Info("Function '{0}' does not exist (IF EXISTS specified)", stmt.FunctionName);
+                return ExecutionResult.Ddl($"Function '{stmt.FunctionName}' does not exist");
+            }
+            throw new CyscaleException($"Function '{stmt.FunctionName}' does not exist", ErrorCode.ProcedureNotFound);
+        }
+
+        var proc = db.GetProcedure(stmt.FunctionName);
+        if (proc != null && !proc.IsFunction)
+        {
+            throw new CyscaleException($"'{stmt.FunctionName}' is not a function", ErrorCode.InternalError);
+        }
+
+        db.RemoveProcedure(stmt.FunctionName);
+
+        // Save catalog
+        _catalog.SaveCatalog();
+
+        _logger.Info("Dropped function '{0}' from database '{1}'", stmt.FunctionName, _currentDatabase);
+        return ExecutionResult.Ddl($"Function '{stmt.FunctionName}' dropped successfully");
+    }
+
+    private ExecutionResult ExecuteCall(CallStatement stmt)
+    {
+        var db = _catalog.GetDatabase(_currentDatabase);
+        if (db == null)
+            throw new DatabaseNotFoundException(_currentDatabase);
+
+        // Get the procedure
+        var proc = db.GetProcedure(stmt.ProcedureName);
+        if (proc == null)
+            throw new CyscaleException($"Procedure '{stmt.ProcedureName}' does not exist", ErrorCode.ProcedureNotFound);
+
+        if (proc.IsFunction)
+            throw new CyscaleException($"'{stmt.ProcedureName}' is a function, not a procedure. Use SELECT to call functions.", ErrorCode.InternalError);
+
+        // Check parameter count
+        if (stmt.Arguments.Count != proc.Parameters.Count)
+            throw new CyscaleException($"Procedure '{stmt.ProcedureName}' expects {proc.Parameters.Count} parameters, got {stmt.Arguments.Count}", ErrorCode.InternalError);
+
+        // Initialize procedure execution context
+        _procedureVariables = new Dictionary<string, DataValue>(StringComparer.OrdinalIgnoreCase);
+        _procedureReturnValue = null;
+        _leaveLabel = null;
+        _iterateLabel = null;
+
+        // Evaluate arguments and bind to parameters
+        for (int i = 0; i < proc.Parameters.Count; i++)
+        {
+            var param = proc.Parameters[i];
+            var arg = stmt.Arguments[i];
+
+            // For now, we'll just evaluate the argument expression without a row context
+            // In a full implementation, this would need proper context handling
+            var evaluator = BuildExpressionEvaluator(arg);
+            var value = evaluator.Evaluate(new Row([]));
+
+            _procedureVariables[param.Name] = value;
+        }
+
+        // Execute procedure body
+        ExecutionResult result = ExecutionResult.Empty();
+        foreach (var bodyStmt in proc.Body)
+        {
+            result = Execute(bodyStmt);
+
+            // Check for early return
+            if (_procedureReturnValue != null)
+                break;
+        }
+
+        // Clean up execution context
+        _procedureVariables = null;
+        _procedureReturnValue = null;
+
+        _logger.Info("Called procedure '{0}'", stmt.ProcedureName);
+        return result;
+    }
+
+    private ExecutionResult ExecuteDeclareVariable(DeclareVariableStatement stmt)
+    {
+        if (_procedureVariables == null)
+            throw new CyscaleException("DECLARE can only be used inside a stored procedure or function", ErrorCode.InternalError);
+
+        // Declare variables with default value
+        foreach (var varName in stmt.VariableNames)
+        {
+            DataValue defaultValue;
+            if (stmt.DefaultValue != null)
+            {
+                var evaluator = BuildExpressionEvaluator(stmt.DefaultValue);
+                defaultValue = evaluator.Evaluate(new Row([]));
+            }
+            else
+            {
+                defaultValue = DataValue.Null;
+            }
+
+            _procedureVariables[varName] = defaultValue;
+        }
+
+        return ExecutionResult.Empty();
+    }
+
+    private ExecutionResult ExecuteIf(IfStatement stmt)
+    {
+        // Evaluate the main IF condition
+        var conditionEvaluator = BuildExpressionEvaluator(stmt.Condition);
+        var conditionValue = conditionEvaluator.Evaluate(new Row([]));
+
+        if (conditionValue.AsBoolean())
+        {
+            // Execute THEN statements
+            ExecutionResult result = ExecutionResult.Empty();
+            foreach (var thenStmt in stmt.ThenStatements)
+            {
+                result = Execute(thenStmt);
+                if (_procedureReturnValue != null || _leaveLabel != null || _iterateLabel != null)
+                    return result;
+            }
+            return result;
+        }
+
+        // Check ELSEIF clauses
+        foreach (var (elseIfCondition, elseIfStatements) in stmt.ElseIfClauses)
+        {
+            var elseIfEvaluator = BuildExpressionEvaluator(elseIfCondition);
+            var elseIfValue = elseIfEvaluator.Evaluate(new Row([]));
+
+            if (elseIfValue.AsBoolean())
+            {
+                ExecutionResult result = ExecutionResult.Empty();
+                foreach (var elseIfStmt in elseIfStatements)
+                {
+                    result = Execute(elseIfStmt);
+                    if (_procedureReturnValue != null || _leaveLabel != null || _iterateLabel != null)
+                        return result;
+                }
+                return result;
+            }
+        }
+
+        // Execute ELSE statements if present
+        if (stmt.ElseStatements != null)
+        {
+            ExecutionResult result = ExecutionResult.Empty();
+            foreach (var elseStmt in stmt.ElseStatements)
+            {
+                result = Execute(elseStmt);
+                if (_procedureReturnValue != null || _leaveLabel != null || _iterateLabel != null)
+                    return result;
+            }
+            return result;
+        }
+
+        return ExecutionResult.Empty();
+    }
+
+    private ExecutionResult ExecuteWhile(WhileStatement stmt)
+    {
+        ExecutionResult result = ExecutionResult.Empty();
+
+        while (true)
+        {
+            // Evaluate condition
+            var conditionEvaluator = BuildExpressionEvaluator(stmt.Condition);
+            var conditionValue = conditionEvaluator.Evaluate(new Row([]));
+
+            if (!conditionValue.AsBoolean())
+                break;
+
+            // Execute loop body
+            foreach (var bodyStmt in stmt.Body)
+            {
+                result = Execute(bodyStmt);
+
+                // Check for LEAVE (exit loop)
+                if (_leaveLabel != null)
+                {
+                    if (stmt.Label == null || _leaveLabel == stmt.Label)
+                    {
+                        _leaveLabel = null;
+                        return result;
+                    }
+                    return result; // Propagate LEAVE to outer loop
+                }
+
+                // Check for ITERATE (continue to next iteration)
+                if (_iterateLabel != null)
+                {
+                    if (stmt.Label == null || _iterateLabel == stmt.Label)
+                    {
+                        _iterateLabel = null;
+                        break; // Continue to next iteration
+                    }
+                    return result; // Propagate ITERATE to outer loop
+                }
+
+                // Check for RETURN
+                if (_procedureReturnValue != null)
+                    return result;
+            }
+        }
+
+        return result;
+    }
+
+    private ExecutionResult ExecuteRepeat(RepeatStatement stmt)
+    {
+        ExecutionResult result = ExecutionResult.Empty();
+
+        while (true)
+        {
+            // Execute loop body
+            foreach (var bodyStmt in stmt.Body)
+            {
+                result = Execute(bodyStmt);
+
+                // Check for LEAVE (exit loop)
+                if (_leaveLabel != null)
+                {
+                    if (stmt.Label == null || _leaveLabel == stmt.Label)
+                    {
+                        _leaveLabel = null;
+                        return result;
+                    }
+                    return result; // Propagate LEAVE to outer loop
+                }
+
+                // Check for ITERATE (continue to next iteration)
+                if (_iterateLabel != null)
+                {
+                    if (stmt.Label == null || _iterateLabel == stmt.Label)
+                    {
+                        _iterateLabel = null;
+                        break; // Continue to next iteration
+                    }
+                    return result; // Propagate ITERATE to outer loop
+                }
+
+                // Check for RETURN
+                if (_procedureReturnValue != null)
+                    return result;
+            }
+
+            // Evaluate UNTIL condition (loop continues until this is true)
+            var untilEvaluator = BuildExpressionEvaluator(stmt.UntilCondition);
+            var untilValue = untilEvaluator.Evaluate(new Row([]));
+
+            if (untilValue.AsBoolean())
+                break;
+        }
+
+        return result;
+    }
+
+    private ExecutionResult ExecuteLoop(LoopStatement stmt)
+    {
+        ExecutionResult result = ExecutionResult.Empty();
+
+        while (true)
+        {
+            // Execute loop body
+            foreach (var bodyStmt in stmt.Body)
+            {
+                result = Execute(bodyStmt);
+
+                // Check for LEAVE (exit loop)
+                if (_leaveLabel != null)
+                {
+                    if (_leaveLabel == stmt.Label)
+                    {
+                        _leaveLabel = null;
+                        return result;
+                    }
+                    return result; // Propagate LEAVE to outer loop
+                }
+
+                // Check for ITERATE (continue to next iteration)
+                if (_iterateLabel != null)
+                {
+                    if (_iterateLabel == stmt.Label)
+                    {
+                        _iterateLabel = null;
+                        break; // Continue to next iteration
+                    }
+                    return result; // Propagate ITERATE to outer loop
+                }
+
+                // Check for RETURN
+                if (_procedureReturnValue != null)
+                    return result;
+            }
+        }
+    }
+
+    private ExecutionResult ExecuteLeave(LeaveStatement stmt)
+    {
+        _leaveLabel = stmt.Label;
+        return ExecutionResult.Empty();
+    }
+
+    private ExecutionResult ExecuteIterate(IterateStatement stmt)
+    {
+        _iterateLabel = stmt.Label;
+        return ExecutionResult.Empty();
+    }
+
+    private ExecutionResult ExecuteReturn(ReturnStatement stmt)
+    {
+        if (_procedureVariables == null)
+            throw new CyscaleException("RETURN can only be used inside a stored function", ErrorCode.InternalError);
+
+        var evaluator = BuildExpressionEvaluator(stmt.Value);
+        _procedureReturnValue = evaluator.Evaluate(new Row([]));
+
+        return ExecutionResult.Empty();
     }
 
     #endregion

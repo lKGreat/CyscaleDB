@@ -250,25 +250,25 @@ todos:
     status: completed
   - id: 3.1.7
     content: IF...THEN...ELSE 解析执行 - 条件分支
-    status: pending
+    status: completed
   - id: 3.1.8
     content: WHILE...DO 解析执行 - 循环语句
-    status: pending
+    status: completed
   - id: 3.1.9
     content: CALL 语句解析执行 - 调用存储过程，测试过程调用
-    status: pending
+    status: completed
   - id: 3.1.10
     content: DROP PROCEDURE 解析执行 - 删除过程
-    status: pending
+    status: completed
   - id: 3.2.1
     content: FUNCTION/RETURNS 关键字 - 添加到 Token.cs
-    status: pending
+    status: completed
   - id: 3.2.2
     content: CreateFunctionStatement AST - 新建 AST 节点
-    status: pending
+    status: completed
   - id: 3.2.3
     content: CREATE FUNCTION 解析 - 解析函数定义
-    status: pending
+    status: completed
   - id: 3.2.4
     content: RETURN 语句解析 - 解析返回值
     status: pending

@@ -3556,7 +3556,148 @@ public sealed class Parser
 
     private Statement ParseCreateFunctionStatement()
     {
-        throw new NotImplementedException("CREATE FUNCTION is not yet implemented (Phase 3)");
+        // CREATE [OR REPLACE] FUNCTION name ([param [, param] ...])
+        // RETURNS type [characteristics] body
+        var stmt = new CreateFunctionStatement();
+
+        Expect(TokenType.FUNCTION);
+
+        // Function name
+        stmt.FunctionName = ExpectIdentifier();
+
+        // Parameters
+        Expect(TokenType.LeftParen);
+        
+        if (!Check(TokenType.RightParen))
+        {
+            do
+            {
+                var param = new ProcedureParameter();
+
+                // Functions don't support OUT/INOUT parameters, only IN
+                // But we'll parse them for compatibility if present
+                if (Check(TokenType.IN) || MatchIdentifier("IN"))
+                {
+                    Advance();
+                    param.Mode = ParameterMode.In;
+                }
+                else if (Check(TokenType.OUT))
+                {
+                    Advance();
+                    param.Mode = ParameterMode.Out;
+                }
+                else if (Check(TokenType.INOUT))
+                {
+                    Advance();
+                    param.Mode = ParameterMode.InOut;
+                }
+
+                // Parameter name
+                param.Name = ExpectIdentifier();
+
+                // Parameter type
+                param.DataType = ParseDataType(out var length, out var precision, out var scale);
+                param.Size = length ?? precision;
+                param.Scale = scale;
+
+                stmt.Parameters.Add(param);
+            } while (Match(TokenType.Comma));
+        }
+
+        Expect(TokenType.RightParen);
+
+        // RETURNS clause - required for functions
+        Expect(TokenType.RETURNS);
+        stmt.ReturnType = ParseDataType(out var retLength, out var retPrecision, out var retScale);
+        stmt.ReturnSize = retLength ?? retPrecision;
+        stmt.ReturnScale = retScale;
+
+        // Optional characteristics
+        while (true)
+        {
+            if (MatchIdentifier("COMMENT"))
+            {
+                stmt.Comment = ExpectStringLiteral();
+            }
+            else if (MatchIdentifier("LANGUAGE"))
+            {
+                Expect(TokenType.SQL);
+            }
+            else if (Check(TokenType.DETERMINISTIC))
+            {
+                Advance();
+                stmt.IsDeterministic = true;
+            }
+            else if (MatchIdentifier("NOT"))
+            {
+                // NOT DETERMINISTIC
+                if (Check(TokenType.DETERMINISTIC))
+                {
+                    Advance();
+                    stmt.IsDeterministic = false;
+                }
+                else
+                {
+                    throw Error("Expected DETERMINISTIC after NOT");
+                }
+            }
+            else if (Check(TokenType.CONTAINS))
+            {
+                Advance();
+                Expect(TokenType.SQL);
+            }
+            else if (MatchIdentifier("NO"))
+            {
+                Advance();
+                Expect(TokenType.SQL);
+            }
+            else if (MatchIdentifier("READS"))
+            {
+                Advance();
+                Expect(TokenType.SQL);
+                MatchIdentifier("DATA"); // Optional DATA keyword
+            }
+            else if (MatchIdentifier("MODIFIES"))
+            {
+                Advance();
+                Expect(TokenType.SQL);
+                MatchIdentifier("DATA"); // Optional DATA keyword
+            }
+            else if (Check(TokenType.SQL))
+            {
+                Advance();
+                Expect(TokenType.SECURITY);
+                if (Check(TokenType.DEFINER))
+                {
+                    Advance();
+                    stmt.SqlSecurity = "DEFINER";
+                }
+                else if (Check(TokenType.INVOKER))
+                {
+                    Advance();
+                    stmt.SqlSecurity = "INVOKER";
+                }
+                else
+                {
+                    throw Error("Expected DEFINER or INVOKER after SQL SECURITY");
+                }
+            }
+            else if (Check(TokenType.DEFINER))
+            {
+                Advance();
+                Expect(TokenType.Equal);
+                stmt.Definer = ParseDefinerClause();
+            }
+            else
+            {
+                break; // No more characteristics
+            }
+        }
+
+        // Function body - must be BEGIN...END block
+        stmt.Body = ParseProcedureBody();
+
+        return stmt;
     }
 
     private Statement ParseCreateTriggerStatement()
@@ -3571,7 +3712,22 @@ public sealed class Parser
 
     private Statement ParseDropProcedureStatement()
     {
-        throw new NotImplementedException("DROP PROCEDURE is not yet implemented (Phase 3)");
+        // DROP PROCEDURE [IF EXISTS] procedure_name
+        Expect(TokenType.PROCEDURE);
+
+        var stmt = new DropProcedureStatement();
+
+        // Check for IF EXISTS
+        if (Match(TokenType.IF))
+        {
+            Expect(TokenType.EXISTS);
+            stmt.IfExists = true;
+        }
+
+        // Procedure name
+        stmt.ProcedureName = ExpectIdentifier();
+
+        return stmt;
     }
 
     private Statement ParseDropFunctionStatement()
@@ -3645,12 +3801,140 @@ public sealed class Parser
 
     private Statement ParseIfStatement()
     {
-        throw new NotImplementedException("IF statement is not yet implemented (Phase 3)");
+        // IF condition THEN statements [ELSEIF condition THEN statements] ... [ELSE statements] END IF
+        Expect(TokenType.IF);
+
+        var stmt = new IfStatement();
+
+        // Parse the main IF condition
+        stmt.Condition = ParseExpression();
+
+        // THEN keyword
+        Expect(TokenType.THEN);
+
+        // Parse THEN statements
+        while (!Check(TokenType.ELSEIF) && !Check(TokenType.ELSE) && !Check(TokenType.END))
+        {
+            if (Check(TokenType.EOF))
+            {
+                throw Error("Unexpected end of input in IF statement. Expected END IF.");
+            }
+
+            stmt.ThenStatements.Add(ParseProcedureStatement());
+
+            // Consume optional semicolon between statements
+            if (Check(TokenType.Semicolon))
+            {
+                Advance();
+            }
+        }
+
+        // Parse ELSEIF clauses
+        while (Check(TokenType.ELSEIF))
+        {
+            Advance(); // ELSEIF
+
+            var elseIfCondition = ParseExpression();
+            Expect(TokenType.THEN);
+
+            var elseIfStatements = new List<Statement>();
+            while (!Check(TokenType.ELSEIF) && !Check(TokenType.ELSE) && !Check(TokenType.END))
+            {
+                if (Check(TokenType.EOF))
+                {
+                    throw Error("Unexpected end of input in ELSEIF clause. Expected END IF.");
+                }
+
+                elseIfStatements.Add(ParseProcedureStatement());
+
+                // Consume optional semicolon between statements
+                if (Check(TokenType.Semicolon))
+                {
+                    Advance();
+                }
+            }
+
+            stmt.ElseIfClauses.Add((elseIfCondition, elseIfStatements));
+        }
+
+        // Parse optional ELSE clause
+        if (Check(TokenType.ELSE))
+        {
+            Advance(); // ELSE
+
+            stmt.ElseStatements = new List<Statement>();
+            while (!Check(TokenType.END))
+            {
+                if (Check(TokenType.EOF))
+                {
+                    throw Error("Unexpected end of input in ELSE clause. Expected END IF.");
+                }
+
+                stmt.ElseStatements.Add(ParseProcedureStatement());
+
+                // Consume optional semicolon between statements
+                if (Check(TokenType.Semicolon))
+                {
+                    Advance();
+                }
+            }
+        }
+
+        // END IF
+        Expect(TokenType.END);
+        Expect(TokenType.IF);
+
+        return stmt;
     }
 
     private Statement ParseWhileStatement()
     {
-        throw new NotImplementedException("WHILE statement is not yet implemented (Phase 3)");
+        // [label:] WHILE condition DO statements END WHILE [label]
+        string? label = null;
+
+        // Check if there's a label before WHILE
+        // This would have been parsed as an identifier before we got here
+        // For now, we'll just parse the WHILE statement itself
+        
+        Expect(TokenType.WHILE);
+
+        var stmt = new WhileStatement();
+
+        // Parse the condition
+        stmt.Condition = ParseExpression();
+
+        // DO keyword
+        Expect(TokenType.DO);
+
+        // Parse loop body statements
+        while (!Check(TokenType.END))
+        {
+            if (Check(TokenType.EOF))
+            {
+                throw Error("Unexpected end of input in WHILE loop. Expected END WHILE.");
+            }
+
+            stmt.Body.Add(ParseProcedureStatement());
+
+            // Consume optional semicolon between statements
+            if (Check(TokenType.Semicolon))
+            {
+                Advance();
+            }
+        }
+
+        // END WHILE
+        Expect(TokenType.END);
+        Expect(TokenType.WHILE);
+
+        // Optional label after END WHILE
+        if (Check(TokenType.Identifier))
+        {
+            stmt.Label = _currentToken.Value;
+            Advance();
+        }
+
+        return stmt;
     }
 
     private Statement ParseRepeatStatement()
