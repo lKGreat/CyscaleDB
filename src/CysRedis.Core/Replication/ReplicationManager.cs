@@ -19,6 +19,8 @@ public class ReplicationManager
     private string _replId;
     private string _replId2 = "0000000000000000000000000000000000000000"; // secondary repl id
     private long _secondReplOffset = -1;
+    private Task? _heartbeatTask;
+    private CancellationTokenSource? _heartbeatCts;
 
     public ReplicationManager(RedisServer server)
     {
@@ -26,6 +28,84 @@ public class ReplicationManager
         _replicas = new ConcurrentDictionary<string, ReplicaInfo>();
         _replId = GenerateReplId();
         _backlog = new ReplicationBacklog(1024 * 1024); // 1MB backlog
+    }
+
+    /// <summary>
+    /// 启动心跳检查任务
+    /// </summary>
+    public void StartHeartbeat()
+    {
+        if (_heartbeatTask != null)
+            return;
+
+        _heartbeatCts = new CancellationTokenSource();
+        _heartbeatTask = RunHeartbeatAsync(_heartbeatCts.Token);
+        Logger.Info("Replication heartbeat task started");
+    }
+
+    /// <summary>
+    /// 停止心跳检查任务
+    /// </summary>
+    public void StopHeartbeat()
+    {
+        _heartbeatCts?.Cancel();
+        _heartbeatTask?.Wait(TimeSpan.FromSeconds(5));
+        _heartbeatCts?.Dispose();
+        _heartbeatCts = null;
+        _heartbeatTask = null;
+    }
+
+    /// <summary>
+    /// 心跳检查任务：定期向副本发送PING并请求ACK
+    /// </summary>
+    private async Task RunHeartbeatAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(1000, cancellationToken); // 每秒一次
+
+                foreach (var replica in _replicas.Values)
+                {
+                    try
+                    {
+                        // 发送 REPLCONF GETACK * 请求副本报告偏移量
+                        var pingCmd = BuildRespCommand(new[] { "REPLCONF", "GETACK", "*" });
+                        
+                        if (replica.Client.PipeWriter != null)
+                        {
+                            replica.Client.PipeWriter.WriteRaw(pingCmd);
+                            await replica.Client.PipeWriter.FlushAsync(cancellationToken);
+                            replica.LastPingSent = DateTime.UtcNow;
+                        }
+
+                        // 检查心跳超时（30秒无响应标记为断开）
+                        var timeSinceAck = DateTime.UtcNow - replica.LastAckTime;
+                        if (timeSinceAck.TotalSeconds > 30 && replica.State == ReplicaState.Online)
+                        {
+                            replica.State = ReplicaState.Disconnected;
+                            Logger.Warning("Replica {0} heartbeat timeout, marked as disconnected", replica.Address);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug("Heartbeat error for replica {0}: {1}", replica.Address, ex.Message);
+                        replica.State = ReplicaState.Disconnected;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Error in replication heartbeat task", ex);
+            }
+        }
+
+        Logger.Debug("Replication heartbeat task stopped");
     }
 
     /// <summary>
@@ -78,9 +158,47 @@ public class ReplicationManager
     /// </summary>
     public int GetSyncedReplicaCount()
     {
-        // 简化实现：返回所有已连接的副本数
-        // 完整实现应该检查每个副本的同步状态
-        return _replicas.Count;
+        // 完整实现：检查每个副本的实际同步状态
+        return _replicas.Values.Count(r => r.IsSynced(_masterReplOffset));
+    }
+
+    /// <summary>
+    /// Updates replica ACK offset (called when receiving REPLCONF ACK).
+    /// </summary>
+    public void UpdateReplicaAck(RedisClient client, long offset)
+    {
+        var id = $"{client.Address}:{client.Id}";
+        if (_replicas.TryGetValue(id, out var replica))
+        {
+            replica.AckOffset = offset;
+            replica.LastAckTime = DateTime.UtcNow;
+            
+            // 如果副本达到在线状态
+            if (replica.State == ReplicaState.FullSync && 
+                Math.Abs(replica.AckOffset - _masterReplOffset) < 1024)
+            {
+                replica.State = ReplicaState.Online;
+                Logger.Info("Replica {0} is now online and synced", id);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sets replica state.
+    /// </summary>
+    public void SetReplicaState(RedisClient client, ReplicaState state)
+    {
+        var id = $"{client.Address}:{client.Id}";
+        if (_replicas.TryGetValue(id, out var replica))
+        {
+            var oldState = replica.State;
+            replica.State = state;
+            
+            if (oldState != state)
+            {
+                Logger.Info("Replica {0} state changed: {1} -> {2}", id, oldState, state);
+            }
+        }
     }
 
     /// <summary>
@@ -115,7 +233,15 @@ public class ReplicationManager
     public void RegisterReplica(RedisClient client)
     {
         var id = $"{client.Address}:{client.Id}";
-        _replicas[id] = new ReplicaInfo(client);
+        var replica = new ReplicaInfo(client);
+        _replicas[id] = replica;
+        
+        // 启动心跳任务（如果还没启动）
+        if (_heartbeatTask == null && _replicas.Count == 1)
+        {
+            StartHeartbeat();
+        }
+        
         Logger.Info("Replica connected: {0}", id);
     }
 
@@ -442,12 +568,56 @@ public class ReplicaInfo
     public string Address { get; }
     public long Offset { get; set; }
     public DateTime ConnectedAt { get; }
+    public DateTime LastAckTime { get; set; }
+    public DateTime LastPingSent { get; set; }
+    public ReplicaState State { get; set; }
+    public long AckOffset { get; set; }
 
     public ReplicaInfo(RedisClient client)
     {
         Client = client;
         Address = client.Address;
         Offset = 0;
+        AckOffset = 0;
         ConnectedAt = DateTime.UtcNow;
+        LastAckTime = DateTime.UtcNow;
+        LastPingSent = DateTime.UtcNow;
+        State = ReplicaState.Connecting;
     }
+
+    /// <summary>
+    /// 检查副本是否同步（偏移量差距小于阈值）
+    /// </summary>
+    public bool IsSynced(long masterOffset, long maxLag = 1024)
+    {
+        if (State != ReplicaState.Online)
+            return false;
+
+        // 检查偏移量差距
+        var lag = masterOffset - AckOffset;
+        if (lag > maxLag)
+            return false;
+
+        // 检查心跳超时（10秒无ACK视为不同步）
+        var timeSinceAck = DateTime.UtcNow - LastAckTime;
+        if (timeSinceAck.TotalSeconds > 10)
+            return false;
+
+        return true;
+    }
+}
+
+/// <summary>
+/// 副本状态
+/// </summary>
+public enum ReplicaState
+{
+    /// <summary>正在连接</summary>
+    Connecting,
+    /// <summary>正在进行全量同步</summary>
+    FullSync,
+    /// <summary>在线并同步</summary>
+    Online,
+    /// <summary>断开连接</summary>
+    Disconnected
 }

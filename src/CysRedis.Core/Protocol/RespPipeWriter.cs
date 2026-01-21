@@ -356,13 +356,21 @@ public sealed class RespPipeWriter : IDisposable
     }
 
     /// <summary>
-    /// Writes raw bytes to the pipe.
+    /// Writes raw bytes to the pipe (for replication and internal use).
     /// </summary>
-    private void WriteRaw(ReadOnlySpan<byte> data)
+    public void WriteRaw(ReadOnlySpan<byte> data)
     {
         var span = _pipeWriter.GetSpan(data.Length);
         data.CopyTo(span);
         _pipeWriter.Advance(data.Length);
+    }
+
+    /// <summary>
+    /// Writes raw bytes to the pipe (for replication).
+    /// </summary>
+    public void WriteRaw(byte[] data)
+    {
+        WriteRaw(data.AsSpan());
     }
 
     /// <summary>

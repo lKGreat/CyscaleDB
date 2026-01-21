@@ -56,6 +56,9 @@ public class PsyncCommand : ICommandHandler
                 RespValue.SimpleString($"FULLRESYNC {result.ReplId} {result.Offset}"),
                 cancellationToken);
 
+            // 更新副本状态为全量同步中
+            context.Server.Replication.SetReplicaState(context.Client, Replication.ReplicaState.FullSync);
+
             // 发送RDB快照
             await context.Server.Replication.SendRdbAsync(context.Client, cancellationToken);
         }
@@ -65,6 +68,9 @@ public class PsyncCommand : ICommandHandler
             await context.Client.WriteResponseAsync(
                 RespValue.SimpleString($"CONTINUE {result.ReplId}"),
                 cancellationToken);
+
+            // 更新副本状态为在线
+            context.Server.Replication.SetReplicaState(context.Client, Replication.ReplicaState.Online);
 
             // 发送backlog数据
             await context.Server.Replication.SendBacklogAsync(context.Client, offset, cancellationToken);
@@ -109,7 +115,8 @@ public class ReplConfCommand : ICommandHandler
                     // 副本确认收到的偏移量
                     if (long.TryParse(value, out var ack))
                     {
-                        // 更新副本的偏移量
+                        // 更新副本的偏移量和同步状态
+                        context.Server.Replication.UpdateReplicaAck(context.Client, ack);
                         Logger.Debug("Replica ACK offset: {0}", ack);
                     }
                     break;
