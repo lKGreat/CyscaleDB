@@ -144,8 +144,11 @@ internal sealed class BufferPoolSegment : IDisposable
                 try
                 {
                     // Move to front of LRU list
-                    _lruList.Remove(frame.LruNode);
-                    _lruList.AddFirst(frame.LruNode);
+                    if (frame.LruNode != null)
+                    {
+                        _lruList.Remove(frame.LruNode);
+                        _lruList.AddFirst(frame.LruNode);
+                    }
                     frame.PinCount++;
                     page = frame.Page;
                     return true;
@@ -293,7 +296,10 @@ internal sealed class BufferPoolSegment : IDisposable
                     return false; // Can't remove pinned page
                 }
 
-                _lruList.Remove(frame.LruNode);
+                if (frame.LruNode != null)
+                {
+                    _lruList.Remove(frame.LruNode);
+                }
                 _frames.Remove(key);
                 return true;
             }
