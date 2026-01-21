@@ -456,12 +456,58 @@ public sealed class Executor
             op = new DualOperator(_currentDatabase);
         }
 
+        // Save the source schema before projection for ORDER BY resolution
+        var sourceSchema = op.Schema;
+
         // WHERE clause
         if (stmt.Where != null)
         {
             var predicate = BuildExpression(stmt.Where, op.Schema);
             op = new FilterOperator(op, predicate);
+            sourceSchema = op.Schema; // Update after filter
         }
+
+        // Determine if ORDER BY references columns not in SELECT
+        var orderByExtraColumns = new List<string>();
+        var selectedColumnNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        
+        if (!IsSelectAll(stmt))
+        {
+            foreach (var col in stmt.Columns)
+            {
+                if (col.IsWildcard)
+                {
+                    // Wildcard selects all columns from source
+                    foreach (var schemaCol in sourceSchema.Columns)
+                    {
+                        selectedColumnNames.Add(schemaCol.Name);
+                    }
+                }
+                else
+                {
+                    var name = col.Alias ?? GetExpressionName(col.Expression);
+                    selectedColumnNames.Add(name);
+                }
+            }
+
+            // Check ORDER BY columns
+            foreach (var orderClause in stmt.OrderBy)
+            {
+                var orderColNames = ExtractColumnReferences(orderClause.Expression);
+                foreach (var colName in orderColNames)
+                {
+                    // Check if this column exists in source but not in SELECT
+                    if (!selectedColumnNames.Contains(colName) && 
+                        sourceSchema.GetColumn(colName) != null)
+                    {
+                        orderByExtraColumns.Add(colName);
+                        selectedColumnNames.Add(colName); // Mark as added
+                    }
+                }
+            }
+        }
+
+        bool needsFinalProjection = orderByExtraColumns.Count > 0 && !hasGroupBy && !hasAggregates;
 
         // GROUP BY clause with aggregates
         if (hasGroupBy || hasAggregates)
@@ -473,8 +519,26 @@ public sealed class Executor
             // Projection (SELECT columns) - only if no GROUP BY
             if (!IsSelectAll(stmt))
             {
-                var projections = BuildProjections(stmt.Columns, op.Schema);
-                op = new ProjectOperator(op, projections, _currentDatabase, "result");
+                if (needsFinalProjection)
+                {
+                    // Include ORDER BY columns in the projection for sorting
+                    var extendedProjections = BuildProjections(stmt.Columns, sourceSchema);
+                    foreach (var extraCol in orderByExtraColumns)
+                    {
+                        var colDef = sourceSchema.GetColumn(extraCol);
+                        if (colDef != null)
+                        {
+                            var eval = new ColumnEvaluator(colDef.OrdinalPosition);
+                            extendedProjections.Add(new ProjectionColumn(eval, extraCol, colDef.DataType));
+                        }
+                    }
+                    op = new ProjectOperator(op, extendedProjections, _currentDatabase, "result");
+                }
+                else
+                {
+                    var projections = BuildProjections(stmt.Columns, op.Schema);
+                    op = new ProjectOperator(op, projections, _currentDatabase, "result");
+                }
             }
         }
 
@@ -496,6 +560,13 @@ public sealed class Executor
         {
             var sortKeys = BuildSortKeys(stmt.OrderBy, op.Schema);
             op = new OrderByOperator(op, sortKeys);
+        }
+
+        // Final projection to remove ORDER BY helper columns
+        if (needsFinalProjection && stmt.OrderBy.Count > 0)
+        {
+            var finalProjections = BuildProjections(stmt.Columns, op.Schema);
+            op = new ProjectOperator(op, finalProjections, _currentDatabase, "result");
         }
 
         // LIMIT/OFFSET
@@ -701,6 +772,74 @@ public sealed class Executor
             sortKeys.Add(new SortKey(expr, direction));
         }
         return sortKeys;
+    }
+
+    /// <summary>
+    /// Extracts all column reference names from an expression recursively.
+    /// Used to determine which columns ORDER BY needs access to.
+    /// </summary>
+    private static List<string> ExtractColumnReferences(Expression expr)
+    {
+        var columns = new List<string>();
+        ExtractColumnReferencesRecursive(expr, columns);
+        return columns;
+    }
+
+    private static void ExtractColumnReferencesRecursive(Expression expr, List<string> columns)
+    {
+        switch (expr)
+        {
+            case ColumnReference colRef:
+                columns.Add(colRef.ColumnName);
+                break;
+            case BinaryExpression binary:
+                ExtractColumnReferencesRecursive(binary.Left, columns);
+                ExtractColumnReferencesRecursive(binary.Right, columns);
+                break;
+            case UnaryExpression unary:
+                ExtractColumnReferencesRecursive(unary.Operand, columns);
+                break;
+            case FunctionCall func:
+                foreach (var arg in func.Arguments)
+                {
+                    ExtractColumnReferencesRecursive(arg, columns);
+                }
+                break;
+            case CaseExpression caseExpr:
+                foreach (var whenClause in caseExpr.WhenClauses)
+                {
+                    ExtractColumnReferencesRecursive(whenClause.When, columns);
+                    ExtractColumnReferencesRecursive(whenClause.Then, columns);
+                }
+                if (caseExpr.ElseResult != null)
+                {
+                    ExtractColumnReferencesRecursive(caseExpr.ElseResult, columns);
+                }
+                break;
+            case InExpression inExpr:
+                ExtractColumnReferencesRecursive(inExpr.Expression, columns);
+                if (inExpr.Values != null)
+                {
+                    foreach (var val in inExpr.Values)
+                    {
+                        ExtractColumnReferencesRecursive(val, columns);
+                    }
+                }
+                break;
+            case BetweenExpression between:
+                ExtractColumnReferencesRecursive(between.Expression, columns);
+                ExtractColumnReferencesRecursive(between.Low, columns);
+                ExtractColumnReferencesRecursive(between.High, columns);
+                break;
+            case LikeExpression like:
+                ExtractColumnReferencesRecursive(like.Expression, columns);
+                ExtractColumnReferencesRecursive(like.Pattern, columns);
+                break;
+            case IsNullExpression isNull:
+                ExtractColumnReferencesRecursive(isNull.Expression, columns);
+                break;
+            // Literals and other expressions without column references are ignored
+        }
     }
 
     private IOperator BuildTableReference(TableReference tableRef)
