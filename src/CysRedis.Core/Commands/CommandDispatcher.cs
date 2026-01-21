@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using CysRedis.Core.Common;
+using CysRedis.Core.Monitoring;
 using CysRedis.Core.Protocol;
 
 namespace CysRedis.Core.Commands;
@@ -70,6 +72,9 @@ public class CommandDispatcher
 
         var context = new CommandContext(_server, client, commandName, args);
 
+        // Start timing for slow log
+        var startTime = Stopwatch.GetTimestamp();
+
         try
         {
             await handler.ExecuteAsync(context, cancellationToken);
@@ -85,6 +90,22 @@ public class CommandDispatcher
         catch (RedisException ex)
         {
             await client.WriteErrorAsync(ex.GetRespError(), cancellationToken);
+        }
+        finally
+        {
+            // Calculate elapsed time
+            var elapsedTicks = Stopwatch.GetTimestamp() - startTime;
+            var elapsedMicroseconds = (long)(elapsedTicks * 1_000_000.0 / Stopwatch.Frequency);
+            var elapsedMilliseconds = elapsedMicroseconds / 1000.0;
+
+            // Record to slow log if threshold exceeded
+            _server.SlowLog.Record(elapsedMicroseconds, args, client.Name, client.Address);
+
+            // Record to latency monitor
+            _server.LatencyMonitor.Record(Monitoring.LatencyMonitor.EventTypes.Command, (long)elapsedMilliseconds);
+
+            // Record to command latency histogram
+            _server.CommandLatency.Record(elapsedMilliseconds);
         }
     }
 
@@ -266,6 +287,10 @@ public class CommandDispatcher
         Register("CONFIG", new ConfigCommand());
         Register("DEBUG", new DebugCommand());
         Register("TIME", new TimeCommand());
+        
+        // Monitoring commands
+        Register("SLOWLOG", new SlowLogCommand());
+        Register("LATENCY", new LatencyCommand());
     }
 
     /// <summary>

@@ -45,9 +45,16 @@ public class InfoCommand : ICommandHandler
 
         if (section == "default" || section == "all" || section == "stats")
         {
+            var metrics = context.Server.NetworkMetrics.GetSnapshot();
             sb.AppendLine("# Stats");
-            sb.AppendLine($"total_connections_received:{context.Server.ClientCount}");
+            sb.AppendLine($"total_connections_received:{metrics.TotalConnections}");
             sb.AppendLine($"total_commands_processed:{context.Server.TotalCommandsProcessed}");
+            sb.AppendLine($"rejected_connections:{metrics.RejectedConnections}");
+            sb.AppendLine($"total_net_input_bytes:{metrics.BytesReceived}");
+            sb.AppendLine($"total_net_output_bytes:{metrics.BytesSent}");
+            sb.AppendLine($"net_input_bytes_per_sec:{metrics.BytesReceivedPerSecond:F0}");
+            sb.AppendLine($"net_output_bytes_per_sec:{metrics.BytesSentPerSecond:F0}");
+            sb.AppendLine($"total_error_replies:{metrics.TotalErrors}");
             sb.AppendLine();
         }
 

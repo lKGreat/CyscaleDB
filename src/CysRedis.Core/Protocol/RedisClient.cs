@@ -13,7 +13,7 @@ public class RedisClient : IDisposable
     private static long _nextId = 0;
     
     private readonly TcpClient? _tcpClient;
-    private readonly NetworkStream? _stream;
+    private readonly Stream? _stream;
     private readonly RespPipeReader? _pipeReader;
     private readonly RespPipeWriter? _pipeWriter;
     private bool _disposed;
@@ -93,6 +93,11 @@ public class RedisClient : IDisposable
     public int ProtocolVersion { get; set; } = 2;
 
     /// <summary>
+    /// Whether the connection is TLS encrypted.
+    /// </summary>
+    public bool IsTls { get; }
+
+    /// <summary>
     /// Gets the RESP pipe reader.
     /// </summary>
     public RespPipeReader? PipeReader => _pipeReader;
@@ -111,9 +116,21 @@ public class RedisClient : IDisposable
     /// Creates a new Redis client wrapper with optimized I/O.
     /// </summary>
     public RedisClient(TcpClient tcpClient, RedisServerOptions? options = null)
+        : this(tcpClient, tcpClient?.GetStream()!, options, false)
+    {
+    }
+
+    /// <summary>
+    /// Creates a new Redis client with a custom stream (for TLS connections).
+    /// </summary>
+    /// <param name="tcpClient">The underlying TCP client.</param>
+    /// <param name="stream">The stream to use (NetworkStream or SslStream).</param>
+    /// <param name="options">Server options.</param>
+    /// <param name="isTls">Whether this is a TLS connection.</param>
+    public RedisClient(TcpClient tcpClient, Stream stream, RedisServerOptions? options, bool isTls)
     {
         _tcpClient = tcpClient ?? throw new ArgumentNullException(nameof(tcpClient));
-        _stream = tcpClient.GetStream();
+        _stream = stream ?? throw new ArgumentNullException(nameof(stream));
         
         // Use Pipeline-based readers/writers for better performance
         options ??= RedisServerOptions.Default;
@@ -126,6 +143,7 @@ public class RedisClient : IDisposable
         LastActivityAt = DateTime.UtcNow;
         DatabaseIndex = 0;
         Flags = ClientFlags.None;
+        IsTls = isTls;
     }
 
     /// <summary>

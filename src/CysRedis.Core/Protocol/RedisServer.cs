@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -6,10 +7,13 @@ using CysRedis.Core.Auth;
 using CysRedis.Core.Commands;
 using CysRedis.Core.Common;
 using CysRedis.Core.DataStructures;
+using CysRedis.Core.Monitoring;
 using CysRedis.Core.PubSub;
 using CysRedis.Core.Replication;
 using CysRedis.Core.Scripting;
+using CysRedis.Core.Security;
 using CysRedis.Core.Storage;
+using CysRedis.Core.Threading;
 
 namespace CysRedis.Core.Protocol;
 
@@ -19,10 +23,12 @@ namespace CysRedis.Core.Protocol;
 public class RedisServer : IDisposable
 {
     private readonly TcpListener _listener;
+    private readonly TcpListener? _tlsListener;
     private readonly CancellationTokenSource _cts;
     private readonly ConcurrentDictionary<long, RedisClient> _clients;
     private readonly RedisServerOptions _options;
     private Task? _acceptTask;
+    private Task? _acceptTlsTask;
     private Task? _healthCheckTask;
     private bool _disposed;
     private long _totalCommandsProcessed;
@@ -78,6 +84,46 @@ public class RedisServer : IDisposable
     /// ACL manager.
     /// </summary>
     public AclManager Acl { get; }
+
+    /// <summary>
+    /// Slow log manager.
+    /// </summary>
+    public SlowLog SlowLog { get; }
+
+    /// <summary>
+    /// Latency monitor for tracking latency spikes.
+    /// </summary>
+    public LatencyMonitor LatencyMonitor { get; }
+
+    /// <summary>
+    /// Command latency histogram for percentile statistics.
+    /// </summary>
+    public LatencyHistogram CommandLatency { get; }
+
+    /// <summary>
+    /// Network metrics collector.
+    /// </summary>
+    public NetworkMetrics NetworkMetrics { get; }
+
+    /// <summary>
+    /// IP filter for connection access control.
+    /// </summary>
+    public IpFilter IpFilter { get; }
+
+    /// <summary>
+    /// Connection rate limiter.
+    /// </summary>
+    public RateLimiter RateLimiter { get; }
+
+    /// <summary>
+    /// TLS handler for encrypted connections.
+    /// </summary>
+    public TlsHandler TlsHandler { get; }
+
+    /// <summary>
+    /// Client dispatcher for multi-threaded I/O.
+    /// </summary>
+    public ClientDispatcher IoDispatcher { get; }
 
     /// <summary>
     /// Number of connected clients.
@@ -138,7 +184,22 @@ public class RedisServer : IDisposable
         ScriptManager = new ScriptManager();
         Replication = new ReplicationManager(this);
         Acl = new AclManager();
+        SlowLog = new SlowLog(_options.SlowLogThreshold, _options.SlowLogMaxLen);
+        LatencyMonitor = new LatencyMonitor(_options.LatencyMonitorThreshold);
+        CommandLatency = new LatencyHistogram();
+        NetworkMetrics = new NetworkMetrics();
+        IpFilter = new IpFilter(_options.IpFilter);
+        RateLimiter = new RateLimiter(_options.RateLimit);
+        TlsHandler = new TlsHandler(_options.Tls);
+        IoDispatcher = new ClientDispatcher(_options.IoThreading, HandleCommandAsync);
         LastSaveTime = DateTime.UtcNow;
+
+        // Initialize TLS listener if enabled
+        if (_options.Tls.Enabled)
+        {
+            _tlsListener = new TcpListener(bindAddress, _options.Tls.Port);
+            ConfigureListenerSocket(_tlsListener.Server);
+        }
 
         // Initialize persistence if data directory is provided
         if (!string.IsNullOrEmpty(_options.DataDir))
@@ -209,6 +270,21 @@ public class RedisServer : IDisposable
         Logger.Info("  Client idle timeout: {0}", _options.ClientIdleTimeout == TimeSpan.Zero ? "disabled" : _options.ClientIdleTimeout.ToString());
 
         _acceptTask = AcceptConnectionsAsync();
+
+        // Start TLS listener if enabled
+        if (_tlsListener != null)
+        {
+            _tlsListener.Start(_options.Backlog);
+            Logger.Info("TLS listener started on port {0}", _options.Tls.Port);
+            _acceptTlsTask = AcceptTlsConnectionsAsync();
+        }
+
+        // Start I/O thread pool if enabled
+        if (IoDispatcher.IsEnabled)
+        {
+            IoDispatcher.Start();
+            Logger.Info("I/O threading enabled with {0} threads", IoDispatcher.ThreadPool.ThreadCount);
+        }
         
         // Start health check task if idle timeout is configured
         if (_options.ClientIdleTimeout > TimeSpan.Zero)
@@ -222,11 +298,78 @@ public class RedisServer : IDisposable
     /// </summary>
     public void Stop()
     {
+        StopAsync().GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Stops the server gracefully.
+    /// </summary>
+    public async Task StopAsync()
+    {
         if (_disposed) return;
 
-        Logger.Info("Stopping Redis server...");
-        _cts.Cancel();
+        Logger.Info("Initiating graceful shutdown...");
+        
+        var shutdownTimeout = _options.GracefulShutdownTimeout;
+        var shutdownDeadline = DateTime.UtcNow + shutdownTimeout;
+
+        // Phase 1: Stop accepting new connections
+        Logger.Info("Phase 1: Stopping listener...");
         _listener.Stop();
+        _tlsListener?.Stop();
+
+        // Phase 2: Notify clients about shutdown
+        if (_options.WaitForClientsOnShutdown)
+        {
+            Logger.Info("Phase 2: Waiting for clients to finish ({0} active)...", _clients.Count);
+            
+            // Send shutdown notification to non-transaction clients
+            var notificationTasks = new List<Task>();
+            foreach (var client in _clients.Values.Where(c => !c.InTransaction && !c.InPubSubMode))
+            {
+                notificationTasks.Add(TryNotifyShutdownAsync(client));
+            }
+
+            try
+            {
+                await Task.WhenAll(notificationTasks).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore notification errors
+            }
+
+            // Wait for in-progress transactions to complete
+            var waitStart = DateTime.UtcNow;
+            while (_clients.Values.Any(c => c.InTransaction) && DateTime.UtcNow < shutdownDeadline)
+            {
+                Logger.Debug("Waiting for {0} transactions to complete...",
+                    _clients.Values.Count(c => c.InTransaction));
+                await Task.Delay(100).ConfigureAwait(false);
+            }
+
+            var waitDuration = DateTime.UtcNow - waitStart;
+            Logger.Info("Waited {0:F1}s for clients", waitDuration.TotalSeconds);
+        }
+
+        // Phase 3: Save data if configured
+        if (_options.SaveOnShutdown && Persistence != null)
+        {
+            Logger.Info("Phase 3: Saving RDB...");
+            try
+            {
+                await Task.Run(() => Persistence.Save()).ConfigureAwait(false);
+                Logger.Info("RDB saved successfully");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to save RDB on shutdown", ex);
+            }
+        }
+
+        // Phase 4: Cancel operations and close connections
+        Logger.Info("Phase 4: Closing connections...");
+        _cts.Cancel();
 
         // Close all client connections
         foreach (var client in _clients.Values)
@@ -236,17 +379,62 @@ public class RedisServer : IDisposable
         }
         _clients.Clear();
 
+        // Wait for accept tasks to complete
         try
         {
-            _acceptTask?.Wait(TimeSpan.FromSeconds(5));
-            _healthCheckTask?.Wait(TimeSpan.FromSeconds(2));
+            var remainingTime = shutdownDeadline - DateTime.UtcNow;
+            if (remainingTime > TimeSpan.Zero)
+            {
+                var acceptTimeout = (int)Math.Min(remainingTime.TotalMilliseconds, 5000);
+                if (_acceptTask != null)
+                    await _acceptTask.WaitAsync(TimeSpan.FromMilliseconds(acceptTimeout)).ConfigureAwait(false);
+                if (_acceptTlsTask != null)
+                    await _acceptTlsTask.WaitAsync(TimeSpan.FromMilliseconds(acceptTimeout)).ConfigureAwait(false);
+                if (_healthCheckTask != null)
+                    await _healthCheckTask.WaitAsync(TimeSpan.FromMilliseconds(2000)).ConfigureAwait(false);
+            }
+        }
+        catch (TimeoutException)
+        {
+            Logger.Warning("Shutdown tasks did not complete within timeout");
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected
         }
         catch (AggregateException)
         {
             // Expected
         }
 
-        Logger.Info("Redis server stopped");
+        Logger.Info("Server shutdown complete");
+    }
+
+    /// <summary>
+    /// Tries to send shutdown notification to a client.
+    /// </summary>
+    private async Task TryNotifyShutdownAsync(RedisClient client)
+    {
+        try
+        {
+            // Send a push message to notify about shutdown
+            await client.WriteErrorAsync(
+                "ERR Server is shutting down",
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Ignore errors - client may already be disconnected
+        }
+    }
+
+    /// <summary>
+    /// Handles a command for a client (used by I/O threads).
+    /// </summary>
+    private async Task HandleCommandAsync(RedisClient client, string[] args, CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _totalCommandsProcessed);
+        await Dispatcher.ExecuteAsync(client, args, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -260,11 +448,34 @@ public class RedisServer : IDisposable
             {
                 var tcpClient = await _listener.AcceptTcpClientAsync(_cts.Token).ConfigureAwait(false);
                 Interlocked.Increment(ref _totalConnectionsReceived);
+
+                // Check IP filter
+                var remoteEndPoint = tcpClient.Client.RemoteEndPoint as IPEndPoint;
+                var clientIp = remoteEndPoint?.Address.ToString() ?? "unknown";
+
+                if (remoteEndPoint != null && !IpFilter.IsAllowed(remoteEndPoint.Address))
+                {
+                    Interlocked.Increment(ref _rejectedConnections);
+                    NetworkMetrics.RecordRejectedConnection();
+                    tcpClient.Close();
+                    continue;
+                }
+
+                // Check rate limit
+                if (!RateLimiter.TryAcquire(clientIp))
+                {
+                    Interlocked.Increment(ref _rejectedConnections);
+                    NetworkMetrics.RecordRejectedConnection();
+                    await RejectConnectionAsync(tcpClient, "ERR too many connections from your address").ConfigureAwait(false);
+                    continue;
+                }
                 
                 // Check max clients limit
                 if (_options.MaxClients > 0 && _clients.Count >= _options.MaxClients)
                 {
                     Interlocked.Increment(ref _rejectedConnections);
+                    NetworkMetrics.RecordRejectedConnection();
+                    RateLimiter.Release(clientIp);
                     Logger.Warning("Max clients ({0}) reached, rejecting connection from {1}", 
                         _options.MaxClients, tcpClient.Client.RemoteEndPoint);
                     
@@ -279,7 +490,19 @@ public class RedisServer : IDisposable
                 
                 if (_clients.TryAdd(client.Id, client))
                 {
-                    Logger.Debug("Client connected: {0}", client);
+                    NetworkMetrics.RecordConnection();
+
+                    // Assign to I/O thread if enabled
+                    var threadId = IoDispatcher.AssignClient(client);
+                    if (threadId >= 0)
+                    {
+                        Logger.Debug("Client {0} connected, assigned to I/O thread {1}", client.Id, threadId);
+                    }
+                    else
+                    {
+                        Logger.Debug("Client connected: {0}", client);
+                    }
+
                     _ = HandleClientAsync(client);
                 }
                 else
@@ -298,7 +521,113 @@ public class RedisServer : IDisposable
             catch (Exception ex)
             {
                 if (!_cts.Token.IsCancellationRequested)
+                {
+                    NetworkMetrics.RecordConnectionError();
                     Logger.Error("Error accepting connection", ex);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Accepts TLS connections.
+    /// </summary>
+    private async Task AcceptTlsConnectionsAsync()
+    {
+        while (!_cts.Token.IsCancellationRequested && _tlsListener != null)
+        {
+            try
+            {
+                var tcpClient = await _tlsListener.AcceptTcpClientAsync(_cts.Token).ConfigureAwait(false);
+                Interlocked.Increment(ref _totalConnectionsReceived);
+
+                // Check IP filter
+                var remoteEndPoint = tcpClient.Client.RemoteEndPoint as IPEndPoint;
+                var clientIp = remoteEndPoint?.Address.ToString() ?? "unknown";
+
+                if (remoteEndPoint != null && !IpFilter.IsAllowed(remoteEndPoint.Address))
+                {
+                    Interlocked.Increment(ref _rejectedConnections);
+                    NetworkMetrics.RecordRejectedConnection();
+                    tcpClient.Close();
+                    continue;
+                }
+
+                // Check rate limit
+                if (!RateLimiter.TryAcquire(clientIp))
+                {
+                    Interlocked.Increment(ref _rejectedConnections);
+                    NetworkMetrics.RecordRejectedConnection();
+                    tcpClient.Close();
+                    continue;
+                }
+
+                // Check max clients limit
+                if (_options.MaxClients > 0 && _clients.Count >= _options.MaxClients)
+                {
+                    Interlocked.Increment(ref _rejectedConnections);
+                    NetworkMetrics.RecordRejectedConnection();
+                    RateLimiter.Release(clientIp);
+                    tcpClient.Close();
+                    continue;
+                }
+
+                // Configure socket options
+                ConfigureClientSocket(tcpClient.Client);
+
+                // Perform TLS handshake
+                try
+                {
+                    var networkStream = tcpClient.GetStream();
+                    var sslStream = await TlsHandler.AuthenticateAsServerAsync(networkStream, _cts.Token)
+                        .ConfigureAwait(false);
+
+                    var client = new RedisClient(tcpClient, sslStream, _options, isTls: true);
+
+                    if (_clients.TryAdd(client.Id, client))
+                    {
+                        NetworkMetrics.RecordConnection();
+
+                        // Assign to I/O thread if enabled
+                        var threadId = IoDispatcher.AssignClient(client);
+                        if (threadId >= 0)
+                        {
+                            Logger.Debug("TLS client {0} connected, assigned to I/O thread {1}", client.Id, threadId);
+                        }
+                        else
+                        {
+                            Logger.Debug("TLS client connected: {0}", client);
+                        }
+
+                        _ = HandleClientAsync(client);
+                    }
+                    else
+                    {
+                        client.Dispose();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning("TLS handshake failed for {0}: {1}", clientIp, ex.Message);
+                    RateLimiter.Release(clientIp);
+                    tcpClient.Close();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                if (!_cts.Token.IsCancellationRequested)
+                {
+                    NetworkMetrics.RecordConnectionError();
+                    Logger.Error("Error accepting TLS connection", ex);
+                }
             }
         }
     }
@@ -446,8 +775,41 @@ public class RedisServer : IDisposable
         {
             Logger.Debug("Client disconnected: {0}", client);
             _clients.TryRemove(client.Id, out _);
+            NetworkMetrics.RecordDisconnection();
+
+            // Release rate limiter slot
+            var clientIp = ExtractIpFromAddress(client.Address);
+            RateLimiter.Release(clientIp);
+
+            // Remove from I/O thread
+            IoDispatcher.RemoveClient(client.Id);
+
             client.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Extracts IP address from client address string (IP:port format).
+    /// </summary>
+    private static string ExtractIpFromAddress(string address)
+    {
+        if (string.IsNullOrEmpty(address))
+            return "unknown";
+
+        // Handle IPv6 addresses: [::1]:port
+        if (address.StartsWith('['))
+        {
+            var endBracket = address.IndexOf(']');
+            if (endBracket > 0)
+                return address[1..endBracket];
+        }
+
+        // Handle IPv4 addresses: 127.0.0.1:port
+        var colonIndex = address.LastIndexOf(':');
+        if (colonIndex > 0)
+            return address[..colonIndex];
+
+        return address;
     }
 
     /// <summary>
@@ -499,6 +861,9 @@ public class RedisServer : IDisposable
 
         Stop();
         _cts.Dispose();
+        RateLimiter.Dispose();
+        TlsHandler.Dispose();
+        IoDispatcher.Dispose();
         Store.Dispose();
 
         GC.SuppressFinalize(this);

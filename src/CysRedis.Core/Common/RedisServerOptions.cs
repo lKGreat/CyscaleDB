@@ -1,3 +1,6 @@
+using CysRedis.Core.Security;
+using CysRedis.Core.Threading;
+
 namespace CysRedis.Core.Common;
 
 /// <summary>
@@ -118,6 +121,82 @@ public class RedisServerOptions
     /// Default: 32KB.
     /// </summary>
     public int ResumeWriterThreshold { get; set; } = 32 * 1024;
+
+    #endregion
+
+    #region Slow Log Options
+
+    /// <summary>
+    /// Slow log threshold in microseconds.
+    /// Commands taking longer than this will be logged.
+    /// Default: 10000 (10ms). Set to -1 to disable, 0 to log all commands.
+    /// </summary>
+    public long SlowLogThreshold { get; set; } = 10000;
+
+    /// <summary>
+    /// Maximum number of slow log entries to keep.
+    /// Default: 128.
+    /// </summary>
+    public int SlowLogMaxLen { get; set; } = 128;
+
+    #endregion
+
+    #region Latency Monitoring Options
+
+    /// <summary>
+    /// Latency monitor threshold in milliseconds.
+    /// Only latency spikes greater than this will be sampled.
+    /// Default: 0 (disabled). Set to a positive value to enable.
+    /// </summary>
+    public long LatencyMonitorThreshold { get; set; } = 0;
+
+    #endregion
+
+    #region Security Options
+
+    /// <summary>
+    /// IP filter options.
+    /// </summary>
+    public IpFilterOptions IpFilter { get; set; } = new();
+
+    /// <summary>
+    /// Rate limit options.
+    /// </summary>
+    public RateLimitOptions RateLimit { get; set; } = new();
+
+    /// <summary>
+    /// TLS/SSL options.
+    /// </summary>
+    public TlsOptions Tls { get; set; } = new();
+
+    #endregion
+
+    #region Shutdown Options
+
+    /// <summary>
+    /// Timeout for graceful shutdown.
+    /// Default: 30 seconds.
+    /// </summary>
+    public TimeSpan GracefulShutdownTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Whether to save RDB before shutdown.
+    /// </summary>
+    public bool SaveOnShutdown { get; set; } = true;
+
+    /// <summary>
+    /// Whether to wait for clients to finish current commands before shutdown.
+    /// </summary>
+    public bool WaitForClientsOnShutdown { get; set; } = true;
+
+    #endregion
+
+    #region I/O Threading Options
+
+    /// <summary>
+    /// I/O threading options.
+    /// </summary>
+    public IoThreadOptions IoThreading { get; set; } = new();
 
     #endregion
 
