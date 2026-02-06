@@ -37,6 +37,7 @@ public class RedisServer : IDisposable
     private long _totalCommandsProcessed;
     private long _totalConnectionsReceived;
     private long _rejectedConnections;
+    private int _activeClientCount; // Atomic counter to avoid TOCTOU race on _clients.Count
 
     /// <summary>
     /// Server port.
@@ -156,7 +157,7 @@ public class RedisServer : IDisposable
     /// <summary>
     /// Number of connected clients.
     /// </summary>
-    public int ClientCount => _clients.Count;
+    public int ClientCount => Volatile.Read(ref _activeClientCount);
 
     /// <summary>
     /// Server start time.
@@ -521,17 +522,22 @@ public class RedisServer : IDisposable
                     continue;
                 }
                 
-                // Check max clients limit
-                if (_options.MaxClients > 0 && _clients.Count >= _options.MaxClients)
+                // Check max clients limit using atomic counter (avoid TOCTOU race)
+                if (_options.MaxClients > 0)
                 {
-                    Interlocked.Increment(ref _rejectedConnections);
-                    NetworkMetrics.RecordRejectedConnection();
-                    RateLimiter.Release(clientIp);
-                    Logger.Warning("Max clients ({0}) reached, rejecting connection from {1}", 
-                        _options.MaxClients, tcpClient.Client.RemoteEndPoint);
-                    
-                    await RejectConnectionAsync(tcpClient, "ERR max number of clients reached").ConfigureAwait(false);
-                    continue;
+                    var currentCount = Interlocked.Increment(ref _activeClientCount);
+                    if (currentCount > _options.MaxClients)
+                    {
+                        Interlocked.Decrement(ref _activeClientCount);
+                        Interlocked.Increment(ref _rejectedConnections);
+                        NetworkMetrics.RecordRejectedConnection();
+                        RateLimiter.Release(clientIp);
+                        Logger.Warning("Max clients ({0}) reached, rejecting connection from {1}", 
+                            _options.MaxClients, tcpClient.Client.RemoteEndPoint);
+                        
+                        await RejectConnectionAsync(tcpClient, "ERR max number of clients reached").ConfigureAwait(false);
+                        continue;
+                    }
                 }
                 
                 // Configure socket options for the accepted connection
@@ -541,6 +547,9 @@ public class RedisServer : IDisposable
                 
                 if (_clients.TryAdd(client.Id, client))
                 {
+                    if (_options.MaxClients == 0)
+                        Interlocked.Increment(ref _activeClientCount);
+                        
                     NetworkMetrics.RecordConnection();
 
                     // Assign to I/O thread if enabled
@@ -558,6 +567,7 @@ public class RedisServer : IDisposable
                 }
                 else
                 {
+                    Interlocked.Decrement(ref _activeClientCount);
                     client.Dispose();
                 }
             }
@@ -613,14 +623,19 @@ public class RedisServer : IDisposable
                     continue;
                 }
 
-                // Check max clients limit
-                if (_options.MaxClients > 0 && _clients.Count >= _options.MaxClients)
+                // Check max clients limit using atomic counter
+                if (_options.MaxClients > 0)
                 {
-                    Interlocked.Increment(ref _rejectedConnections);
-                    NetworkMetrics.RecordRejectedConnection();
-                    RateLimiter.Release(clientIp);
-                    tcpClient.Close();
-                    continue;
+                    var currentCount = Interlocked.Increment(ref _activeClientCount);
+                    if (currentCount > _options.MaxClients)
+                    {
+                        Interlocked.Decrement(ref _activeClientCount);
+                        Interlocked.Increment(ref _rejectedConnections);
+                        NetworkMetrics.RecordRejectedConnection();
+                        RateLimiter.Release(clientIp);
+                        tcpClient.Close();
+                        continue;
+                    }
                 }
 
                 // Configure socket options
@@ -637,6 +652,9 @@ public class RedisServer : IDisposable
 
                     if (_clients.TryAdd(client.Id, client))
                     {
+                        if (_options.MaxClients == 0)
+                            Interlocked.Increment(ref _activeClientCount);
+                            
                         NetworkMetrics.RecordConnection();
 
                         // Assign to I/O thread if enabled
@@ -654,6 +672,7 @@ public class RedisServer : IDisposable
                     }
                     else
                     {
+                        Interlocked.Decrement(ref _activeClientCount);
                         client.Dispose();
                     }
                 }
@@ -748,6 +767,7 @@ public class RedisServer : IDisposable
                         
                         if (_clients.TryRemove(client.Id, out _))
                         {
+                            Interlocked.Decrement(ref _activeClientCount);
                             client.Close();
                             closedCount++;
                         }
@@ -825,7 +845,8 @@ public class RedisServer : IDisposable
         finally
         {
             Logger.Debug("Client disconnected: {0}", client);
-            _clients.TryRemove(client.Id, out _);
+            if (_clients.TryRemove(client.Id, out _))
+                Interlocked.Decrement(ref _activeClientCount);
             NetworkMetrics.RecordDisconnection();
 
             // Release rate limiter slot

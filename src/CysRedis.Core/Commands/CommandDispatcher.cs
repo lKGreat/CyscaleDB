@@ -401,6 +401,9 @@ public class CommandDispatcher
         Register("DEBUG", new DebugCommand());
         Register("TIME", new TimeCommand());
         
+        // Memory commands
+        Register("MEMORY", new MemoryCommand());
+
         // Monitoring commands
         Register("SLOWLOG", new SlowLogCommand());
         Register("LATENCY", new LatencyCommand());

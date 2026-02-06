@@ -35,7 +35,7 @@ public sealed class UnsafeRedisHashAdapter : RedisHash, IDisposable
     /// </summary>
     public void Set(string field, byte[] value)
     {
-        var fieldBytes = Encoding.UTF8.GetBytes(field);
+        var fieldBytes = System.Text.Encoding.UTF8.GetBytes(field);
         _unsafeHash.Set(fieldBytes, value);
         _keyCache[field] = value; // Cache for Keys/Values/Entries
     }
@@ -63,7 +63,7 @@ public sealed class UnsafeRedisHashAdapter : RedisHash, IDisposable
             return null;
         }
 
-        var fieldBytes = Encoding.UTF8.GetBytes(field);
+        var fieldBytes = System.Text.Encoding.UTF8.GetBytes(field);
         if (_unsafeHash.Get(fieldBytes, out var value))
         {
             return value.ToArray();
@@ -78,7 +78,7 @@ public sealed class UnsafeRedisHashAdapter : RedisHash, IDisposable
     {
         _fieldExpires.Remove(field);
         _keyCache.Remove(field);
-        var fieldBytes = Encoding.UTF8.GetBytes(field);
+        var fieldBytes = System.Text.Encoding.UTF8.GetBytes(field);
         return _unsafeHash.Delete(fieldBytes);
     }
 
@@ -93,7 +93,7 @@ public sealed class UnsafeRedisHashAdapter : RedisHash, IDisposable
             return false;
         }
 
-        var fieldBytes = Encoding.UTF8.GetBytes(field);
+        var fieldBytes = System.Text.Encoding.UTF8.GetBytes(field);
         return _unsafeHash.Get(fieldBytes, out _);
     }
 
@@ -119,7 +119,7 @@ public sealed class UnsafeRedisHashAdapter : RedisHash, IDisposable
     {
         var current = Get(field);
         long newValue;
-        if (current != null && long.TryParse(Encoding.UTF8.GetString(current), out var oldValue))
+        if (current != null && long.TryParse(System.Text.Encoding.UTF8.GetString(current), out var oldValue))
         {
             newValue = oldValue + increment;
         }
@@ -127,7 +127,7 @@ public sealed class UnsafeRedisHashAdapter : RedisHash, IDisposable
         {
             newValue = increment;
         }
-        Set(field, Encoding.UTF8.GetBytes(newValue.ToString()));
+        Set(field, System.Text.Encoding.UTF8.GetBytes(newValue.ToString()));
         return newValue;
     }
 
@@ -138,7 +138,7 @@ public sealed class UnsafeRedisHashAdapter : RedisHash, IDisposable
     {
         var current = Get(field);
         double newValue;
-        if (current != null && double.TryParse(Encoding.UTF8.GetString(current), 
+        if (current != null && double.TryParse(System.Text.Encoding.UTF8.GetString(current), 
             System.Globalization.NumberStyles.Float, 
             System.Globalization.CultureInfo.InvariantCulture, out var oldValue))
         {
@@ -148,7 +148,7 @@ public sealed class UnsafeRedisHashAdapter : RedisHash, IDisposable
         {
             newValue = increment;
         }
-        Set(field, Encoding.UTF8.GetBytes(newValue.ToString("G17", System.Globalization.CultureInfo.InvariantCulture)));
+        Set(field, System.Text.Encoding.UTF8.GetBytes(newValue.ToString("G17", System.Globalization.CultureInfo.InvariantCulture)));
         return newValue;
     }
 

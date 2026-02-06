@@ -29,7 +29,7 @@ public sealed class UnsafeRedisSetAdapter : RedisSet, IDisposable
     /// </summary>
     public new bool Add(string member)
     {
-        var memberBytes = Encoding.UTF8.GetBytes(member);
+        var memberBytes = System.Text.Encoding.UTF8.GetBytes(member);
         if (_unsafeSet.Add(memberBytes))
         {
             _memberCache.Add(member);
@@ -44,7 +44,7 @@ public sealed class UnsafeRedisSetAdapter : RedisSet, IDisposable
     public new bool Remove(string member)
     {
         _memberCache.Remove(member);
-        var memberBytes = Encoding.UTF8.GetBytes(member);
+        var memberBytes = System.Text.Encoding.UTF8.GetBytes(member);
         return _unsafeSet.Remove(memberBytes);
     }
 
@@ -53,7 +53,7 @@ public sealed class UnsafeRedisSetAdapter : RedisSet, IDisposable
     /// </summary>
     public new bool Contains(string member)
     {
-        var memberBytes = Encoding.UTF8.GetBytes(member);
+        var memberBytes = System.Text.Encoding.UTF8.GetBytes(member);
         return _unsafeSet.Contains(memberBytes);
     }
 

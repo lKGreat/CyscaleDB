@@ -12,7 +12,8 @@ public class ClusterManager
     private const int CLUSTER_SLOTS = 16384;
     
     private readonly ConcurrentDictionary<string, ClusterNode> _nodes;
-    private readonly int[] _slotToNode; // 槽位到节点的映射
+    private readonly int[] _slotToNode; // 槽位到节点的映射 (1 = assigned, -1 = unassigned)
+    private readonly ConcurrentDictionary<int, string> _slotNodeIds; // slot -> nodeId for O(1) lookup
     private string _myNodeId;
     private ClusterNode? _myself;
     private ClusterState _state;
@@ -22,6 +23,7 @@ public class ClusterManager
     {
         _nodes = new ConcurrentDictionary<string, ClusterNode>();
         _slotToNode = new int[CLUSTER_SLOTS];
+        _slotNodeIds = new ConcurrentDictionary<int, string>();
         _myNodeId = GenerateNodeId();
         _state = ClusterState.Fail;
         
@@ -114,13 +116,23 @@ public class ClusterManager
     }
 
     /// <summary>
-    /// 获取槽位所在的节点
+    /// 获取槽位所在的节点 - O(1) via _slotToNode lookup
     /// </summary>
     public ClusterNode? GetNodeForSlot(int slot)
     {
-        if (!IsEnabled)
+        if (!IsEnabled || slot < 0 || slot >= CLUSTER_SLOTS)
             return null;
 
+        var nodeIndex = _slotToNode[slot];
+        if (nodeIndex >= 0)
+        {
+            // nodeIndex stores a hash to find the node - but we store nodeId hash
+            // Use the direct lookup from _slotNodeIds
+            if (_slotNodeIds.TryGetValue(slot, out var nodeId) && _nodes.TryGetValue(nodeId, out var node))
+                return node;
+        }
+
+        // Fallback: iterate all nodes (should not happen if AddSlots works correctly)
         foreach (var node in _nodes.Values)
         {
             if (node.Slots.Contains(slot))
@@ -146,6 +158,8 @@ public class ClusterManager
                     throw new ArgumentException($"Invalid slot: {slot}");
 
                 _myself.Slots.Add(slot);
+                _slotToNode[slot] = 1; // Mark as assigned
+                _slotNodeIds[slot] = _myNodeId;
             }
             
             UpdateClusterState();
@@ -174,6 +188,8 @@ public class ClusterManager
             foreach (var slot in slots)
             {
                 _myself.Slots.Remove(slot);
+                _slotToNode[slot] = -1; // Mark as unassigned
+                _slotNodeIds.TryRemove(slot, out _);
             }
             
             UpdateClusterState();

@@ -32,7 +32,8 @@ public class RdbPersistence
     private readonly RedisStore _store;
     private readonly string _directory;
     private readonly string _filename;
-    private bool _isSaving;
+    private readonly SemaphoreSlim _saveLock = new(1, 1); // Thread-safe save protection
+    private volatile bool _isSaving;
 
     public RdbPersistence(RedisStore store, string directory, string filename = "dump.rdb")
     {
@@ -56,7 +57,7 @@ public class RdbPersistence
     /// </summary>
     public void Save()
     {
-        if (_isSaving)
+        if (!_saveLock.Wait(0))
             throw new RedisException("Background save already in progress");
 
         _isSaving = true;
@@ -81,6 +82,7 @@ public class RdbPersistence
         finally
         {
             _isSaving = false;
+            _saveLock.Release();
         }
     }
 
@@ -206,14 +208,25 @@ public class RdbPersistence
         // EOF
         writer.Write(RDB_OPCODE_EOF);
         
-        // Calculate and write CRC64 checksum
+        // Calculate CRC64 checksum using streaming approach
+        // Read in chunks to avoid loading the entire file into memory
+        writer.Flush();
         var position = writer.BaseStream.Position;
         writer.BaseStream.Position = 0;
-        var allData = new byte[position];
-        writer.BaseStream.Read(allData, 0, (int)position);
-        writer.BaseStream.Position = position;
         
-        var checksum = Crc64.Compute(allData);
+        ulong checksum = 0;
+        var chunkBuffer = new byte[8192];
+        long remaining = position;
+        while (remaining > 0)
+        {
+            var toRead = (int)Math.Min(chunkBuffer.Length, remaining);
+            var read = writer.BaseStream.Read(chunkBuffer, 0, toRead);
+            if (read == 0) break;
+            checksum = Crc64.Update(checksum, chunkBuffer, 0, read);
+            remaining -= read;
+        }
+        
+        writer.BaseStream.Position = position;
         writer.Write(checksum);
     }
 

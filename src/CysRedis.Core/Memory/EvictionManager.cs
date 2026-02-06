@@ -121,67 +121,75 @@ public class EvictionManager
     }
 
     /// <summary>
-    /// 选择淘汰候选键
+    /// Number of random keys to sample per eviction cycle (Redis default: 5).
+    /// </summary>
+    private const int EvictionSampleSize = 5;
+
+    /// <summary>
+    /// 选择淘汰候选键 - 使用Redis风格的随机采样法。
+    /// 随机取N个key，从中选出最佳淘汰候选，避免全量遍历。
     /// </summary>
     private List<string> SelectEvictionCandidates(RedisDatabase database)
     {
+        bool volatileOnly = _policy is EvictionPolicy.VolatileLru or EvictionPolicy.VolatileLfu
+            or EvictionPolicy.VolatileRandom or EvictionPolicy.VolatileTtl;
+
+        // Sample random keys from database
+        var samples = database.GetRandomKeys(EvictionSampleSize * 4); // Over-sample, then filter
+
+        if (volatileOnly)
+        {
+            samples = samples.Where(k => database.GetExpire(k).HasValue).ToList();
+        }
+
+        if (samples.Count == 0)
+            return new List<string>();
+
         return _policy switch
         {
-            EvictionPolicy.AllKeysLru => SelectByLru(database.Keys().ToList(), includeExpires: false),
-            EvictionPolicy.VolatileLru => SelectByLru(database.Keys().Where(k => database.GetExpire(k).HasValue).ToList(), includeExpires: true),
-            EvictionPolicy.AllKeysLfu => SelectByLfu(database.Keys().ToList(), includeExpires: false),
-            EvictionPolicy.VolatileLfu => SelectByLfu(database.Keys().Where(k => database.GetExpire(k).HasValue).ToList(), includeExpires: true),
-            EvictionPolicy.AllKeysRandom => SelectRandom(database.Keys().ToList()),
-            EvictionPolicy.VolatileRandom => SelectRandom(database.Keys().Where(k => database.GetExpire(k).HasValue).ToList()),
-            EvictionPolicy.VolatileTtl => SelectByTtl(database),
+            EvictionPolicy.AllKeysLru or EvictionPolicy.VolatileLru => SelectBestByLru(samples),
+            EvictionPolicy.AllKeysLfu or EvictionPolicy.VolatileLfu => SelectBestByLfu(samples),
+            EvictionPolicy.AllKeysRandom or EvictionPolicy.VolatileRandom => samples.Take(EvictionSampleSize).ToList(),
+            EvictionPolicy.VolatileTtl => SelectBestByTtl(samples, database),
             _ => new List<string>()
         };
     }
 
     /// <summary>
-    /// LRU选择：选择最久未访问的键
+    /// LRU选择：从采样中选择空闲时间最长的键
     /// </summary>
-    private List<string> SelectByLru(List<string> keys, bool includeExpires)
+    private List<string> SelectBestByLru(List<string> samples)
     {
-        return keys
+        return samples
             .Where(k => _metadata.ContainsKey(k))
-            .OrderByDescending(k => _metadata[k].IdleTimeSeconds) // 空闲时间越长越优先淘汰
-            .Take(100) // 采样100个
+            .OrderByDescending(k => _metadata[k].IdleTimeSeconds)
+            .Take(EvictionSampleSize)
             .ToList();
     }
 
     /// <summary>
-    /// LFU选择：选择访问频率最低的键
+    /// LFU选择：从采样中选择访问频率最低的键
     /// </summary>
-    private List<string> SelectByLfu(List<string> keys, bool includeExpires)
+    private List<string> SelectBestByLfu(List<string> samples)
     {
-        return keys
+        return samples
             .Where(k => _metadata.ContainsKey(k))
             .OrderBy(k => _metadata[k].AccessFrequency)
-            .ThenByDescending(k => _metadata[k].IdleTimeSeconds) // 频率相同时按LRU（空闲时间长的优先）
-            .Take(100)
+            .ThenByDescending(k => _metadata[k].IdleTimeSeconds)
+            .Take(EvictionSampleSize)
             .ToList();
     }
 
     /// <summary>
-    /// 随机选择
+    /// TTL选择：从采样中选择最快过期的键
     /// </summary>
-    private List<string> SelectRandom(List<string> keys)
+    private List<string> SelectBestByTtl(List<string> samples, RedisDatabase database)
     {
-        var random = new Random();
-        return keys.OrderBy(_ => random.Next()).Take(100).ToList();
-    }
-
-    /// <summary>
-    /// TTL选择：选择最快过期的键
-    /// </summary>
-    private List<string> SelectByTtl(RedisDatabase database)
-    {
-        return database.Keys()
+        return samples
             .Select(k => new { Key = k, Expire = database.GetExpire(k) })
             .Where(x => x.Expire.HasValue)
             .OrderBy(x => x.Expire!.Value)
-            .Take(100)
+            .Take(EvictionSampleSize)
             .Select(x => x.Key)
             .ToList();
     }

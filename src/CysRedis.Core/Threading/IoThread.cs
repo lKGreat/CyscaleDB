@@ -36,6 +36,7 @@ public sealed class IoThread : IDisposable
     private readonly Channel<ClientOperation> _writeQueue;
     private readonly ConcurrentDictionary<long, RedisClient> _assignedClients;
     private readonly Func<RedisClient, string[], CancellationToken, Task>? _commandHandler;
+    private readonly ManualResetEventSlim _wakeEvent = new(false); // Event-driven wakeup
     private bool _disposed;
 
     // Statistics
@@ -77,15 +78,17 @@ public sealed class IoThread : IDisposable
     {
         _id = id;
         _cts = new CancellationTokenSource();
-        _readQueue = Channel.CreateUnbounded<RedisClient>(new UnboundedChannelOptions
+        _readQueue = Channel.CreateBounded<RedisClient>(new BoundedChannelOptions(10000)
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest // Backpressure: drop oldest if queue is full
         });
-        _writeQueue = Channel.CreateUnbounded<ClientOperation>(new UnboundedChannelOptions
+        _writeQueue = Channel.CreateBounded<ClientOperation>(new BoundedChannelOptions(10000)
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.Wait // Wait for space on write queue
         });
         _assignedClients = new ConcurrentDictionary<long, RedisClient>();
         _commandHandler = commandHandler;
@@ -125,40 +128,69 @@ public sealed class IoThread : IDisposable
     }
 
     /// <summary>
-    /// Queues a read operation for a client.
+    /// Queues a read operation for a client and wakes the I/O thread.
     /// </summary>
     public bool QueueRead(RedisClient client)
     {
-        return _readQueue.Writer.TryWrite(client);
+        var result = _readQueue.Writer.TryWrite(client);
+        if (result)
+            _wakeEvent.Set(); // Signal the thread to wake up
+        return result;
     }
 
     /// <summary>
-    /// Queues a write operation for a client.
+    /// Queues a write operation for a client and wakes the I/O thread.
     /// </summary>
     public bool QueueWrite(ClientOperation operation)
     {
-        return _writeQueue.Writer.TryWrite(operation);
+        var result = _writeQueue.Writer.TryWrite(operation);
+        if (result)
+            _wakeEvent.Set(); // Signal the thread to wake up
+        return result;
     }
 
     /// <summary>
-    /// Main thread loop.
+    /// Main thread loop using event-driven wakeup to avoid CPU-wasting Thread.Sleep(1).
+    /// Uses SpinWait for short spins then blocks on ManualResetEventSlim.
     /// </summary>
     private void RunLoop()
     {
+        var spinWait = new SpinWait();
+
         while (!_cts.Token.IsCancellationRequested)
         {
             try
             {
+                bool hadWork = false;
+
                 // Process reads first (higher priority)
-                ProcessReads();
+                if (_readQueue.Reader.TryRead(out _) == false)
+                {
+                    // Peek is not available, so try processing reads
+                }
+                hadWork |= ProcessReads();
 
                 // Then process writes
-                ProcessWrites();
+                hadWork |= ProcessWrites();
 
-                // Small sleep to prevent busy-waiting if queues are empty
-                if (_readQueue.Reader.Count == 0 && _writeQueue.Reader.Count == 0)
+                if (!hadWork)
                 {
-                    Thread.Sleep(1);
+                    // No work: use SpinWait for short burst, then block on event
+                    if (spinWait.NextSpinWillYield)
+                    {
+                        // Block until new work arrives or timeout (100ms max)
+                        _wakeEvent.Wait(100, _cts.Token);
+                        _wakeEvent.Reset();
+                        spinWait.Reset();
+                    }
+                    else
+                    {
+                        spinWait.SpinOnce();
+                    }
+                }
+                else
+                {
+                    spinWait.Reset();
                 }
             }
             catch (OperationCanceledException)
@@ -177,11 +209,14 @@ public sealed class IoThread : IDisposable
 
     /// <summary>
     /// Processes pending read operations.
+    /// Returns true if any work was done.
     /// </summary>
-    private void ProcessReads()
+    private bool ProcessReads()
     {
+        bool hadWork = false;
         while (_readQueue.Reader.TryRead(out var client))
         {
+            hadWork = true;
             try
             {
                 // Read command from client (non-blocking if possible)
@@ -209,6 +244,7 @@ public sealed class IoThread : IDisposable
                     client.Id, _id, ex);
             }
         }
+        return hadWork;
     }
 
     /// <summary>
@@ -234,11 +270,14 @@ public sealed class IoThread : IDisposable
 
     /// <summary>
     /// Processes pending write operations.
+    /// Returns true if any work was done.
     /// </summary>
-    private void ProcessWrites()
+    private bool ProcessWrites()
     {
+        bool hadWork = false;
         while (_writeQueue.Reader.TryRead(out var operation))
         {
+            hadWork = true;
             try
             {
                 operation.IsWriteComplete = true;
@@ -253,6 +292,7 @@ public sealed class IoThread : IDisposable
                     operation.Client.Id, _id, ex);
             }
         }
+        return hadWork;
     }
 
     /// <summary>
@@ -261,6 +301,7 @@ public sealed class IoThread : IDisposable
     public void Stop()
     {
         _cts.Cancel();
+        _wakeEvent.Set(); // Wake the thread so it can exit
         _readQueue.Writer.TryComplete();
         _writeQueue.Writer.TryComplete();
 
@@ -277,6 +318,7 @@ public sealed class IoThread : IDisposable
             _disposed = true;
             Stop();
             _cts.Dispose();
+            _wakeEvent.Dispose();
         }
     }
 }

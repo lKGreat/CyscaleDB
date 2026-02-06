@@ -92,6 +92,12 @@ public class RedisDatabase : IDisposable
     private bool _disposed;
 
     /// <summary>
+    /// Per-key version counter for WATCH support. Incremented on every write.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, long> _keyVersions = new(StringComparer.Ordinal);
+    private long _globalVersion;
+
+    /// <summary>
     /// Database index.
     /// </summary>
     public int Index { get; }
@@ -154,6 +160,24 @@ public class RedisDatabase : IDisposable
     }
 
     /// <summary>
+    /// Gets the current version of a key for WATCH support.
+    /// Returns 0 if the key does not exist.
+    /// </summary>
+    public long GetKeyVersion(string key)
+    {
+        return _keyVersions.TryGetValue(key, out var version) ? version : 0;
+    }
+
+    /// <summary>
+    /// Increments the version counter for a key (called on every write).
+    /// </summary>
+    private void IncrementKeyVersion(string key)
+    {
+        _keyVersions.AddOrUpdate(key, _ => Interlocked.Increment(ref _globalVersion),
+            (_, __) => Interlocked.Increment(ref _globalVersion));
+    }
+
+    /// <summary>
     /// Sets a value.
     /// </summary>
     public void Set(string key, RedisObject value)
@@ -163,6 +187,7 @@ public class RedisDatabase : IDisposable
 
         var estimatedSize = EvictionManager.EstimateSize(value);
         _data[key] = value;
+        IncrementKeyVersion(key);
         
         // 记录写入用于内存管理
         _evictionManager?.OnKeySet(key, estimatedSize);
@@ -176,7 +201,10 @@ public class RedisDatabase : IDisposable
         if (IsExpired(key))
             Delete(key);
             
-        return _data.TryAdd(key, value);
+        var added = _data.TryAdd(key, value);
+        if (added)
+            IncrementKeyVersion(key);
+        return added;
     }
 
     /// <summary>
@@ -194,6 +222,7 @@ public class RedisDatabase : IDisposable
             return false;
 
         _data[key] = value;
+        IncrementKeyVersion(key);
         return true;
     }
 
@@ -207,6 +236,8 @@ public class RedisDatabase : IDisposable
         
         if (removed)
         {
+            IncrementKeyVersion(key);
+            _keyVersions.TryRemove(key, out _);
             // 记录删除用于内存管理
             _evictionManager?.OnKeyDelete(key);
         }
@@ -245,6 +276,9 @@ public class RedisDatabase : IDisposable
             return false;
 
         _data[newKey] = value;
+        IncrementKeyVersion(oldKey);
+        IncrementKeyVersion(newKey);
+        _keyVersions.TryRemove(oldKey, out _);
 
         if (_expires.TryRemove(oldKey, out var expiry))
             _expires[newKey] = expiry;
@@ -275,6 +309,27 @@ public class RedisDatabase : IDisposable
         var keys = _data.Keys.ToArray();
         if (keys.Length == 0) return null;
         return keys[Random.Shared.Next(keys.Length)];
+    }
+
+    /// <summary>
+    /// Gets N random keys from the database (for sampling, no expiration cleanup).
+    /// </summary>
+    public List<string> GetRandomKeys(int count)
+    {
+        var allKeys = _data.Keys.ToArray();
+        if (allKeys.Length == 0) return new List<string>();
+
+        var result = new List<string>(Math.Min(count, allKeys.Length));
+        var seen = new HashSet<int>();
+
+        for (int i = 0; i < count && result.Count < allKeys.Length; i++)
+        {
+            var idx = Random.Shared.Next(allKeys.Length);
+            if (seen.Add(idx))
+                result.Add(allKeys[idx]);
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -347,23 +402,53 @@ public class RedisDatabase : IDisposable
     }
 
     /// <summary>
-    /// Cleans up expired keys.
+    /// Cleans up expired keys using Redis-style probabilistic sampling.
+    /// Samples a batch of keys with TTL; if expired ratio > 25%, repeats.
+    /// Avoids O(n) full scans on large databases.
     /// </summary>
-    public int CleanupExpired()
+    public int CleanupExpired(int sampleSize = 20, int maxIterations = 16)
     {
-        int count = 0;
+        int totalCleaned = 0;
         var now = DateTime.UtcNow;
+        var expiresSnapshot = _expires.ToArray();
 
-        foreach (var kvp in _expires)
+        if (expiresSnapshot.Length == 0)
+            return 0;
+
+        for (int iteration = 0; iteration < maxIterations; iteration++)
         {
-            if (now >= kvp.Value)
+            int sampled = 0;
+            int expired = 0;
+
+            // Randomly sample keys with TTL
+            for (int i = 0; i < sampleSize && i < expiresSnapshot.Length; i++)
             {
-                if (Delete(kvp.Key))
-                    count++;
+                var idx = Random.Shared.Next(expiresSnapshot.Length);
+                var kvp = expiresSnapshot[idx];
+                sampled++;
+
+                if (now >= kvp.Value)
+                {
+                    if (Delete(kvp.Key))
+                    {
+                        expired++;
+                        totalCleaned++;
+                    }
+                }
             }
+
+            // If less than 25% of sampled keys were expired, stop
+            // (Redis stops when expired_ratio < 0.25)
+            if (sampled == 0 || (double)expired / sampled < 0.25)
+                break;
+
+            // Refresh snapshot for next iteration since we deleted keys
+            expiresSnapshot = _expires.ToArray();
+            if (expiresSnapshot.Length == 0)
+                break;
         }
 
-        return count;
+        return totalCleaned;
     }
 
     /// <summary>
@@ -373,6 +458,8 @@ public class RedisDatabase : IDisposable
     {
         _data.Clear();
         _expires.Clear();
+        _keyVersions.Clear();
+        Interlocked.Increment(ref _globalVersion);
     }
 
     /// <summary>
@@ -394,6 +481,7 @@ public class RedisDatabase : IDisposable
         var newValue = factory();
         var estimatedSize = EvictionManager.EstimateSize(newValue);
         _data[key] = newValue;
+        IncrementKeyVersion(key);
         
         _evictionManager?.OnKeySet(key, estimatedSize);
         

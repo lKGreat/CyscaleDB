@@ -1,10 +1,27 @@
 using System.Text;
+using System.Threading.Channels;
 using CysRedis.Core.Common;
 
 namespace CysRedis.Core.Storage;
 
 /// <summary>
+/// AOF record for buffered writes.
+/// </summary>
+internal readonly struct AofRecord
+{
+    public int DbIndex { get; }
+    public string[] Args { get; }
+
+    public AofRecord(int dbIndex, string[] args)
+    {
+        DbIndex = dbIndex;
+        Args = args;
+    }
+}
+
+/// <summary>
 /// AOF (Append Only File) persistence - logs every write command.
+/// Uses a lock-free Channel-based write buffer with configurable fsync policy.
 /// </summary>
 public class AofPersistence : IDisposable
 {
@@ -12,13 +29,15 @@ public class AofPersistence : IDisposable
     private readonly string _filename;
     private FileStream? _stream;
     private StreamWriter? _writer;
-    private readonly object _lock = new();
+    private readonly object _lock = new(); // Only used for enable/disable/rewrite coordination
     private bool _disposed;
     private bool _isRewriting;
     private DateTime _lastRewriteTime = DateTime.UtcNow;
     private long _aofSize;
     private Task? _syncTask;
+    private Task? _writeLoopTask;
     private CancellationTokenSource? _syncCts;
+    private Channel<AofRecord>? _writeChannel;
 
     /// <summary>
     /// AOF sync policy.
@@ -75,14 +94,26 @@ public class AofPersistence : IDisposable
                 _aofSize = new FileInfo(FilePath).Length;
             }
 
+            _syncCts = new CancellationTokenSource();
+
+            // Create a bounded channel for lock-free command buffering
+            _writeChannel = Channel.CreateBounded<AofRecord>(new BoundedChannelOptions(10000)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false
+            });
+
+            // Start the background write loop (single consumer)
+            _writeLoopTask = RunWriteLoopAsync(_syncCts.Token);
+
             // 启动定期同步任务 (如果策略是EverySec)
             if (SyncPolicy == AofSyncPolicy.EverySec)
             {
-                _syncCts = new CancellationTokenSource();
                 _syncTask = RunPeriodicSyncAsync(_syncCts.Token);
             }
 
-            Logger.Info("AOF enabled: {0}", FilePath);
+            Logger.Info("AOF enabled: {0} (sync={1})", FilePath, SyncPolicy);
         }
     }
 
@@ -95,16 +126,24 @@ public class AofPersistence : IDisposable
         {
             if (!Enabled) return;
 
+            // Complete the write channel and wait for the loop to drain
+            _writeChannel?.Writer.TryComplete();
+            _writeLoopTask?.Wait(TimeSpan.FromSeconds(5));
+
             // 停止同步任务
             _syncCts?.Cancel();
             _syncTask?.Wait(TimeSpan.FromSeconds(5));
             _syncCts?.Dispose();
+            _syncCts = null;
 
             _writer?.Flush();
             _writer?.Dispose();
             _stream?.Dispose();
             _writer = null;
             _stream = null;
+            _writeChannel = null;
+            _writeLoopTask = null;
+            _syncTask = null;
             Enabled = false;
 
             Logger.Info("AOF disabled");
@@ -135,28 +174,71 @@ public class AofPersistence : IDisposable
     }
 
     /// <summary>
-    /// Logs a command to the AOF file.
+    /// Logs a command to the AOF file using lock-free Channel buffering.
+    /// The command is enqueued and written by a background single-consumer loop.
     /// </summary>
     public void LogCommand(int dbIndex, string[] args)
     {
-        if (!Enabled || _writer == null) return;
+        if (!Enabled || _writeChannel == null) return;
 
-        lock (_lock)
+        // Lock-free enqueue - will block only if channel is full (backpressure)
+        _writeChannel.Writer.TryWrite(new AofRecord(dbIndex, args));
+    }
+
+    /// <summary>
+    /// Background write loop - single consumer drains the channel and batches writes.
+    /// </summary>
+    private async Task RunWriteLoopAsync(CancellationToken cancellationToken)
+    {
+        try
         {
-            var startPos = _stream?.Position ?? 0;
+            var reader = _writeChannel!.Reader;
 
-            // Write SELECT if needed
-            WriteCommand(_writer, new[] { "SELECT", dbIndex.ToString() });
-            WriteCommand(_writer, args);
-
-            var endPos = _stream?.Position ?? 0;
-            _aofSize += endPos - startPos;
-
-            if (SyncPolicy == AofSyncPolicy.Always)
+            while (await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                _writer.Flush();
-                _stream?.Flush(true);
+                int batchCount = 0;
+
+                // Drain all available records in a batch
+                while (reader.TryRead(out var record))
+                {
+                    if (_writer == null) break;
+
+                    var startPos = _stream?.Position ?? 0;
+
+                    WriteCommand(_writer, new[] { "SELECT", record.DbIndex.ToString() });
+                    WriteCommand(_writer, record.Args);
+
+                    var endPos = _stream?.Position ?? 0;
+                    Interlocked.Add(ref _aofSize, endPos - startPos);
+                    batchCount++;
+                }
+
+                // Flush after batch
+                if (batchCount > 0 && _writer != null)
+                {
+                    _writer.Flush();
+
+                    // Fsync based on policy
+                    if (SyncPolicy == AofSyncPolicy.Always)
+                    {
+                        _stream?.Flush(true); // fsync
+                    }
+                    // EverySec is handled by the periodic sync task
+                    // No policy = let OS handle
+                }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected on shutdown
+        }
+        catch (ChannelClosedException)
+        {
+            // Expected when channel is completed
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Error in AOF write loop", ex);
         }
     }
 

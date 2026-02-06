@@ -201,6 +201,37 @@ public class RedisServerOptions
 
     #endregion
 
+    #region Backpressure and Protection Options
+
+    /// <summary>
+    /// Maximum bulk string length in bytes (proto-max-bulk-len).
+    /// Default: 512MB.
+    /// </summary>
+    public int ProtoMaxBulkLen { get; set; } = 512 * 1024 * 1024;
+
+    /// <summary>
+    /// Client output buffer soft limit in bytes.
+    /// If a client's output buffer exceeds this for SoftLimitSeconds, the client is disconnected.
+    /// Default: 256MB. Set to 0 for unlimited.
+    /// </summary>
+    public long ClientOutputBufferSoftLimit { get; set; } = 256 * 1024 * 1024;
+
+    /// <summary>
+    /// Client output buffer hard limit in bytes.
+    /// If a client's output buffer exceeds this, the client is immediately disconnected.
+    /// Default: 512MB. Set to 0 for unlimited.
+    /// </summary>
+    public long ClientOutputBufferHardLimit { get; set; } = 512 * 1024 * 1024;
+
+    /// <summary>
+    /// Write timeout for client connections.
+    /// If a write to a client takes longer than this, the client is disconnected.
+    /// Default: 30 seconds. Set to TimeSpan.Zero to disable.
+    /// </summary>
+    public TimeSpan WriteTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    #endregion
+
     #region Memory Management Options
 
     /// <summary>

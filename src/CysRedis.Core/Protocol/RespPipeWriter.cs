@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Globalization;
 using System.IO.Pipelines;
+using System.Linq;
 using System.Text;
 using CysRedis.Core.Common;
 
@@ -93,6 +94,36 @@ public sealed class RespPipeWriter : IDisposable
                 break;
             case RespType.Double:
                 WriteDouble(value.Double ?? 0.0);
+                break;
+            case RespType.Map:
+                if (value.Elements != null && value.Elements.Length >= 2)
+                {
+                    // Map is stored as flat array [key1, val1, key2, val2, ...]
+                    var mapCount = value.Elements.Length / 2;
+                    var countStr = mapCount.ToString();
+                    var mapSpan = _pipeWriter.GetSpan(1 + countStr.Length + 2);
+                    mapSpan[0] = (byte)'%';
+                    var mapPos = 1 + Encoding.UTF8.GetBytes(countStr, mapSpan[1..]);
+                    mapSpan[mapPos++] = (byte)'\r';
+                    mapSpan[mapPos++] = (byte)'\n';
+                    _pipeWriter.Advance(mapPos);
+                    foreach (var elem in value.Elements)
+                        WriteValue(elem);
+                }
+                else
+                {
+                    WriteRaw(NullBulkString);
+                }
+                break;
+            case RespType.Set:
+                if (value.Elements != null)
+                {
+                    WriteSet(value.Elements);
+                }
+                else
+                {
+                    WriteRaw(NullBulkString);
+                }
                 break;
             default:
                 throw new InvalidOperationException($"Unknown RESP type: {value.Type}");
@@ -376,6 +407,138 @@ public sealed class RespPipeWriter : IDisposable
     }
 
     /// <summary>
+    /// Writes a RESP3 Map (%count\r\n key1 val1 key2 val2 ...).
+    /// </summary>
+    public void WriteMap(KeyValuePair<RespValue, RespValue>[] entries)
+    {
+        var countStr = entries.Length.ToString();
+        var span = _pipeWriter.GetSpan(1 + countStr.Length + 2);
+        
+        span[0] = (byte)'%';
+        var pos = 1;
+        pos += Encoding.UTF8.GetBytes(countStr, span[pos..]);
+        span[pos++] = (byte)'\r';
+        span[pos++] = (byte)'\n';
+        
+        _pipeWriter.Advance(pos);
+
+        foreach (var entry in entries)
+        {
+            WriteValue(entry.Key);
+            WriteValue(entry.Value);
+        }
+    }
+
+    /// <summary>
+    /// Writes a RESP3 Map from string key-value pairs.
+    /// </summary>
+    public void WriteStringMap(IEnumerable<KeyValuePair<string, string>> entries)
+    {
+        var entryList = entries.ToArray();
+        var countStr = entryList.Length.ToString();
+        var span = _pipeWriter.GetSpan(1 + countStr.Length + 2);
+        
+        span[0] = (byte)'%';
+        var pos = 1;
+        pos += Encoding.UTF8.GetBytes(countStr, span[pos..]);
+        span[pos++] = (byte)'\r';
+        span[pos++] = (byte)'\n';
+        
+        _pipeWriter.Advance(pos);
+
+        foreach (var entry in entryList)
+        {
+            WriteBulkString(entry.Key);
+            WriteBulkString(entry.Value);
+        }
+    }
+
+    /// <summary>
+    /// Writes a RESP3 Set (~count\r\n elem1 elem2 ...).
+    /// </summary>
+    public void WriteSet(RespValue[] elements)
+    {
+        var countStr = elements.Length.ToString();
+        var span = _pipeWriter.GetSpan(1 + countStr.Length + 2);
+        
+        span[0] = (byte)'~';
+        var pos = 1;
+        pos += Encoding.UTF8.GetBytes(countStr, span[pos..]);
+        span[pos++] = (byte)'\r';
+        span[pos++] = (byte)'\n';
+        
+        _pipeWriter.Advance(pos);
+
+        foreach (var element in elements)
+        {
+            WriteValue(element);
+        }
+    }
+
+    /// <summary>
+    /// Writes a RESP3 Verbatim String (=length\r\ntype:content\r\n).
+    /// </summary>
+    public void WriteVerbatimString(string content, string encoding = "txt")
+    {
+        var fullContent = $"{encoding}:{content}";
+        var byteCount = Encoding.UTF8.GetByteCount(fullContent);
+        var lengthStr = byteCount.ToString();
+        var totalSize = 1 + lengthStr.Length + 2 + byteCount + 2;
+        
+        var span = _pipeWriter.GetSpan(totalSize);
+        
+        span[0] = (byte)'=';
+        var pos = 1;
+        pos += Encoding.UTF8.GetBytes(lengthStr, span[pos..]);
+        span[pos++] = (byte)'\r';
+        span[pos++] = (byte)'\n';
+        pos += Encoding.UTF8.GetBytes(fullContent, span[pos..]);
+        span[pos++] = (byte)'\r';
+        span[pos++] = (byte)'\n';
+        
+        _pipeWriter.Advance(pos);
+    }
+
+    /// <summary>
+    /// Writes a RESP3 Push message (>count\r\n elem1 elem2 ...).
+    /// Used for server-initiated messages like pub/sub and client tracking.
+    /// </summary>
+    public void WritePush(RespValue[] elements)
+    {
+        var countStr = elements.Length.ToString();
+        var span = _pipeWriter.GetSpan(1 + countStr.Length + 2);
+        
+        span[0] = (byte)'>';
+        var pos = 1;
+        pos += Encoding.UTF8.GetBytes(countStr, span[pos..]);
+        span[pos++] = (byte)'\r';
+        span[pos++] = (byte)'\n';
+        
+        _pipeWriter.Advance(pos);
+
+        foreach (var element in elements)
+        {
+            WriteValue(element);
+        }
+    }
+
+    /// <summary>
+    /// Writes a RESP3 Big Number ((number\r\n).
+    /// </summary>
+    public void WriteBigNumber(string number)
+    {
+        var byteCount = Encoding.UTF8.GetByteCount(number);
+        var span = _pipeWriter.GetSpan(1 + byteCount + 2);
+        
+        span[0] = (byte)'(';
+        var pos = 1 + Encoding.UTF8.GetBytes(number, span[1..]);
+        span[pos++] = (byte)'\r';
+        span[pos++] = (byte)'\n';
+        
+        _pipeWriter.Advance(pos);
+    }
+
+    /// <summary>
     /// Begins batch mode - writes are buffered and not flushed until EndBatch.
     /// </summary>
     public void BeginBatch()
@@ -408,7 +571,18 @@ public sealed class RespPipeWriter : IDisposable
     public int BatchedWrites => _batchedWrites;
 
     /// <summary>
-    /// Flushes buffered data to the underlying stream.
+    /// Write timeout for detecting slow clients. Set to TimeSpan.Zero to disable.
+    /// </summary>
+    public TimeSpan WriteTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Total bytes written (approximate, for output buffer tracking).
+    /// </summary>
+    public long TotalBytesWritten => Interlocked.Read(ref _totalBytesWritten);
+    private long _totalBytesWritten;
+
+    /// <summary>
+    /// Flushes buffered data to the underlying stream with optional write timeout.
     /// In batch mode, this increments the batched writes counter.
     /// </summary>
     public async ValueTask FlushAsync(CancellationToken cancellationToken = default)
@@ -420,7 +594,24 @@ public sealed class RespPipeWriter : IDisposable
             return;
         }
         
-        await _pipeWriter.FlushAsync(cancellationToken).ConfigureAwait(false);
+        if (WriteTimeout > TimeSpan.Zero)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(WriteTimeout);
+            
+            try
+            {
+                await _pipeWriter.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException($"Write to client timed out after {WriteTimeout.TotalSeconds}s (slow client)");
+            }
+        }
+        else
+        {
+            await _pipeWriter.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>

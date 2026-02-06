@@ -29,7 +29,7 @@ public sealed class UnsafeRedisSortedSetAdapter : RedisSortedSet, IDisposable
     /// </summary>
     public new bool Add(string member, double score)
     {
-        var memberBytes = Encoding.UTF8.GetBytes(member);
+        var memberBytes = System.Text.Encoding.UTF8.GetBytes(member);
         bool isNew = _unsafeSortedSet.Add(memberBytes, score);
         _memberScores[member] = score;
         return isNew;
@@ -41,7 +41,7 @@ public sealed class UnsafeRedisSortedSetAdapter : RedisSortedSet, IDisposable
     public new bool Remove(string member)
     {
         _memberScores.Remove(member);
-        var memberBytes = Encoding.UTF8.GetBytes(member);
+        var memberBytes = System.Text.Encoding.UTF8.GetBytes(member);
         // Note: UnsafeRedisSortedSet doesn't expose Remove
         // This would need to be implemented
         return false;

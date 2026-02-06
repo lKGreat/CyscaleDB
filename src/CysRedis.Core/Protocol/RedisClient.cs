@@ -18,7 +18,8 @@ public class RedisClient : IDisposable
     private readonly RespPipeWriter? _pipeWriter;
     private bool _disposed;
 
-    // Transaction state
+    // Transaction state (synchronized via _transactionLock for thread safety in I/O multi-threading)
+    private readonly object _transactionLock = new();
     private List<string[]>? _transactionQueue;
     private Dictionary<string, long>? _watchedKeys;
     private bool _transactionAborted;
@@ -174,9 +175,12 @@ public class RedisClient : IDisposable
     /// </summary>
     public void StartTransaction()
     {
-        _transactionQueue = new List<string[]>();
-        _transactionAborted = false;
-        Flags |= ClientFlags.Multi;
+        lock (_transactionLock)
+        {
+            _transactionQueue = new List<string[]>();
+            _transactionAborted = false;
+            Flags |= ClientFlags.Multi;
+        }
     }
 
     /// <summary>
@@ -184,7 +188,10 @@ public class RedisClient : IDisposable
     /// </summary>
     public void QueueCommand(string[] args)
     {
-        _transactionQueue?.Add(args);
+        lock (_transactionLock)
+        {
+            _transactionQueue?.Add(args);
+        }
     }
 
     /// <summary>
@@ -192,7 +199,10 @@ public class RedisClient : IDisposable
     /// </summary>
     public List<string[]> GetQueuedCommands()
     {
-        return _transactionQueue ?? new List<string[]>();
+        lock (_transactionLock)
+        {
+            return _transactionQueue != null ? new List<string[]>(_transactionQueue) : new List<string[]>();
+        }
     }
 
     /// <summary>
@@ -200,21 +210,23 @@ public class RedisClient : IDisposable
     /// </summary>
     public void DiscardTransaction()
     {
-        _transactionQueue = null;
-        _transactionAborted = false;
-        _watchedKeys = null;
-        Flags &= ~ClientFlags.Multi;
+        lock (_transactionLock)
+        {
+            _transactionQueue = null;
+            _transactionAborted = false;
+            _watchedKeys = null;
+            Flags &= ~ClientFlags.Multi;
+        }
     }
 
     /// <summary>
-    /// Watches a key for modifications.
+    /// Watches a key for modifications using version numbers.
     /// </summary>
     public void Watch(string key, RedisDatabase db)
     {
         _watchedKeys ??= new Dictionary<string, long>();
-        // Store the key version (use hash code of value as simple version)
-        var obj = db.Get(key);
-        _watchedKeys[key] = obj?.GetHashCode() ?? 0;
+        // Store the key's current version number (monotonically increasing)
+        _watchedKeys[key] = db.GetKeyVersion(key);
     }
 
     /// <summary>
@@ -226,7 +238,7 @@ public class RedisClient : IDisposable
     }
 
     /// <summary>
-    /// Checks if watched keys have been modified.
+    /// Checks if watched keys have been modified by comparing version numbers.
     /// </summary>
     public bool CheckWatchedKeys(RedisDatabase db)
     {
@@ -234,8 +246,7 @@ public class RedisClient : IDisposable
 
         foreach (var (key, version) in _watchedKeys)
         {
-            var obj = db.Get(key);
-            var currentVersion = obj?.GetHashCode() ?? 0;
+            var currentVersion = db.GetKeyVersion(key);
             if (currentVersion != version)
             {
                 _transactionAborted = true;

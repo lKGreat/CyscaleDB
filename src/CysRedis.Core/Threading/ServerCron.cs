@@ -19,15 +19,18 @@ public sealed class ServerCron : IDisposable
     private Task? _cronTask;
     private bool _disposed;
 
-    /// <summary>
-    /// Total cron cycles executed.
-    /// </summary>
-    public long CyclesExecuted { get; private set; }
+    private long _cyclesExecuted;
+    private double _lastCycleDurationMs;
 
     /// <summary>
-    /// Last cycle duration in milliseconds.
+    /// Total cron cycles executed (thread-safe).
     /// </summary>
-    public double LastCycleDurationMs { get; private set; }
+    public long CyclesExecuted => Interlocked.Read(ref _cyclesExecuted);
+
+    /// <summary>
+    /// Last cycle duration in milliseconds (thread-safe via volatile read).
+    /// </summary>
+    public double LastCycleDurationMs => Volatile.Read(ref _lastCycleDurationMs);
 
     public ServerCron(RedisServer server)
     {
@@ -54,11 +57,11 @@ public sealed class ServerCron : IDisposable
                     Common.Logger.Error("ServerCron cycle error: {0}", ex.Message);
                 }
 
-                CyclesExecuted++;
+                Interlocked.Increment(ref _cyclesExecuted);
 
                 // Calculate elapsed time and adjust delay
                 var elapsedMs = (Stopwatch.GetTimestamp() - startTime) * 1000.0 / Stopwatch.Frequency;
-                LastCycleDurationMs = elapsedMs;
+                Volatile.Write(ref _lastCycleDurationMs, elapsedMs);
 
                 var remainingMs = IntervalMs - (int)elapsedMs;
                 if (remainingMs > 0)
@@ -106,47 +109,48 @@ public sealed class ServerCron : IDisposable
     }
 
     /// <summary>
-    /// Incrementally clean up expired keys across all databases.
+    /// Incrementally clean up expired keys across all databases using probabilistic sampling.
+    /// Uses Redis-style approach: sample N keys with TTL, delete expired ones.
+    /// If expired ratio > 25%, sample again. Much more efficient than O(n) scan.
     /// </summary>
     private void CleanupExpiredKeys()
     {
         foreach (var db in _server.Store.GetAllDatabases())
         {
-            // Limit cleanup to avoid blocking
-            var cleaned = 0;
-            var maxCleanup = CleanupKeysPerCycle;
-
-            foreach (var key in db.Keys())
-            {
-                if (cleaned >= maxCleanup) break;
-
-                if (db.IsExpired(key))
-                {
-                    db.Delete(key);
-                    cleaned++;
-                }
-            }
+            // Use probabilistic sampling - sample 20 keys per cycle, up to 4 iterations
+            db.CleanupExpired(sampleSize: CleanupKeysPerCycle, maxIterations: 4);
         }
     }
 
     /// <summary>
-    /// Cleanup expired hash fields.
+    /// Cleanup expired hash fields using sampling to avoid O(n) scan.
     /// </summary>
     private void CleanupExpiredHashFields()
     {
         foreach (var db in _server.Store.GetAllDatabases())
         {
+            if (db.KeyCount == 0) continue;
+            
             var cleaned = 0;
             var maxCleanup = CleanupKeysPerCycle;
 
-            foreach (var key in db.Keys())
+            // Sample random keys and check if they are hashes with expiring fields
+            var keys = db.GetRandomKeys(CleanupKeysPerCycle);
+            foreach (var key in keys)
             {
                 if (cleaned >= maxCleanup) break;
 
-                var hash = db.Get<DataStructures.RedisHash>(key);
-                if (hash != null)
+                try
                 {
-                    cleaned += hash.CleanupExpiredFields();
+                    var hash = db.Get<DataStructures.RedisHash>(key);
+                    if (hash != null)
+                    {
+                        cleaned += hash.CleanupExpiredFields();
+                    }
+                }
+                catch (Common.WrongTypeException)
+                {
+                    // Not a hash, skip
                 }
             }
         }

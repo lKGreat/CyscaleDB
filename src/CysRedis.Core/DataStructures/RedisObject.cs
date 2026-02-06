@@ -1,6 +1,29 @@
 namespace CysRedis.Core.DataStructures;
 
 /// <summary>
+/// Redis object encoding types, matching Redis's encoding names.
+/// </summary>
+public enum RedisEncoding
+{
+    /// <summary>Raw byte encoding (for strings).</summary>
+    Raw,
+    /// <summary>Integer encoding (for integer strings).</summary>
+    Int,
+    /// <summary>Hashtable encoding.</summary>
+    Hashtable,
+    /// <summary>LinkedList encoding (legacy).</summary>
+    LinkedList,
+    /// <summary>SkipList encoding (for sorted sets).</summary>
+    SkipList,
+    /// <summary>Listpack encoding (compact for small collections).</summary>
+    Listpack,
+    /// <summary>QuickList encoding (for lists).</summary>
+    QuickList,
+    /// <summary>IntSet encoding (compact integer set).</summary>
+    IntSet
+}
+
+/// <summary>
 /// Base class for all Redis data types.
 /// </summary>
 public abstract class RedisObject
@@ -9,6 +32,11 @@ public abstract class RedisObject
     /// Gets the Redis type name (string, list, set, zset, hash, stream).
     /// </summary>
     public abstract string TypeName { get; }
+
+    /// <summary>
+    /// Gets the current encoding of this object.
+    /// </summary>
+    public virtual RedisEncoding Encoding => RedisEncoding.Raw;
 }
 
 /// <summary>
@@ -17,6 +45,19 @@ public abstract class RedisObject
 public class RedisString : RedisObject
 {
     public override string TypeName => "string";
+    
+    /// <summary>
+    /// Returns Int encoding if the string is a valid integer, Raw otherwise.
+    /// </summary>
+    public override RedisEncoding Encoding
+    {
+        get
+        {
+            if (_value.Length <= 20 && TryGetInt64(out _))
+                return RedisEncoding.Int;
+            return RedisEncoding.Raw;
+        }
+    }
 
     private Memory<byte> _value;
 
@@ -100,53 +141,143 @@ public class RedisString : RedisObject
 }
 
 /// <summary>
-/// Redis list type.
+/// Redis list type with dual encoding:
+/// - Listpack (List&lt;byte[]&gt;) for small lists: O(1) index access, compact memory
+/// - LinkedList for large lists: O(1) push/pop at both ends
+/// Auto-converts from Listpack to LinkedList when size exceeds threshold.
 /// </summary>
 public class RedisList : RedisObject
 {
     public override string TypeName => "list";
 
-    private readonly LinkedList<byte[]> _list = new();
+    /// <summary>
+    /// Threshold for converting from listpack (array) to linkedlist encoding.
+    /// When element count exceeds this or any element > 64 bytes, converts.
+    /// </summary>
+    private const int ListpackMaxEntries = 128;
+    private const int ListpackMaxElementSize = 64;
 
-    public int Count => _list.Count;
+    // Dual encoding: one or the other is active
+    private List<byte[]>? _arrayList; // Listpack encoding (compact, O(1) index)
+    private LinkedList<byte[]>? _linkedList; // LinkedList encoding (O(1) push/pop)
+    private bool _useLinkedList;
 
-    public void PushLeft(byte[] value) => _list.AddFirst(value);
-    public void PushRight(byte[] value) => _list.AddLast(value);
+    public override RedisEncoding Encoding => _useLinkedList ? RedisEncoding.QuickList : RedisEncoding.Listpack;
+
+    public RedisList()
+    {
+        _arrayList = new List<byte[]>();
+        _useLinkedList = false;
+    }
+
+    public int Count => _useLinkedList ? _linkedList!.Count : _arrayList!.Count;
+
+    /// <summary>
+    /// Checks if we need to convert from listpack to linkedlist encoding.
+    /// </summary>
+    private void CheckConvert(byte[]? newElement = null)
+    {
+        if (_useLinkedList) return;
+
+        bool shouldConvert = _arrayList!.Count >= ListpackMaxEntries
+            || (newElement != null && newElement.Length > ListpackMaxElementSize);
+
+        if (shouldConvert)
+        {
+            _linkedList = new LinkedList<byte[]>(_arrayList!);
+            _arrayList = null;
+            _useLinkedList = true;
+        }
+    }
+
+    public void PushLeft(byte[] value)
+    {
+        CheckConvert(value);
+        if (_useLinkedList)
+            _linkedList!.AddFirst(value);
+        else
+            _arrayList!.Insert(0, value);
+    }
+
+    public void PushRight(byte[] value)
+    {
+        CheckConvert(value);
+        if (_useLinkedList)
+            _linkedList!.AddLast(value);
+        else
+            _arrayList!.Add(value);
+    }
 
     public byte[]? PopLeft()
     {
-        if (_list.Count == 0) return null;
-        var value = _list.First!.Value;
-        _list.RemoveFirst();
-        return value;
+        if (_useLinkedList)
+        {
+            if (_linkedList!.Count == 0) return null;
+            var value = _linkedList.First!.Value;
+            _linkedList.RemoveFirst();
+            return value;
+        }
+        else
+        {
+            if (_arrayList!.Count == 0) return null;
+            var value = _arrayList[0];
+            _arrayList.RemoveAt(0);
+            return value;
+        }
     }
 
     public byte[]? PopRight()
     {
-        if (_list.Count == 0) return null;
-        var value = _list.Last!.Value;
-        _list.RemoveLast();
-        return value;
+        if (_useLinkedList)
+        {
+            if (_linkedList!.Count == 0) return null;
+            var value = _linkedList.Last!.Value;
+            _linkedList.RemoveLast();
+            return value;
+        }
+        else
+        {
+            if (_arrayList!.Count == 0) return null;
+            var idx = _arrayList.Count - 1;
+            var value = _arrayList[idx];
+            _arrayList.RemoveAt(idx);
+            return value;
+        }
     }
 
     public byte[]? GetByIndex(int index)
     {
-        if (index < 0) index = _list.Count + index;
-        if (index < 0 || index >= _list.Count) return null;
+        var count = Count;
+        if (index < 0) index = count + index;
+        if (index < 0 || index >= count) return null;
 
-        var node = _list.First;
+        if (!_useLinkedList)
+        {
+            // O(1) index access for listpack encoding
+            return _arrayList![index];
+        }
+
+        // O(n) for linkedlist
+        var node = _linkedList!.First;
         for (int i = 0; i < index && node != null; i++)
             node = node.Next;
-
         return node?.Value;
     }
 
     public bool SetByIndex(int index, byte[] value)
     {
-        if (index < 0) index = _list.Count + index;
-        if (index < 0 || index >= _list.Count) return false;
+        var count = Count;
+        if (index < 0) index = count + index;
+        if (index < 0 || index >= count) return false;
 
-        var node = _list.First;
+        if (!_useLinkedList)
+        {
+            _arrayList![index] = value;
+            CheckConvert(value);
+            return true;
+        }
+
+        var node = _linkedList!.First;
         for (int i = 0; i < index && node != null; i++)
             node = node.Next;
 
@@ -160,14 +291,21 @@ public class RedisList : RedisObject
 
     public List<byte[]> GetRange(int start, int stop)
     {
-        if (start < 0) start = Math.Max(0, _list.Count + start);
-        if (stop < 0) stop = _list.Count + stop;
-        if (start > stop || start >= _list.Count) return new List<byte[]>();
-        
-        stop = Math.Min(stop, _list.Count - 1);
+        var count = Count;
+        if (start < 0) start = Math.Max(0, count + start);
+        if (stop < 0) stop = count + stop;
+        if (start > stop || start >= count) return new List<byte[]>();
+        stop = Math.Min(stop, count - 1);
+
+        if (!_useLinkedList)
+        {
+            // Fast range access for listpack encoding
+            var rangeLen = stop - start + 1;
+            return _arrayList!.GetRange(start, rangeLen);
+        }
 
         var result = new List<byte[]>();
-        var node = _list.First;
+        var node = _linkedList!.First;
         for (int i = 0; node != null && i <= stop; i++)
         {
             if (i >= start)
@@ -179,46 +317,123 @@ public class RedisList : RedisObject
 
     public void Trim(int start, int stop)
     {
-        if (start < 0) start = Math.Max(0, _list.Count + start);
-        if (stop < 0) stop = _list.Count + stop;
+        var count = Count;
+        if (start < 0) start = Math.Max(0, count + start);
+        if (stop < 0) stop = count + stop;
 
-        if (start > stop || start >= _list.Count)
+        if (start > stop || start >= count)
         {
-            _list.Clear();
+            if (_useLinkedList) _linkedList!.Clear();
+            else _arrayList!.Clear();
             return;
         }
 
-        stop = Math.Min(stop, _list.Count - 1);
+        stop = Math.Min(stop, count - 1);
 
-        // Remove from end
-        while (_list.Count > stop + 1)
-            _list.RemoveLast();
+        if (!_useLinkedList)
+        {
+            // Efficient trim for arraylist
+            var newList = _arrayList!.GetRange(start, stop - start + 1);
+            _arrayList.Clear();
+            _arrayList.AddRange(newList);
+            return;
+        }
 
-        // Remove from start
-        for (int i = 0; i < start && _list.Count > 0; i++)
-            _list.RemoveFirst();
+        // LinkedList trim
+        while (_linkedList!.Count > stop + 1)
+            _linkedList.RemoveLast();
+        for (int i = 0; i < start && _linkedList.Count > 0; i++)
+            _linkedList.RemoveFirst();
     }
 }
 
 /// <summary>
-/// Redis set type.
+/// Redis set type with dual encoding:
+/// - IntSet: compact sorted array for small integer-only sets (up to 512 elements)
+/// - Hashtable: standard HashSet for general use
+/// Auto-converts from IntSet to Hashtable when a non-integer member is added or size exceeds threshold.
 /// </summary>
 public class RedisSet : RedisObject
 {
     public override string TypeName => "set";
 
-    private readonly HashSet<string> _set = new(StringComparer.Ordinal);
+    private const int IntSetMaxEntries = 512;
 
-    public int Count => _set.Count;
+    private HashSet<string>? _set;
+    private SortedSet<long>? _intSet; // IntSet encoding: compact integer set
+    private bool _useIntSet;
 
-    public bool Add(string member) => _set.Add(member);
-    public bool Remove(string member) => _set.Remove(member);
-    public bool Contains(string member) => _set.Contains(member);
-    public IEnumerable<string> Members => _set;
+    public override RedisEncoding Encoding => _useIntSet ? RedisEncoding.IntSet : RedisEncoding.Hashtable;
+
+    public RedisSet()
+    {
+        _intSet = new SortedSet<long>();
+        _useIntSet = true;
+    }
+
+    public int Count => _useIntSet ? _intSet!.Count : _set!.Count;
+
+    /// <summary>
+    /// Converts from IntSet to Hashtable encoding.
+    /// </summary>
+    private void ConvertToHashtable()
+    {
+        if (!_useIntSet) return;
+        _set = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var val in _intSet!)
+            _set.Add(val.ToString());
+        _intSet = null;
+        _useIntSet = false;
+    }
+
+    public bool Add(string member)
+    {
+        if (_useIntSet)
+        {
+            if (long.TryParse(member, out var intVal) && _intSet!.Count < IntSetMaxEntries)
+            {
+                return _intSet.Add(intVal);
+            }
+            // Non-integer or too large: convert to hashtable
+            ConvertToHashtable();
+        }
+        return _set!.Add(member);
+    }
+
+    public bool Remove(string member)
+    {
+        if (_useIntSet)
+        {
+            if (long.TryParse(member, out var intVal))
+                return _intSet!.Remove(intVal);
+            return false; // Not in intset if not integer
+        }
+        return _set!.Remove(member);
+    }
+
+    public bool Contains(string member)
+    {
+        if (_useIntSet)
+        {
+            return long.TryParse(member, out var intVal) && _intSet!.Contains(intVal);
+        }
+        return _set!.Contains(member);
+    }
+
+    public IEnumerable<string> Members => _useIntSet
+        ? _intSet!.Select(v => v.ToString())
+        : _set!;
 
     public string? Pop()
     {
-        if (_set.Count == 0) return null;
+        if (_useIntSet)
+        {
+            if (_intSet!.Count == 0) return null;
+            var val = _intSet.Min;
+            _intSet.Remove(val);
+            return val.ToString();
+        }
+        if (_set!.Count == 0) return null;
         var member = _set.First();
         _set.Remove(member);
         return member;
@@ -226,28 +441,45 @@ public class RedisSet : RedisObject
 
     public string? RandomMember()
     {
-        if (_set.Count == 0) return null;
+        if (_useIntSet)
+        {
+            if (_intSet!.Count == 0) return null;
+            return _intSet.ElementAt(Random.Shared.Next(_intSet.Count)).ToString();
+        }
+        if (_set!.Count == 0) return null;
         return _set.ElementAt(Random.Shared.Next(_set.Count));
+    }
+
+    /// <summary>
+    /// Gets the underlying HashSet (converting if needed). Used for set operations.
+    /// </summary>
+    private HashSet<string> GetHashSet()
+    {
+        if (_useIntSet)
+        {
+            return new HashSet<string>(_intSet!.Select(v => v.ToString()), StringComparer.Ordinal);
+        }
+        return _set!;
     }
 
     public HashSet<string> Union(RedisSet other)
     {
-        var result = new HashSet<string>(_set, StringComparer.Ordinal);
-        result.UnionWith(other._set);
+        var result = new HashSet<string>(GetHashSet(), StringComparer.Ordinal);
+        result.UnionWith(other.GetHashSet());
         return result;
     }
 
     public HashSet<string> Intersect(RedisSet other)
     {
-        var result = new HashSet<string>(_set, StringComparer.Ordinal);
-        result.IntersectWith(other._set);
+        var result = new HashSet<string>(GetHashSet(), StringComparer.Ordinal);
+        result.IntersectWith(other.GetHashSet());
         return result;
     }
 
     public HashSet<string> Difference(RedisSet other)
     {
-        var result = new HashSet<string>(_set, StringComparer.Ordinal);
-        result.ExceptWith(other._set);
+        var result = new HashSet<string>(GetHashSet(), StringComparer.Ordinal);
+        result.ExceptWith(other.GetHashSet());
         return result;
     }
 }
@@ -258,6 +490,7 @@ public class RedisSet : RedisObject
 public class RedisSortedSet : RedisObject
 {
     public override string TypeName => "zset";
+    public override RedisEncoding Encoding => RedisEncoding.SkipList;
 
     // Dictionary for O(1) member->score lookup
     private readonly Dictionary<string, double> _memberScores = new(StringComparer.Ordinal);
@@ -416,6 +649,7 @@ public class RedisSortedSet : RedisObject
 public class RedisHash : RedisObject
 {
     public override string TypeName => "hash";
+    public override RedisEncoding Encoding => RedisEncoding.Hashtable;
 
     private readonly Dictionary<string, byte[]> _hash = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTime> _fieldExpires = new(StringComparer.Ordinal);
