@@ -76,6 +76,7 @@ public class GroupByKeySpec
 /// <summary>
 /// GROUP BY operator with aggregate functions.
 /// Materializes all input rows, groups them, and computes aggregates.
+/// Supports WITH ROLLUP for generating subtotal and grand total rows.
 /// </summary>
 public sealed class GroupByOperator : OperatorBase
 {
@@ -83,6 +84,7 @@ public sealed class GroupByOperator : OperatorBase
     private readonly List<GroupByKeySpec> _groupByKeys;
     private readonly List<AggregateSpec> _aggregates;
     private readonly TableSchema _outputSchema;
+    private readonly bool _withRollup;
     private List<Row>? _resultRows;
     private int _currentIndex;
 
@@ -93,11 +95,13 @@ public sealed class GroupByOperator : OperatorBase
         List<GroupByKeySpec> groupByKeys,
         List<AggregateSpec> aggregates,
         string databaseName,
-        string tableName)
+        string tableName,
+        bool withRollup = false)
     {
         _input = input ?? throw new ArgumentNullException(nameof(input));
         _groupByKeys = groupByKeys;
         _aggregates = aggregates ?? throw new ArgumentNullException(nameof(aggregates));
+        _withRollup = withRollup;
         
         // Build output schema eagerly so it's available before Open()
         _outputSchema = BuildOutputSchema(databaseName, tableName);
@@ -190,6 +194,63 @@ public sealed class GroupByOperator : OperatorBase
                 }
 
                 _resultRows.Add(new Row(_outputSchema, values));
+            }
+        }
+
+        // WITH ROLLUP: Generate subtotal and grand total rows
+        // For GROUP BY a, b, c WITH ROLLUP, produce:
+        //   (a, b, c) - normal groups (already done above)
+        //   (a, b, NULL) - subtotals for each (a,b) combination
+        //   (a, NULL, NULL) - subtotals for each (a) value
+        //   (NULL, NULL, NULL) - grand total
+        if (_withRollup && _groupByKeys.Count > 0 && groups.Count > 0)
+        {
+            var allRows = groups.Values.SelectMany(g => g).ToList();
+
+            // Generate rollup levels from keyCount-1 down to 0
+            for (int level = _groupByKeys.Count - 1; level >= 0; level--)
+            {
+                // Group by the first 'level' keys
+                var rollupGroups = new Dictionary<string, List<Row>>();
+                var rollupKeyValues = new Dictionary<string, DataValue[]>();
+
+                foreach (var r in allRows)
+                {
+                    var keyVals = new DataValue[_groupByKeys.Count];
+                    for (int k = 0; k < level; k++)
+                    {
+                        keyVals[k] = _groupByKeys[k].Evaluator.Evaluate(r);
+                    }
+                    for (int k = level; k < _groupByKeys.Count; k++)
+                    {
+                        keyVals[k] = DataValue.Null;
+                    }
+
+                    var key = CreateGroupKey(keyVals.Take(level).ToArray());
+                    if (!rollupGroups.TryGetValue(key, out var rGroup))
+                    {
+                        rGroup = new List<Row>();
+                        rollupGroups[key] = rGroup;
+                        rollupKeyValues[key] = keyVals;
+                    }
+                    rGroup.Add(r);
+                }
+
+                foreach (var kvp in rollupGroups)
+                {
+                    var values = new DataValue[_groupByKeys.Count + _aggregates.Count];
+                    int idx = 0;
+                    var keyVals = rollupKeyValues[kvp.Key];
+                    foreach (var keyVal in keyVals)
+                    {
+                        values[idx++] = keyVal;
+                    }
+                    foreach (var agg in _aggregates)
+                    {
+                        values[idx++] = ComputeAggregate(agg, kvp.Value);
+                    }
+                    _resultRows.Add(new Row(_outputSchema, values));
+                }
             }
         }
 

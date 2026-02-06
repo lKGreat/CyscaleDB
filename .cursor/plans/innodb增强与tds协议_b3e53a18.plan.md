@@ -4,19 +4,19 @@ overview: 从专业角度分析 CyscaleDB 与 MySQL 8.4 InnoDB 引擎的能力�
 todos:
   - id: external-sort
     content: "Phase 1.1: ExternalSortOperator - 外部排序算子（sort_buffer_size 管理、磁盘溢写、k-way merge sort），替换当前纯内存 OrderByOperator"
-    status: in_progress
+    status: completed
   - id: hash-join
     content: "Phase 1.2: HashJoinOperator - 哈希连接算子（Build/Probe 两阶段、Grace Hash Join 磁盘溢写），与 NestedLoopJoin 并存"
-    status: pending
+    status: completed
   - id: sort-aggregation
     content: "Phase 1.3: Sort-based Aggregation + GROUP BY WITH ROLLUP - 当输入已排序时流式聚合，增强 GroupByOperator"
-    status: pending
+    status: completed
   - id: temp-table-engine
     content: "Phase 1.4: TempTableEngine - 内部临时表引擎，支持内存->磁盘溢写，供 ORDER BY/GROUP BY/DISTINCT/UNION 使用"
-    status: pending
+    status: completed
   - id: tds-core
     content: "Phase 2.1: TDS 核心协议栈 - TdsServer/TdsPacketReader/TdsPacketWriter/TdsPreLogin/TdsLogin7/TdsTokenStream/TdsSession，监听 1433 端口"
-    status: pending
+    status: in_progress
   - id: tsql-translator
     content: "Phase 2.2: T-SQL 方言转换层 - TsqlTranslator 将 T-SQL 语法转换为 CyscaleDB AST (TOP->LIMIT, []->反引号, GETDATE->NOW 等)"
     status: pending

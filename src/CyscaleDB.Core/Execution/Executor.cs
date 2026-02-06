@@ -636,11 +636,11 @@ public sealed class Executor
             op = new DistinctOperator(op);
         }
 
-        // ORDER BY clause
+        // ORDER BY clause - uses ExternalSortOperator with disk spill support
         if (stmt.OrderBy.Count > 0)
         {
             var sortKeys = BuildSortKeys(stmt.OrderBy, op.Schema);
-            op = new OrderByOperator(op, sortKeys);
+            op = new ExternalSortOperator(op, sortKeys);
         }
 
         // Final projection to remove ORDER BY helper columns
