@@ -46,7 +46,7 @@ todos:
     status: completed
   - id: p3-tests
     content: 补充集成测试和协议兼容性测试
-    status: in_progress
+    status: completed
 isProject: false
 ---
 

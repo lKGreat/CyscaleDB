@@ -359,14 +359,18 @@ public class RespProtocolTests
     {
         var data = new byte[] { 0x00, 0x01, 0xFF, 0xFE };
         var result = await WriteAndReadBytes(writer => writer.WriteBulkString(new ReadOnlyMemory<byte>(data)));
-        // $4\r\n<4 binary bytes>\r\n
-        Assert.Equal(4 + 2 + 4 + 2, result.Length); // "$4\r\n" + 4 bytes + "\r\n"
+        // "$4\r\n" (4 bytes) + data (4 bytes) + "\r\n" (2 bytes) = 10 bytes
+        Assert.Equal(10, result.Length);
         Assert.Equal((byte)'$', result[0]);
         Assert.Equal((byte)'4', result[1]);
+        Assert.Equal((byte)'\r', result[2]);
+        Assert.Equal((byte)'\n', result[3]);
         Assert.Equal(0x00, result[4]);
         Assert.Equal(0x01, result[5]);
         Assert.Equal(0xFF, result[6]);
         Assert.Equal(0xFE, result[7]);
+        Assert.Equal((byte)'\r', result[8]);
+        Assert.Equal((byte)'\n', result[9]);
     }
 
     #endregion
