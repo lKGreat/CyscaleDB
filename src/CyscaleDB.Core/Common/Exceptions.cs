@@ -10,16 +10,124 @@ public class CyscaleException : Exception
     /// </summary>
     public ErrorCode ErrorCode { get; }
 
+    /// <summary>
+    /// The SQL STATE code (5-char ANSI standard, e.g. "42S02").
+    /// </summary>
+    public string SqlState { get; }
+
     public CyscaleException(string message, ErrorCode errorCode = ErrorCode.Unknown)
         : base(message)
     {
         ErrorCode = errorCode;
+        SqlState = MySqlErrorMapper.GetSqlState(errorCode);
     }
 
     public CyscaleException(string message, Exception innerException, ErrorCode errorCode = ErrorCode.Unknown)
         : base(message, innerException)
     {
         ErrorCode = errorCode;
+        SqlState = MySqlErrorMapper.GetSqlState(errorCode);
+    }
+}
+
+/// <summary>
+/// Maps CyscaleDB error codes to standard MySQL error codes and SQL STATE values.
+/// </summary>
+public static class MySqlErrorMapper
+{
+    /// <summary>
+    /// Gets the standard MySQL error code for a CyscaleDB ErrorCode.
+    /// </summary>
+    public static int GetMySqlErrorCode(ErrorCode errorCode)
+    {
+        return errorCode switch
+        {
+            ErrorCode.SyntaxError or ErrorCode.ParseError or ErrorCode.InvalidToken => 1064,
+            ErrorCode.DatabaseNotFound => 1049,
+            ErrorCode.DatabaseExists => 1007,
+            ErrorCode.TableNotFound => 1146,
+            ErrorCode.TableExists => 1050,
+            ErrorCode.ColumnNotFound => 1054,
+            ErrorCode.ViewNotFound => 1146,
+            ErrorCode.ViewExists => 1050,
+            ErrorCode.IndexNotFound => 1091,
+            ErrorCode.IndexExists => 1061,
+            ErrorCode.ProcedureNotFound => 1305,
+            ErrorCode.ProcedureExists => 1304,
+            ErrorCode.TriggerNotFound => 1360,
+            ErrorCode.TriggerExists => 1359,
+            ErrorCode.EventNotFound => 1539,
+            ErrorCode.EventExists => 1537,
+            ErrorCode.UserNotFound => 1396,
+            ErrorCode.AccessDenied => 1045,
+            ErrorCode.UserAlreadyExists => 1396,
+            ErrorCode.TypeMismatch => 1366,
+            ErrorCode.DataTruncated => 1265,
+            ErrorCode.NullConstraint => 1048,
+            ErrorCode.ConstraintViolation => 1451,
+            ErrorCode.DuplicateKey => 1062,
+            ErrorCode.TransactionError => 1399,
+            ErrorCode.Deadlock => 1213,
+            ErrorCode.LockTimeout => 1205,
+            ErrorCode.TransactionNotStarted => 1399,
+            ErrorCode.TransactionAlreadyStarted => 1399,
+            ErrorCode.StorageError => 1030,
+            ErrorCode.PageCorrupted => 1030,
+            ErrorCode.AuthenticationFailed => 1045,
+            _ => 1105 // HY000 Unknown error
+        };
+    }
+
+    /// <summary>
+    /// Gets the SQL STATE for a CyscaleDB ErrorCode.
+    /// </summary>
+    public static string GetSqlState(ErrorCode errorCode)
+    {
+        return errorCode switch
+        {
+            ErrorCode.SyntaxError or ErrorCode.ParseError or ErrorCode.InvalidToken => "42000",
+            ErrorCode.DatabaseNotFound => "42000",
+            ErrorCode.DatabaseExists => "HY000",
+            ErrorCode.TableNotFound => "42S02",
+            ErrorCode.TableExists => "42S01",
+            ErrorCode.ColumnNotFound => "42S22",
+            ErrorCode.ViewNotFound => "42S02",
+            ErrorCode.ViewExists => "42S01",
+            ErrorCode.IndexNotFound => "42000",
+            ErrorCode.IndexExists => "42000",
+            ErrorCode.ProcedureNotFound => "42000",
+            ErrorCode.ProcedureExists => "42000",
+            ErrorCode.UserNotFound => "HY000",
+            ErrorCode.AccessDenied => "28000",
+            ErrorCode.UserAlreadyExists => "HY000",
+            ErrorCode.TypeMismatch => "HY000",
+            ErrorCode.DataTruncated => "01000",
+            ErrorCode.NullConstraint => "23000",
+            ErrorCode.ConstraintViolation => "23000",
+            ErrorCode.DuplicateKey => "23000",
+            ErrorCode.Deadlock => "40001",
+            ErrorCode.LockTimeout => "HY000",
+            ErrorCode.TransactionError or ErrorCode.TransactionNotStarted or ErrorCode.TransactionAlreadyStarted => "HY000",
+            ErrorCode.AuthenticationFailed => "28000",
+            _ => "HY000"
+        };
+    }
+
+    /// <summary>
+    /// Gets both MySQL error code and SQL STATE for an exception.
+    /// </summary>
+    public static (int mysqlErrorCode, string sqlState) Map(Exception ex)
+    {
+        if (ex is CyscaleException cex)
+        {
+            return (GetMySqlErrorCode(cex.ErrorCode), cex.SqlState);
+        }
+        if (ex is SqlSyntaxException)
+        {
+            return (1064, "42000");
+        }
+        // Generic fallback
+        return (1105, "HY000");
     }
 }
 

@@ -104,6 +104,47 @@ public sealed class ClientSession : IDisposable
         set => _executor.CurrentDatabase = value;
     }
 
+    /// <summary>
+    /// Session-level warnings list (for SHOW WARNINGS).
+    /// </summary>
+    private readonly List<SessionWarning> _warnings = [];
+
+    /// <summary>
+    /// Gets the current warning count.
+    /// </summary>
+    public int WarningCount => _warnings.Count;
+
+    /// <summary>
+    /// Adds a warning to this session.
+    /// </summary>
+    public void AddWarning(string level, int code, string message)
+    {
+        _warnings.Add(new SessionWarning { Level = level, Code = code, Message = message });
+    }
+
+    /// <summary>
+    /// Gets all current warnings.
+    /// </summary>
+    public IReadOnlyList<SessionWarning> GetWarnings() => _warnings.AsReadOnly();
+
+    /// <summary>
+    /// Clears all warnings.
+    /// </summary>
+    public void ClearWarnings() => _warnings.Clear();
+
+    /// <summary>
+    /// Prepared statements store for binary protocol COM_STMT_*.
+    /// Maps statement_id -> prepared statement info.
+    /// </summary>
+    public Dictionary<int, PreparedStatementInfo> PreparedStatements { get; } = [];
+
+    private int _nextStmtId;
+
+    /// <summary>
+    /// Allocates the next prepared statement ID.
+    /// </summary>
+    public int AllocateStatementId() => Interlocked.Increment(ref _nextStmtId);
+
     private static long _sessionIdCounter;
 
     /// <summary>
@@ -170,6 +211,9 @@ public sealed class ClientSession : IDisposable
         InTransaction = false;
         AutoCommit = true;
         MultiStatements = true;
+        _warnings.Clear();
+        PreparedStatements.Clear();
+        _nextStmtId = 0;
         UpdateActivity();
     }
 
@@ -207,6 +251,42 @@ public sealed class ClientSession : IDisposable
             _pipeWriter?.Dispose();
         }
     }
+}
+
+/// <summary>
+/// Represents a session-level warning.
+/// </summary>
+public sealed class SessionWarning
+{
+    public string Level { get; init; } = "Warning";
+    public int Code { get; init; }
+    public string Message { get; init; } = "";
+}
+
+/// <summary>
+/// Information about a prepared statement (binary protocol).
+/// </summary>
+public sealed class PreparedStatementInfo
+{
+    /// <summary>
+    /// The statement ID sent to the client.
+    /// </summary>
+    public int StatementId { get; init; }
+
+    /// <summary>
+    /// The original SQL text.
+    /// </summary>
+    public string Sql { get; init; } = "";
+
+    /// <summary>
+    /// Number of parameter placeholders (?).
+    /// </summary>
+    public int NumParams { get; init; }
+
+    /// <summary>
+    /// Column definitions of the result set (if SELECT).
+    /// </summary>
+    public List<Execution.ResultColumn> Columns { get; init; } = [];
 }
 
 /// <summary>

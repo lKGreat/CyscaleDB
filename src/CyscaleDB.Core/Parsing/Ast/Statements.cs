@@ -1623,6 +1623,11 @@ public class ShowVariablesStatement : Statement
     /// </summary>
     public string? LikePattern { get; set; }
 
+    /// <summary>
+    /// WHERE clause expression for filtering.
+    /// </summary>
+    public Expression? Where { get; set; }
+
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowVariablesStatement(this);
 }
 
@@ -1640,6 +1645,11 @@ public class ShowStatusStatement : Statement
     /// LIKE pattern for filtering.
     /// </summary>
     public string? LikePattern { get; set; }
+
+    /// <summary>
+    /// WHERE clause expression for filtering.
+    /// </summary>
+    public Expression? Where { get; set; }
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowStatusStatement(this);
 }
@@ -1681,6 +1691,11 @@ public class ShowColumnsStatement : Statement
     /// LIKE pattern for filtering.
     /// </summary>
     public string? LikePattern { get; set; }
+
+    /// <summary>
+    /// Whether FULL modifier was specified (adds Collation, Privileges, Comment columns).
+    /// </summary>
+    public bool IsFull { get; set; }
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowColumnsStatement(this);
 }
@@ -2770,6 +2785,51 @@ public enum ExplainFormat
     Traditional,
     Json,
     Tree
+}
+
+#endregion
+
+#region DO Statement
+
+/// <summary>
+/// Represents a DO statement: DO expr [, expr] ...
+/// Executes expressions without returning a result.
+/// </summary>
+public class DoStatement : Statement
+{
+    public List<Expression> Expressions { get; set; } = [];
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => throw new NotImplementedException("DO");
+}
+
+#endregion
+
+#region HANDLER Statement
+
+/// <summary>
+/// Represents HANDLER table OPEN/READ/CLOSE statements.
+/// </summary>
+public class HandlerOpenStatement : Statement
+{
+    public string TableName { get; set; } = null!;
+    public string? Alias { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => throw new NotImplementedException("HANDLER OPEN");
+}
+
+public class HandlerReadStatement : Statement
+{
+    public string HandlerName { get; set; } = null!;
+    public string ReadType { get; set; } = "NEXT"; // FIRST, NEXT, PREV, LAST
+    public string? IndexName { get; set; }
+    public Expression? Where { get; set; }
+    public int? Limit { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => throw new NotImplementedException("HANDLER READ");
+}
+
+public class HandlerCloseStatement : Statement
+{
+    public string HandlerName { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => throw new NotImplementedException("HANDLER CLOSE");
 }
 
 #endregion

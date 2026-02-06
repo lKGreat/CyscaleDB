@@ -541,6 +541,38 @@ public sealed class MySqlServer : IDisposable
                     return;
                 }
 
+                // Check if this is an SSL Request (short packet with CLIENT_SSL flag)
+                if (responsePacket.Length == 32 && _sslHandler != null && _options.Ssl?.Enabled == true)
+                {
+                    // First 4 bytes are capabilities
+                    var sslCaps = (uint)(responsePacket[0] | (responsePacket[1] << 8) |
+                                         (responsePacket[2] << 16) | (responsePacket[3] << 24));
+                    if ((sslCaps & (uint)MySqlCapabilities.Ssl) != 0)
+                    {
+                        _logger.Debug("SSL Request received, upgrading connection");
+                        try
+                        {
+                            activeStream = await _sslHandler.AuthenticateAsServerAsync(activeStream, cancellationToken);
+                            pipeReader = MySqlPipeReader.Create(activeStream, _options);
+                            pipeWriter = MySqlPipeWriter.Create(activeStream, _options);
+                            _logger.Info("SSL connection established for {0}", clientEndPoint);
+                        }
+                        catch (Exception sslEx)
+                        {
+                            _logger.Error("SSL upgrade failed for {0}: {1}", clientEndPoint, sslEx.Message);
+                            return;
+                        }
+
+                        // Read the actual handshake response after SSL upgrade
+                        responsePacket = await pipeReader.ReadPacketAsync(cancellationToken);
+                        if (responsePacket == null)
+                        {
+                            _logger.Debug("Client disconnected after SSL upgrade");
+                            return;
+                        }
+                    }
+                }
+
                 var response = Handshake.ParseHandshakeResponse(responsePacket);
 
                 _logger.Debug("Client connecting: username={0}, database={1}, capabilities=0x{2:X8}",
@@ -552,7 +584,35 @@ public sealed class MySqlServer : IDisposable
                     ? Array.Empty<byte>()
                     : Encoding.Latin1.GetBytes(response.AuthResponse);
 
-                if (!UserManager.Instance.ValidatePassword(response.Username, authBytes, salt, clientHost))
+                // Handle auth plugin switch if client uses caching_sha2_password
+                bool authenticated = false;
+                if (response.AuthPlugin == "caching_sha2_password")
+                {
+                    _logger.Debug("Client using caching_sha2_password, sending auth switch to mysql_native_password");
+                    // Send Auth Switch Request to downgrade to mysql_native_password
+                    pipeWriter = MySqlPipeWriter.Create(activeStream, _options);
+                    using var switchBuffer = new MemoryStream();
+                    switchBuffer.WriteByte(0xFE); // Auth Switch Request marker
+                    var pluginName = Encoding.UTF8.GetBytes("mysql_native_password");
+                    switchBuffer.Write(pluginName);
+                    switchBuffer.WriteByte(0x00); // null terminator
+                    switchBuffer.Write(salt); // auth data
+                    switchBuffer.WriteByte(0x00); // null terminator
+                    await pipeWriter.WritePacketAsync(switchBuffer.ToArray(), cancellationToken);
+
+                    // Read the new auth response
+                    var authSwitchResponse = await pipeReader.ReadPacketAsync(cancellationToken);
+                    if (authSwitchResponse != null && authSwitchResponse.Length > 0)
+                    {
+                        authenticated = UserManager.Instance.ValidatePassword(response.Username, authSwitchResponse, salt, clientHost);
+                    }
+                }
+                else
+                {
+                    authenticated = UserManager.Instance.ValidatePassword(response.Username, authBytes, salt, clientHost);
+                }
+
+                if (!authenticated)
                 {
                     _logger.Warning("Authentication failed for user '{0}'@'{1}'", response.Username, clientHost);
 
@@ -575,11 +635,36 @@ public sealed class MySqlServer : IDisposable
                 // Reset pipe writer for command phase
                 pipeWriter = MySqlPipeWriter.Create(activeStream, _options);
                 
-                session = new ClientSession(clientCapabilities, new Executor(_storageEngine.Catalog, _transactionManager), pipeReader, pipeWriter)
+                var executor = new Executor(_storageEngine.Catalog, _transactionManager);
+                session = new ClientSession(clientCapabilities, executor, pipeReader, pipeWriter)
                 {
                     Username = response.Username,
                     RemoteAddress = clientEndPoint
                 };
+
+                // Wire up session context to executor (connection ID, user, warnings)
+                executor.SetSessionContext(
+                    session.Id,
+                    response.Username,
+                    clientHost,
+                    addWarning: (level, code, msg) => session.AddWarning(level, code, msg),
+                    getWarnings: () => session.GetWarnings()
+                        .Select(w => (w.Level, w.Code, w.Message)).ToList()
+                );
+
+                // Apply character set negotiation from handshake response
+                var charsetName = MapCharacterSetIdToName(response.CharacterSet);
+                if (!string.IsNullOrEmpty(charsetName))
+                {
+                    try
+                    {
+                        executor.Execute($"SET NAMES {charsetName}");
+                    }
+                    catch
+                    {
+                        // If charset set fails, continue with default
+                    }
+                }
 
                 // Register session
                 _sessions[session.Id] = session;
@@ -690,9 +775,42 @@ public sealed class MySqlServer : IDisposable
                         await SendOkPacketAsync(writer, session, cancellationToken);
                         break;
 
-                    case 0x19: // COM_RESET_CONNECTION
+                    case 0x1F: // COM_RESET_CONNECTION
                         session.Reset();
                         await SendOkPacketAsync(writer, session, cancellationToken);
+                        break;
+
+                    case 0x16: // COM_STMT_PREPARE
+                        await HandleStmtPrepareAsync(writer, session, payload, cancellationToken);
+                        break;
+
+                    case 0x17: // COM_STMT_EXECUTE
+                        session.RecordQuery();
+                        Interlocked.Increment(ref _totalQueriesExecuted);
+                        await HandleStmtExecuteAsync(writer, session, payload, cancellationToken);
+                        break;
+
+                    case 0x18: // COM_STMT_SEND_LONG_DATA
+                        // Acknowledge but no response needed
+                        break;
+
+                    case 0x19: // COM_STMT_CLOSE (no response)
+                        HandleStmtClose(session, payload);
+                        break;
+
+                    case 0x1A: // COM_STMT_RESET
+                        if (payload.Length >= 4)
+                        {
+                            var resetStmtId = BitConverter.ToInt32(payload, 0);
+                            if (session.PreparedStatements.ContainsKey(resetStmtId))
+                            {
+                                await SendOkPacketAsync(writer, session, cancellationToken);
+                            }
+                            else
+                            {
+                                await SendErrorPacketAsync(writer, 1243, "HY000", "Unknown prepared statement handler", cancellationToken);
+                            }
+                        }
                         break;
 
                     case 0x1B: // COM_SET_OPTION
@@ -714,7 +832,8 @@ public sealed class MySqlServer : IDisposable
                 _logger.Error("Error processing command", ex);
                 try
                 {
-                    await SendErrorPacketAsync(writer, 1064, "42000", $"Error executing query: {ex.Message}", cancellationToken);
+                    var (mysqlCode, sqlState) = MySqlErrorMapper.Map(ex);
+                    await SendErrorPacketAsync(writer, mysqlCode, sqlState, ex.Message, cancellationToken);
                 }
                 catch
                 {
@@ -861,10 +980,157 @@ public sealed class MySqlServer : IDisposable
         await SendEofOrOkPacketAsync(writer, session, cancellationToken);
     }
 
-    private async Task ExecuteQueryAsync(MySqlPipeWriter writer, ClientSession session, string sql, CancellationToken cancellationToken)
+    /// <summary>
+    /// Handles COM_STMT_PREPARE: parse SQL, count params, return statement metadata.
+    /// </summary>
+    private async Task HandleStmtPrepareAsync(MySqlPipeWriter writer, ClientSession session, byte[] payload, CancellationToken cancellationToken)
+    {
+        var sql = Encoding.UTF8.GetString(payload);
+        _logger.Debug("COM_STMT_PREPARE: {0}", sql);
+
+        try
+        {
+            // Count parameter placeholders
+            int numParams = 0;
+            for (int i = 0; i < sql.Length; i++)
+            {
+                if (sql[i] == '?') numParams++;
+            }
+
+            // Try to parse to detect syntax errors early and get column info
+            var stmtId = session.AllocateStatementId();
+            var columns = new List<ResultColumn>();
+
+            // For SELECT, try to get column definitions
+            var sqlUpper = sql.TrimStart().ToUpperInvariant();
+            if (sqlUpper.StartsWith("SELECT") || sqlUpper.StartsWith("SHOW") || sqlUpper.StartsWith("DESC"))
+            {
+                try
+                {
+                    // Replace ? with NULL for parsing column schema
+                    var testSql = sql.Replace("?", "NULL");
+                    var testResult = session.Executor.Execute(testSql);
+                    if (testResult.ResultSet != null)
+                    {
+                        columns.AddRange(testResult.ResultSet.Columns);
+                    }
+                }
+                catch
+                {
+                    // If schema detection fails, continue with empty columns
+                }
+            }
+
+            var info = new PreparedStatementInfo
+            {
+                StatementId = stmtId,
+                Sql = sql,
+                NumParams = numParams,
+                Columns = columns
+            };
+            session.PreparedStatements[stmtId] = info;
+
+            // Send COM_STMT_PREPARE_OK
+            using var buffer = new MemoryStream();
+            buffer.WriteByte(0x00); // status OK
+
+            // statement_id (4 bytes LE)
+            buffer.WriteByte((byte)(stmtId & 0xFF));
+            buffer.WriteByte((byte)((stmtId >> 8) & 0xFF));
+            buffer.WriteByte((byte)((stmtId >> 16) & 0xFF));
+            buffer.WriteByte((byte)((stmtId >> 24) & 0xFF));
+
+            // num_columns (2 bytes LE)
+            var numCols = (ushort)columns.Count;
+            buffer.WriteByte((byte)(numCols & 0xFF));
+            buffer.WriteByte((byte)((numCols >> 8) & 0xFF));
+
+            // num_params (2 bytes LE)
+            buffer.WriteByte((byte)(numParams & 0xFF));
+            buffer.WriteByte((byte)((numParams >> 8) & 0xFF));
+
+            // reserved
+            buffer.WriteByte(0x00);
+
+            // warning_count (2 bytes)
+            buffer.WriteByte(0x00);
+            buffer.WriteByte(0x00);
+
+            await writer.WritePacketAsync(buffer.ToArray(), cancellationToken);
+
+            // Send parameter definitions if any
+            if (numParams > 0)
+            {
+                for (int i = 0; i < numParams; i++)
+                {
+                    var paramCol = new ResultColumn
+                    {
+                        Name = $"?",
+                        DataType = DataType.VarChar,
+                        TableName = "",
+                        DatabaseName = ""
+                    };
+                    await SendColumnDefinitionAsync(writer, session, paramCol, cancellationToken);
+                }
+                if (!session.UseDeprecateEof)
+                {
+                    await SendEofPacketAsync(writer, session, cancellationToken);
+                }
+            }
+
+            // Send column definitions if any
+            if (numCols > 0)
+            {
+                foreach (var col in columns)
+                {
+                    await SendColumnDefinitionAsync(writer, session, col, cancellationToken);
+                }
+                if (!session.UseDeprecateEof)
+                {
+                    await SendEofPacketAsync(writer, session, cancellationToken);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            var (mysqlCode, sqlState) = MySqlErrorMapper.Map(ex);
+            await SendErrorPacketAsync(writer, mysqlCode, sqlState, ex.Message, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Handles COM_STMT_EXECUTE: bind params and execute.
+    /// </summary>
+    private async Task HandleStmtExecuteAsync(MySqlPipeWriter writer, ClientSession session, byte[] payload, CancellationToken cancellationToken)
     {
         try
         {
+            if (payload.Length < 9)
+            {
+                await SendErrorPacketAsync(writer, 1105, "HY000", "Malformed COM_STMT_EXECUTE packet", cancellationToken);
+                return;
+            }
+
+            var stmtId = BitConverter.ToInt32(payload, 0);
+            // flags = payload[4], iteration_count = payload[5..8] (always 1)
+
+            if (!session.PreparedStatements.TryGetValue(stmtId, out var info))
+            {
+                await SendErrorPacketAsync(writer, 1243, "HY000", "Unknown prepared statement handler", cancellationToken);
+                return;
+            }
+
+            // Build the actual SQL by replacing ? with bound parameter values
+            var sql = info.Sql;
+            if (info.NumParams > 0)
+            {
+                var paramValues = ExtractBinaryParams(payload, 9, info.NumParams);
+                sql = BindParams(info.Sql, paramValues);
+            }
+
+            _logger.Debug("COM_STMT_EXECUTE (stmt={0}): {1}", stmtId, sql);
+
+            // Execute as text query
             var result = session.Executor.Execute(sql);
 
             switch (result.Type)
@@ -872,21 +1138,11 @@ public sealed class MySqlServer : IDisposable
                 case ResultType.Query:
                     await SendResultSetAsync(writer, session, result.ResultSet!, cancellationToken);
                     break;
-
                 case ResultType.Modification:
                     await SendOkPacketAsync(writer, session, cancellationToken,
                         affectedRows: result.AffectedRows,
                         lastInsertId: result.LastInsertId);
                     break;
-
-                case ResultType.Ddl:
-                    await SendOkPacketAsync(writer, session, cancellationToken, message: result.Message);
-                    break;
-
-                case ResultType.Empty:
-                    await SendOkPacketAsync(writer, session, cancellationToken);
-                    break;
-
                 default:
                     await SendOkPacketAsync(writer, session, cancellationToken);
                     break;
@@ -894,13 +1150,273 @@ public sealed class MySqlServer : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.Error("Query execution error for SQL: {0}", sql);
-            _logger.Error("Query execution error", ex);
-            await SendErrorPacketAsync(writer, 1064, "42000", ex.Message, cancellationToken);
+            var (mysqlCode, sqlState) = MySqlErrorMapper.Map(ex);
+            await SendErrorPacketAsync(writer, mysqlCode, sqlState, ex.Message, cancellationToken);
         }
     }
 
-    private async Task SendResultSetAsync(MySqlPipeWriter writer, ClientSession session, ResultSet resultSet, CancellationToken cancellationToken)
+    /// <summary>
+    /// Handles COM_STMT_CLOSE: remove prepared statement from session.
+    /// </summary>
+    private static void HandleStmtClose(ClientSession session, byte[] payload)
+    {
+        if (payload.Length >= 4)
+        {
+            var stmtId = BitConverter.ToInt32(payload, 0);
+            session.PreparedStatements.Remove(stmtId);
+        }
+        // COM_STMT_CLOSE doesn't send a response
+    }
+
+    /// <summary>
+    /// Extracts parameter values from binary protocol COM_STMT_EXECUTE payload.
+    /// </summary>
+    private static string[] ExtractBinaryParams(byte[] payload, int offset, int numParams)
+    {
+        var values = new string[numParams];
+        try
+        {
+            if (offset >= payload.Length)
+            {
+                for (int i = 0; i < numParams; i++) values[i] = "NULL";
+                return values;
+            }
+
+            // null_bitmap: (numParams + 7) / 8 bytes
+            int nullBitmapLen = (numParams + 7) / 8;
+            var nullBitmap = new byte[nullBitmapLen];
+            if (offset + nullBitmapLen <= payload.Length)
+            {
+                Array.Copy(payload, offset, nullBitmap, 0, nullBitmapLen);
+            }
+            offset += nullBitmapLen;
+
+            // new_params_bound_flag (1 byte)
+            bool newParamsBound = offset < payload.Length && payload[offset] == 1;
+            offset++;
+
+            // type info (2 bytes per param) if new_params_bound_flag = 1
+            var paramTypes = new byte[numParams];
+            if (newParamsBound)
+            {
+                for (int i = 0; i < numParams; i++)
+                {
+                    if (offset + 1 < payload.Length)
+                    {
+                        paramTypes[i] = payload[offset]; // type
+                        offset += 2; // type + flags
+                    }
+                }
+            }
+
+            // Read values
+            for (int i = 0; i < numParams; i++)
+            {
+                // Check null bitmap
+                if ((nullBitmap[i / 8] & (1 << (i % 8))) != 0)
+                {
+                    values[i] = "NULL";
+                    continue;
+                }
+
+                var type = paramTypes[i];
+                switch (type)
+                {
+                    case 1: // MYSQL_TYPE_TINY
+                        if (offset < payload.Length)
+                            values[i] = payload[offset++].ToString();
+                        break;
+                    case 2: // MYSQL_TYPE_SHORT
+                        if (offset + 1 < payload.Length)
+                        {
+                            values[i] = BitConverter.ToInt16(payload, offset).ToString();
+                            offset += 2;
+                        }
+                        break;
+                    case 3: // MYSQL_TYPE_LONG
+                        if (offset + 3 < payload.Length)
+                        {
+                            values[i] = BitConverter.ToInt32(payload, offset).ToString();
+                            offset += 4;
+                        }
+                        break;
+                    case 8: // MYSQL_TYPE_LONGLONG
+                        if (offset + 7 < payload.Length)
+                        {
+                            values[i] = BitConverter.ToInt64(payload, offset).ToString();
+                            offset += 8;
+                        }
+                        break;
+                    case 4: // MYSQL_TYPE_FLOAT
+                        if (offset + 3 < payload.Length)
+                        {
+                            values[i] = BitConverter.ToSingle(payload, offset).ToString("G9");
+                            offset += 4;
+                        }
+                        break;
+                    case 5: // MYSQL_TYPE_DOUBLE
+                        if (offset + 7 < payload.Length)
+                        {
+                            values[i] = BitConverter.ToDouble(payload, offset).ToString("G17");
+                            offset += 8;
+                        }
+                        break;
+                    default: // String types (VAR_STRING, STRING, BLOB, etc.)
+                    {
+                        // length-encoded string
+                        if (offset < payload.Length)
+                        {
+                            var (strLen, bytesRead) = ReadLengthEncodedInt(payload, offset);
+                            offset += bytesRead;
+                            if (offset + (int)strLen <= payload.Length)
+                            {
+                                var strVal = Encoding.UTF8.GetString(payload, offset, (int)strLen);
+                                // Escape single quotes for SQL embedding
+                                values[i] = "'" + strVal.Replace("\\", "\\\\").Replace("'", "\\'") + "'";
+                                offset += (int)strLen;
+                            }
+                            else
+                            {
+                                values[i] = "NULL";
+                            }
+                        }
+                        continue; // Skip the default assignment below
+                    }
+                }
+
+                values[i] ??= "NULL";
+            }
+        }
+        catch
+        {
+            // On any parsing error, fill remaining with NULL
+            for (int i = 0; i < numParams; i++)
+                values[i] ??= "NULL";
+        }
+        return values;
+    }
+
+    /// <summary>
+    /// Reads a length-encoded integer from a byte array.
+    /// </summary>
+    private static (ulong value, int bytesRead) ReadLengthEncodedInt(byte[] data, int offset)
+    {
+        if (offset >= data.Length) return (0, 1);
+        var first = data[offset];
+        if (first < 0xFB) return (first, 1);
+        if (first == 0xFC && offset + 2 < data.Length)
+            return (BitConverter.ToUInt16(data, offset + 1), 3);
+        if (first == 0xFD && offset + 3 < data.Length)
+            return ((ulong)(data[offset + 1] | (data[offset + 2] << 8) | (data[offset + 3] << 16)), 4);
+        if (first == 0xFE && offset + 8 < data.Length)
+            return (BitConverter.ToUInt64(data, offset + 1), 9);
+        return (0, 1);
+    }
+
+    /// <summary>
+    /// Replaces ? placeholders with actual param values in SQL.
+    /// </summary>
+    private static string BindParams(string sql, string[] values)
+    {
+        var sb = new StringBuilder(sql.Length + values.Length * 10);
+        int paramIdx = 0;
+        bool inString = false;
+        char stringChar = '\0';
+
+        for (int i = 0; i < sql.Length; i++)
+        {
+            var c = sql[i];
+
+            if (inString)
+            {
+                sb.Append(c);
+                if (c == '\\' && i + 1 < sql.Length)
+                {
+                    sb.Append(sql[++i]); // skip escaped char
+                }
+                else if (c == stringChar)
+                {
+                    inString = false;
+                }
+            }
+            else if (c == '\'' || c == '"')
+            {
+                inString = true;
+                stringChar = c;
+                sb.Append(c);
+            }
+            else if (c == '?' && paramIdx < values.Length)
+            {
+                sb.Append(values[paramIdx++]);
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private async Task ExecuteQueryAsync(MySqlPipeWriter writer, ClientSession session, string sql, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Clear warnings before each new query
+            session.ClearWarnings();
+
+            // Use multi-result execution for multi-statement support
+            var results = session.Executor.ExecuteMultiple(sql);
+
+            for (int i = 0; i < results.Count; i++)
+            {
+                var result = results[i];
+                bool moreResults = i < results.Count - 1;
+                ushort? statusOverride = moreResults
+                    ? (ushort)(session.GetServerStatus() | (ushort)MySqlServerStatus.MoreResultsExist)
+                    : null;
+
+                switch (result.Type)
+                {
+                    case ResultType.Query:
+                        await SendResultSetAsync(writer, session, result.ResultSet!, cancellationToken, moreResults);
+                        break;
+
+                    case ResultType.Modification:
+                        await SendOkPacketAsync(writer, session, cancellationToken,
+                            affectedRows: result.AffectedRows,
+                            lastInsertId: result.LastInsertId,
+                            statusOverride: statusOverride);
+                        break;
+
+                    case ResultType.Ddl:
+                        await SendOkPacketAsync(writer, session, cancellationToken,
+                            message: result.Message, statusOverride: statusOverride);
+                        break;
+
+                    default:
+                        await SendOkPacketAsync(writer, session, cancellationToken,
+                            statusOverride: statusOverride);
+                        break;
+                }
+
+                // Reset sequence number between result sets for proper framing
+                if (moreResults)
+                {
+                    writer.ResetSequence();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Query execution error for SQL: {0}", sql);
+            _logger.Error("Query execution error", ex);
+            var (mysqlCode, sqlState) = MySqlErrorMapper.Map(ex);
+            await SendErrorPacketAsync(writer, mysqlCode, sqlState, ex.Message, cancellationToken);
+        }
+    }
+
+    private async Task SendResultSetAsync(MySqlPipeWriter writer, ClientSession session, ResultSet resultSet, CancellationToken cancellationToken, bool moreResults = false)
     {
         using var columnCountPacket = new MemoryStream();
         MySqlPipeWriter.WriteLengthEncodedInteger(columnCountPacket, (ulong)resultSet.ColumnCount);
@@ -921,38 +1437,61 @@ public sealed class MySqlServer : IDisposable
             await SendRowPacketAsync(writer, row, cancellationToken);
         }
 
-        await SendEofOrOkPacketAsync(writer, session, cancellationToken);
+        if (moreResults)
+        {
+            // Send EOF/OK with SERVER_MORE_RESULTS_EXISTS flag
+            var status = (ushort)(session.GetServerStatus() | (ushort)MySqlServerStatus.MoreResultsExist);
+            await SendEofOrOkPacketAsync(writer, session, cancellationToken, statusOverride: status);
+        }
+        else
+        {
+            await SendEofOrOkPacketAsync(writer, session, cancellationToken);
+        }
     }
 
     private async Task SendColumnDefinitionAsync(MySqlPipeWriter writer, ClientSession session, ResultColumn column, CancellationToken cancellationToken)
     {
         using var buffer = new MemoryStream();
 
+        // catalog
         MySqlPipeWriter.WriteLengthEncodedString(buffer, "def", Encoding.UTF8);
+        // schema
         MySqlPipeWriter.WriteLengthEncodedString(buffer, column.DatabaseName ?? session.CurrentDatabase, Encoding.UTF8);
+        // table (virtual name / alias)
         MySqlPipeWriter.WriteLengthEncodedString(buffer, column.TableName ?? "", Encoding.UTF8);
-        MySqlPipeWriter.WriteLengthEncodedString(buffer, column.TableName ?? "", Encoding.UTF8);
+        // org_table (physical table name)
+        MySqlPipeWriter.WriteLengthEncodedString(buffer, column.OriginalTableName ?? column.TableName ?? "", Encoding.UTF8);
+        // name (column alias)
         MySqlPipeWriter.WriteLengthEncodedString(buffer, column.Name, Encoding.UTF8);
-        MySqlPipeWriter.WriteLengthEncodedString(buffer, column.Name, Encoding.UTF8);
+        // org_name (physical column name)
+        MySqlPipeWriter.WriteLengthEncodedString(buffer, column.OriginalName ?? column.Name, Encoding.UTF8);
 
+        // length of fixed-length fields [0c]
         buffer.WriteByte(0x0C);
 
+        // character_set: utf8mb4 = 255
         buffer.WriteByte(255);
         buffer.WriteByte(0);
 
+        // column_length
         var columnLength = GetColumnLength(column.DataType);
         buffer.WriteByte((byte)(columnLength & 0xFF));
         buffer.WriteByte((byte)((columnLength >> 8) & 0xFF));
         buffer.WriteByte((byte)((columnLength >> 16) & 0xFF));
         buffer.WriteByte((byte)((columnLength >> 24) & 0xFF));
 
+        // column_type
         buffer.WriteByte(GetMySqlColumnType(column.DataType));
 
-        buffer.WriteByte(0);
-        buffer.WriteByte(0);
+        // flags (2 bytes little-endian)
+        var flags = column.Flags;
+        buffer.WriteByte((byte)(flags & 0xFF));
+        buffer.WriteByte((byte)((flags >> 8) & 0xFF));
 
-        buffer.WriteByte(0);
+        // decimals
+        buffer.WriteByte(column.Decimals);
 
+        // filler
         buffer.WriteByte(0);
         buffer.WriteByte(0);
 
@@ -1001,7 +1540,7 @@ public sealed class MySqlServer : IDisposable
     }
 
     private async Task SendOkPacketAsync(MySqlPipeWriter writer, ClientSession session, CancellationToken cancellationToken,
-        long affectedRows = 0, long lastInsertId = 0, string? message = null)
+        long affectedRows = 0, long lastInsertId = 0, string? message = null, ushort? statusOverride = null)
     {
         using var buffer = new MemoryStream();
 
@@ -1010,12 +1549,14 @@ public sealed class MySqlServer : IDisposable
         MySqlPipeWriter.WriteLengthEncodedInteger(buffer, (ulong)affectedRows);
         MySqlPipeWriter.WriteLengthEncodedInteger(buffer, (ulong)lastInsertId);
 
-        var status = session.GetServerStatus();
+        var status = statusOverride ?? session.GetServerStatus();
         buffer.WriteByte((byte)(status & 0xFF));
         buffer.WriteByte((byte)((status >> 8) & 0xFF));
 
-        buffer.WriteByte(0);
-        buffer.WriteByte(0);
+        // warning count from session
+        var warningCount = (ushort)session.WarningCount;
+        buffer.WriteByte((byte)(warningCount & 0xFF));
+        buffer.WriteByte((byte)((warningCount >> 8) & 0xFF));
 
         if (!string.IsNullOrEmpty(message))
         {
@@ -1037,7 +1578,7 @@ public sealed class MySqlServer : IDisposable
         await writer.WritePacketAsync(eofPacket, cancellationToken);
     }
 
-    private async Task SendEofOrOkPacketAsync(MySqlPipeWriter writer, ClientSession session, CancellationToken cancellationToken)
+    private async Task SendEofOrOkPacketAsync(MySqlPipeWriter writer, ClientSession session, CancellationToken cancellationToken, ushort? statusOverride = null)
     {
         if (session.UseDeprecateEof)
         {
@@ -1048,18 +1589,31 @@ public sealed class MySqlServer : IDisposable
             MySqlPipeWriter.WriteLengthEncodedInteger(buffer, 0);
             MySqlPipeWriter.WriteLengthEncodedInteger(buffer, 0);
 
-            var status = session.GetServerStatus();
+            var status = statusOverride ?? session.GetServerStatus();
             buffer.WriteByte((byte)(status & 0xFF));
             buffer.WriteByte((byte)((status >> 8) & 0xFF));
 
-            buffer.WriteByte(0);
-            buffer.WriteByte(0);
+            var warningCount = (ushort)session.WarningCount;
+            buffer.WriteByte((byte)(warningCount & 0xFF));
+            buffer.WriteByte((byte)((warningCount >> 8) & 0xFF));
 
             await writer.WritePacketAsync(buffer.ToArray(), cancellationToken);
         }
         else
         {
-            await SendEofPacketAsync(writer, session, cancellationToken);
+            if (statusOverride.HasValue)
+            {
+                var eofPacket = new byte[]
+                {
+                    0xFE, 0x00, 0x00,
+                    (byte)(statusOverride.Value & 0xFF), (byte)((statusOverride.Value >> 8) & 0xFF)
+                };
+                await writer.WritePacketAsync(eofPacket, cancellationToken);
+            }
+            else
+            {
+                await SendEofPacketAsync(writer, session, cancellationToken);
+            }
         }
     }
 
@@ -1184,6 +1738,25 @@ public sealed class MySqlServer : IDisposable
             IpFilterStats = _ipFilter.GetStats(),
             SocketPoolStats = _socketPool.GetStats(),
             CompressionStats = _compressionHandler.GetStats()
+        };
+    }
+
+    /// <summary>
+    /// Maps MySQL character set ID to character set name.
+    /// </summary>
+    private static string MapCharacterSetIdToName(int charsetId)
+    {
+        return charsetId switch
+        {
+            8 => "latin1",
+            28 => "gbk",
+            33 => "utf8",
+            45 => "utf8mb4",
+            63 => "binary",
+            192 => "utf8",
+            224 => "utf8mb4",
+            255 => "utf8mb4",
+            _ => "utf8mb4" // default
         };
     }
 

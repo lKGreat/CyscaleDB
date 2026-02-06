@@ -124,7 +124,12 @@ public static class Handshake
         // Max packet size (4 bytes, little-endian) - skip
         offset += 4;
 
-        // Character set (1 byte) - skip
+        // Character set (1 byte)
+        int characterSet = 255; // utf8mb4
+        if (offset < packet.Length)
+        {
+            characterSet = packet[offset];
+        }
         offset += 1;
 
         // Reserved (23 bytes) - skip
@@ -172,7 +177,13 @@ public static class Handshake
                 database = null;
         }
 
-        // Auth plugin name (null-terminated, optional if CLIENT_PLUGIN_AUTH is set) - skip
+        // Auth plugin name (null-terminated, optional if CLIENT_PLUGIN_AUTH is set)
+        string? authPlugin = null;
+        const int CLIENT_PLUGIN_AUTH = 0x00080000;
+        if ((capabilities & CLIENT_PLUGIN_AUTH) != 0 && offset < packet.Length)
+        {
+            authPlugin = ReadNullTerminatedStringSafe(packet, ref offset);
+        }
         // Client attributes (length-encoded, optional if CLIENT_CONNECT_ATTRS is set) - skip
 
         return new ClientHandshakeResponse
@@ -180,7 +191,9 @@ public static class Handshake
             Capabilities = capabilities,
             Username = username,
             AuthResponse = authResponse,
-            Database = database
+            Database = database,
+            AuthPlugin = authPlugin,
+            CharacterSet = characterSet
         };
     }
 
@@ -213,4 +226,6 @@ public class ClientHandshakeResponse
     public string Username { get; set; } = string.Empty;
     public string AuthResponse { get; set; } = string.Empty;
     public string? Database { get; set; }
+    public string? AuthPlugin { get; set; }
+    public int CharacterSet { get; set; } = 255; // utf8mb4_general_ci
 }

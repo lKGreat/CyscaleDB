@@ -31,6 +31,25 @@ public sealed class Executor
     // Current session user info
     private string _currentUser = "root";
     private string _currentHost = "localhost";
+    private long _connectionId;
+
+    // Warning tracking callback (set by protocol layer)
+    private Action<string, int, string>? _addWarning;
+    private Func<IReadOnlyList<(string level, int code, string message)>>? _getWarnings;
+
+    /// <summary>
+    /// Sets session context from the protocol layer.
+    /// </summary>
+    public void SetSessionContext(long connectionId, string username, string host,
+        Action<string, int, string>? addWarning = null,
+        Func<IReadOnlyList<(string level, int code, string message)>>? getWarnings = null)
+    {
+        _connectionId = connectionId;
+        _currentUser = username;
+        _currentHost = host;
+        _addWarning = addWarning;
+        _getWarnings = getWarnings;
+    }
     
     // Locking context for current SELECT statement
     private LockingOptions? _currentLockingOptions;
@@ -205,6 +224,27 @@ public sealed class Executor
             result = Execute(statement);
         }
         return result;
+    }
+
+    /// <summary>
+    /// Executes a SQL string and returns all results for multi-statement support.
+    /// </summary>
+    public List<ExecutionResult> ExecuteMultiple(string sql)
+    {
+        var parser = new Parser(sql);
+        var statements = parser.ParseMultiple();
+
+        if (statements.Count == 0)
+        {
+            return [ExecutionResult.Empty()];
+        }
+
+        var results = new List<ExecutionResult>(statements.Count);
+        foreach (var statement in statements)
+        {
+            results.Add(Execute(statement));
+        }
+        return results;
     }
 
     /// <summary>
@@ -392,6 +432,10 @@ public sealed class Executor
             KillStatement s => ExecuteKill(s),
             ResetStatement s => ExecuteReset(s),
             BackupRestoreStatement s => ExecuteBackupRestore(s),
+            DoStatement s => ExecuteDo(s),
+            HandlerOpenStatement s => ExecuteHandlerOpen(s),
+            HandlerReadStatement s => ExecuteHandlerRead(s),
+            HandlerCloseStatement s => ExecuteHandlerClose(s),
             _ => throw new CyscaleException($"Unsupported statement type: {statement.GetType().Name}")
         };
     }
@@ -1130,6 +1174,24 @@ public sealed class Executor
             return BuildInformationSchemaOperator(tableRef.TableName, tableRef.Alias);
         }
 
+        // Check if this is a performance_schema query
+        if (dbName.Equals("performance_schema", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildVirtualSchemaOperator("performance_schema", tableRef.TableName, tableRef.Alias);
+        }
+
+        // Check if this is a sys schema query
+        if (dbName.Equals("sys", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildVirtualSchemaOperator("sys", tableRef.TableName, tableRef.Alias);
+        }
+
+        // Check if this is a mysql system schema query
+        if (dbName.Equals("mysql", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildVirtualSchemaOperator("mysql", tableRef.TableName, tableRef.Alias);
+        }
+
         // Check if this is a view first
         var view = _catalog.GetView(dbName, tableRef.TableName);
         if (view != null)
@@ -1175,6 +1237,41 @@ public sealed class Executor
         var schema = InformationSchemaProvider.GetTableSchema(tableName);
         
         return new InformationSchemaOperator(schema, resultSet.Rows, alias);
+    }
+
+    /// <summary>
+    /// Builds an operator for virtual schema tables (performance_schema, sys, mysql).
+    /// </summary>
+    private IOperator BuildVirtualSchemaOperator(string schemaName, string tableName, string? alias)
+    {
+        ResultSet resultSet;
+        switch (schemaName.ToLowerInvariant())
+        {
+            case "performance_schema":
+                var perfProvider = new Storage.PerformanceSchema.PerformanceSchemaProvider(_catalog);
+                resultSet = perfProvider.Query(tableName);
+                break;
+            case "sys":
+                var perfProviderForSys = new Storage.PerformanceSchema.PerformanceSchemaProvider(_catalog);
+                var sysProvider = new Storage.PerformanceSchema.SysSchemaProvider(perfProviderForSys);
+                resultSet = sysProvider.Query(tableName);
+                break;
+            case "mysql":
+                var mysqlProvider = new Storage.MysqlSchema.MysqlSchemaProvider(_catalog);
+                resultSet = mysqlProvider.Query(tableName);
+                break;
+            default:
+                throw new DatabaseNotFoundException(schemaName);
+        }
+
+        // Build TableSchema from ResultSet columns
+        var cols = new List<Storage.ColumnDefinition>();
+        foreach (var col in resultSet.Columns)
+        {
+            cols.Add(new Storage.ColumnDefinition(col.Name, col.DataType, isNullable: true));
+        }
+        var tableSchema = new Storage.TableSchema(0, schemaName, tableName, cols);
+        return new Operators.InformationSchemaOperator(tableSchema, resultSet.Rows, alias);
     }
 
     /// <summary>
@@ -3135,6 +3232,20 @@ public sealed class Executor
             ? SystemVariables.GetAllGlobal()
             : _systemVariables.GetAllSession();
 
+        // Build WHERE evaluator if specified
+        IExpressionEvaluator? whereEval = null;
+        Storage.TableSchema? tempSchema = null;
+        if (stmt.Where != null)
+        {
+            var cols = new List<Storage.ColumnDefinition>
+            {
+                new("Variable_name", DataType.VarChar, isNullable: false),
+                new("Value", DataType.VarChar, isNullable: true)
+            };
+            tempSchema = new Storage.TableSchema(0, "information_schema", "SESSION_VARIABLES", cols);
+            whereEval = BuildExpressionEvaluator(stmt.Where);
+        }
+
         foreach (var kv in variables)
         {
             // Apply LIKE pattern filter if specified
@@ -3144,10 +3255,21 @@ public sealed class Executor
                     continue;
             }
 
-            result.Rows.Add([
+            var values = new DataValue[]
+            {
                 DataValue.FromVarChar(kv.Key),
                 Common.SystemVariables.ToDataValue(kv.Value)
-            ]);
+            };
+
+            // Apply WHERE filter if specified
+            if (whereEval != null && tempSchema != null)
+            {
+                var tempRow = new Storage.Row(tempSchema, values);
+                var val = whereEval.Evaluate(tempRow);
+                if (val.Type != DataType.Boolean || !val.AsBoolean()) continue;
+            }
+
+            result.Rows.Add(values);
         }
 
         return ExecutionResult.Query(result);
@@ -3289,6 +3411,20 @@ public sealed class Executor
             ["Ssl_version"] = "",
         };
 
+        // Build WHERE evaluator if specified
+        IExpressionEvaluator? whereEval = null;
+        Storage.TableSchema? tempSchema = null;
+        if (stmt.Where != null)
+        {
+            var cols = new List<Storage.ColumnDefinition>
+            {
+                new("Variable_name", DataType.VarChar, isNullable: false),
+                new("Value", DataType.VarChar, isNullable: true)
+            };
+            tempSchema = new Storage.TableSchema(0, "information_schema", "GLOBAL_STATUS", cols);
+            whereEval = BuildExpressionEvaluator(stmt.Where);
+        }
+
         foreach (var kv in statusValues)
         {
             if (!string.IsNullOrEmpty(stmt.LikePattern))
@@ -3297,10 +3433,21 @@ public sealed class Executor
                     continue;
             }
 
-            result.Rows.Add([
+            var values = new DataValue[]
+            {
                 DataValue.FromVarChar(kv.Key),
                 Common.SystemVariables.ToDataValue(kv.Value)
-            ]);
+            };
+
+            // Apply WHERE filter if specified
+            if (whereEval != null && tempSchema != null)
+            {
+                var tempRow = new Storage.Row(tempSchema, values);
+                var val = whereEval.Evaluate(tempRow);
+                if (val.Type != DataType.Boolean || !val.AsBoolean()) continue;
+            }
+
+            result.Rows.Add(values);
         }
 
         return ExecutionResult.Query(result);
@@ -3399,10 +3546,17 @@ public sealed class Executor
         var result = new ResultSet();
         result.Columns.Add(new ResultColumn { Name = "Field", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "Type", DataType = DataType.VarChar });
+        if (stmt.IsFull)
+            result.Columns.Add(new ResultColumn { Name = "Collation", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "Null", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "Key", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "Default", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "Extra", DataType = DataType.VarChar });
+        if (stmt.IsFull)
+        {
+            result.Columns.Add(new ResultColumn { Name = "Privileges", DataType = DataType.VarChar });
+            result.Columns.Add(new ResultColumn { Name = "Comment", DataType = DataType.VarChar });
+        }
 
         foreach (var col in schema.Columns)
         {
@@ -3412,14 +3566,37 @@ public sealed class Executor
                     continue;
             }
 
-            result.Rows.Add([
-                DataValue.FromVarChar(col.Name),
-                DataValue.FromVarChar(GetMySqlTypeName(col)),
-                DataValue.FromVarChar(col.IsNullable ? "YES" : "NO"),
-                DataValue.FromVarChar(col.IsPrimaryKey ? "PRI" : ""),
-                col.DefaultValue.HasValue ? col.DefaultValue.Value : DataValue.Null,
-                DataValue.FromVarChar(col.IsAutoIncrement ? "auto_increment" : "")
-            ]);
+            var isStringType = col.DataType is DataType.VarChar or DataType.Char or DataType.Text;
+            var defaultVal = col.DefaultValue.HasValue ? col.DefaultValue.Value : DataValue.Null;
+            var extra = col.IsAutoIncrement ? "auto_increment" : "";
+            if (col.IsGenerated)
+                extra = col.IsStoredGenerated ? "STORED GENERATED" : "VIRTUAL GENERATED";
+
+            if (stmt.IsFull)
+            {
+                result.Rows.Add([
+                    DataValue.FromVarChar(col.Name),
+                    DataValue.FromVarChar(GetMySqlTypeName(col)),
+                    DataValue.FromVarChar(isStringType ? "utf8mb4_general_ci" : DataValue.Null.ToString()),
+                    DataValue.FromVarChar(col.IsNullable ? "YES" : "NO"),
+                    DataValue.FromVarChar(col.IsPrimaryKey ? "PRI" : ""),
+                    defaultVal,
+                    DataValue.FromVarChar(extra),
+                    DataValue.FromVarChar("select,insert,update,references"),
+                    DataValue.FromVarChar("")
+                ]);
+            }
+            else
+            {
+                result.Rows.Add([
+                    DataValue.FromVarChar(col.Name),
+                    DataValue.FromVarChar(GetMySqlTypeName(col)),
+                    DataValue.FromVarChar(col.IsNullable ? "YES" : "NO"),
+                    DataValue.FromVarChar(col.IsPrimaryKey ? "PRI" : ""),
+                    defaultVal,
+                    DataValue.FromVarChar(extra)
+                ]);
+            }
         }
 
         return ExecutionResult.Query(result);
@@ -3552,21 +3729,48 @@ public sealed class Executor
 
     private ExecutionResult ExecuteShowWarnings()
     {
-        // Return empty result - we don't track warnings yet
         var result = new ResultSet();
         result.Columns.Add(new ResultColumn { Name = "Level", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "Code", DataType = DataType.Int });
         result.Columns.Add(new ResultColumn { Name = "Message", DataType = DataType.VarChar });
+
+        if (_getWarnings != null)
+        {
+            foreach (var (level, code, message) in _getWarnings())
+            {
+                result.Rows.Add([
+                    DataValue.FromVarChar(level),
+                    DataValue.FromInt(code),
+                    DataValue.FromVarChar(message)
+                ]);
+            }
+        }
+
         return ExecutionResult.Query(result);
     }
 
     private ExecutionResult ExecuteShowErrors()
     {
-        // Return empty result - we don't track errors in the same way MySQL does
         var result = new ResultSet();
         result.Columns.Add(new ResultColumn { Name = "Level", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "Code", DataType = DataType.Int });
         result.Columns.Add(new ResultColumn { Name = "Message", DataType = DataType.VarChar });
+
+        if (_getWarnings != null)
+        {
+            foreach (var (level, code, message) in _getWarnings())
+            {
+                if (level == "Error")
+                {
+                    result.Rows.Add([
+                        DataValue.FromVarChar(level),
+                        DataValue.FromInt(code),
+                        DataValue.FromVarChar(message)
+                    ]);
+                }
+            }
+        }
+
         return ExecutionResult.Query(result);
     }
 
@@ -4834,53 +5038,74 @@ public sealed class Executor
 
     private ExecutionResult ExecuteExplain(ExplainStatement stmt)
     {
-        // Build the execution plan result
+        if (stmt.Format == ExplainFormat.Json)
+        {
+            return ExecuteExplainJson(stmt);
+        }
+
+        // Build the MySQL-standard execution plan result
         var result = new ResultSet();
         result.Columns.Add(new ResultColumn { Name = "id", DataType = DataType.Int });
         result.Columns.Add(new ResultColumn { Name = "select_type", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "table", DataType = DataType.VarChar });
+        result.Columns.Add(new ResultColumn { Name = "partitions", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "type", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "possible_keys", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "key", DataType = DataType.VarChar });
-        result.Columns.Add(new ResultColumn { Name = "key_len", DataType = DataType.Int });
+        result.Columns.Add(new ResultColumn { Name = "key_len", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "ref", DataType = DataType.VarChar });
         result.Columns.Add(new ResultColumn { Name = "rows", DataType = DataType.BigInt });
+        result.Columns.Add(new ResultColumn { Name = "filtered", DataType = DataType.Double, Decimals = 2 });
         result.Columns.Add(new ResultColumn { Name = "Extra", DataType = DataType.VarChar });
 
         if (stmt.Statement is SelectStatement selectStmt)
         {
-            // Get table name
             var tableName = GetTableNameFromTableRef(selectStmt.From);
             var dbName = GetDatabaseFromTableRef(selectStmt.From) ?? _currentDatabase;
-            
-            // Determine access type and index usage
-            string accessType = "ALL";  // Full table scan by default
+
+            string accessType = "ALL";
             string? possibleKeys = null;
             string? usedKey = null;
+            string? keyLen = null;
+            string? refCol = null;
             long estimatedRows = 0;
+            double filtered = 100.00;
             var extra = new List<string>();
 
             var schema = _catalog.GetTableSchema(dbName, tableName ?? "");
             if (schema != null)
             {
+                // Estimate row count
+                estimatedRows = Math.Max(1, schema.Columns.Count > 0 ? 1 : 0);
+
                 // Check for primary key usage in WHERE
                 var pkCol = schema.Columns.FirstOrDefault(c => c.IsPrimaryKey);
                 if (pkCol != null && selectStmt.Where != null)
                 {
                     var referencedColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     CollectReferencedColumns(selectStmt.Where, referencedColumns);
-                    
+
                     if (referencedColumns.Contains(pkCol.Name))
                     {
                         possibleKeys = "PRIMARY";
                         usedKey = "PRIMARY";
-                        accessType = "ref";
+                        accessType = "const";
+                        keyLen = "8";
+                        refCol = "const";
+                        estimatedRows = 1;
+                        filtered = 100.0;
                     }
+                    // else: secondary index analysis could be added in the future
                 }
 
                 if (selectStmt.Where != null && usedKey == null)
                 {
                     extra.Add("Using where");
+                    filtered = 33.33;
+                }
+                if (selectStmt.Limit != null)
+                {
+                    // If there's a LIMIT, adjust
                 }
                 if (selectStmt.OrderBy.Count > 0)
                 {
@@ -4890,38 +5115,102 @@ public sealed class Executor
                 {
                     extra.Add("Using temporary");
                 }
+                // Check for covering index
+                if (usedKey != null && selectStmt.Columns.All(s => s.Expression is ColumnReference))
+                {
+                    extra.Add("Using index");
+                }
             }
 
             result.Rows.Add([
-                DataValue.FromInt(1),  // id
-                DataValue.FromVarChar("SIMPLE"),  // select_type
-                DataValue.FromVarChar(tableName ?? ""),  // table
-                DataValue.FromVarChar(accessType),  // type
-                possibleKeys != null ? DataValue.FromVarChar(possibleKeys) : DataValue.Null,  // possible_keys
-                usedKey != null ? DataValue.FromVarChar(usedKey) : DataValue.Null,  // key
-                usedKey != null ? DataValue.FromInt(8) : DataValue.Null,  // key_len
-                DataValue.Null,  // ref
-                DataValue.FromBigInt(estimatedRows),  // rows
-                extra.Count > 0 ? DataValue.FromVarChar(string.Join("; ", extra)) : DataValue.Null  // Extra
+                DataValue.FromInt(1),
+                DataValue.FromVarChar("SIMPLE"),
+                DataValue.FromVarChar(tableName ?? ""),
+                DataValue.Null, // partitions
+                DataValue.FromVarChar(accessType),
+                possibleKeys != null ? DataValue.FromVarChar(possibleKeys) : DataValue.Null,
+                usedKey != null ? DataValue.FromVarChar(usedKey) : DataValue.Null,
+                keyLen != null ? DataValue.FromVarChar(keyLen) : DataValue.Null,
+                refCol != null ? DataValue.FromVarChar(refCol) : DataValue.Null,
+                DataValue.FromBigInt(estimatedRows),
+                DataValue.FromDouble(filtered),
+                extra.Count > 0 ? DataValue.FromVarChar(string.Join("; ", extra)) : DataValue.Null
             ]);
         }
         else
         {
-            // For non-SELECT statements, return a simplified output
             result.Rows.Add([
                 DataValue.FromInt(1),
                 DataValue.FromVarChar(stmt.Statement.GetType().Name.Replace("Statement", "").ToUpperInvariant()),
-                DataValue.Null,
-                DataValue.Null,
-                DataValue.Null,
-                DataValue.Null,
-                DataValue.Null,
-                DataValue.Null,
-                DataValue.Null,
-                DataValue.Null
+                DataValue.Null, DataValue.Null,
+                DataValue.Null, DataValue.Null,
+                DataValue.Null, DataValue.Null,
+                DataValue.Null, DataValue.Null,
+                DataValue.Null, DataValue.Null
             ]);
         }
 
+        return ExecutionResult.Query(result);
+    }
+
+    /// <summary>
+    /// Returns EXPLAIN output in JSON format compatible with MySQL 8.
+    /// </summary>
+    private ExecutionResult ExecuteExplainJson(ExplainStatement stmt)
+    {
+        var result = new ResultSet();
+        result.Columns.Add(new ResultColumn { Name = "EXPLAIN", DataType = DataType.VarChar });
+
+        string tableName = "";
+        string accessType = "ALL";
+        long estimatedRows = 1;
+
+        if (stmt.Statement is SelectStatement selectStmt)
+        {
+            tableName = GetTableNameFromTableRef(selectStmt.From) ?? "";
+            var dbName = GetDatabaseFromTableRef(selectStmt.From) ?? _currentDatabase;
+            var schema = _catalog.GetTableSchema(dbName, tableName);
+            if (schema != null)
+            {
+                var pkCol = schema.Columns.FirstOrDefault(c => c.IsPrimaryKey);
+                if (pkCol != null && selectStmt.Where != null)
+                {
+                    var refs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    CollectReferencedColumns(selectStmt.Where, refs);
+                    if (refs.Contains(pkCol.Name))
+                    {
+                        accessType = "const";
+                        estimatedRows = 1;
+                    }
+                }
+            }
+        }
+
+        var json = $$"""
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "1.00"
+    },
+    "table": {
+      "table_name": "{{tableName}}",
+      "access_type": "{{accessType}}",
+      "rows_examined_per_scan": {{estimatedRows}},
+      "rows_produced_per_join": {{estimatedRows}},
+      "filtered": "100.00",
+      "cost_info": {
+        "read_cost": "0.25",
+        "eval_cost": "0.10",
+        "prefix_cost": "0.35",
+        "data_read_per_join": "256"
+      },
+      "used_columns": []
+    }
+  }
+}
+""";
+        result.Rows.Add([DataValue.FromVarChar(json)]);
         return ExecutionResult.Query(result);
     }
 
@@ -5752,6 +6041,122 @@ public sealed class Executor
 
     #endregion
 
+    #region DO and HANDLER Statements
+
+    /// <summary>
+    /// Executes a DO statement - evaluates expressions but returns no result.
+    /// </summary>
+    private ExecutionResult ExecuteDo(DoStatement stmt)
+    {
+        foreach (var expr in stmt.Expressions)
+        {
+            var eval = BuildExpressionEvaluator(expr);
+            eval.Evaluate(null!); // evaluate for side effects
+        }
+        return ExecutionResult.Empty();
+    }
+
+    // Holds open handlers per session. Key = handler name, Value = (schema, all rows, current index)
+    [ThreadStatic]
+    private static Dictionary<string, (Storage.TableSchema Schema, List<Storage.Row> Rows, int Index)>? _openHandlers;
+
+    /// <summary>
+    /// Executes HANDLER table OPEN.
+    /// </summary>
+    private ExecutionResult ExecuteHandlerOpen(HandlerOpenStatement stmt)
+    {
+        _openHandlers ??= new(StringComparer.OrdinalIgnoreCase);
+        var dbName = _currentDatabase;
+        var schema = _catalog.GetTableSchema(dbName, stmt.TableName)
+            ?? throw new CyscaleException($"Table '{stmt.TableName}' doesn't exist", ErrorCode.TableNotFound);
+
+        // Read all rows from the table using table scan
+        var table = _catalog.GetTable(dbName, stmt.TableName)
+            ?? throw new CyscaleException($"Table '{stmt.TableName}' doesn't exist", ErrorCode.TableNotFound);
+        var rows = new List<Storage.Row>();
+        var scanOp = new Operators.TableScanOperator(table);
+        scanOp.Open();
+        try
+        {
+            Storage.Row? row;
+            while ((row = scanOp.Next()) != null)
+            {
+                rows.Add(row);
+            }
+        }
+        finally
+        {
+            scanOp.Close();
+            scanOp.Dispose();
+        }
+
+        var handlerName = stmt.Alias ?? stmt.TableName;
+        _openHandlers[handlerName] = (schema, rows, 0);
+
+        return ExecutionResult.Empty();
+    }
+
+    /// <summary>
+    /// Executes HANDLER table READ.
+    /// </summary>
+    private ExecutionResult ExecuteHandlerRead(HandlerReadStatement stmt)
+    {
+        _openHandlers ??= new(StringComparer.OrdinalIgnoreCase);
+        if (!_openHandlers.TryGetValue(stmt.HandlerName, out var handler))
+            throw new CyscaleException($"Unknown HANDLER: '{stmt.HandlerName}'");
+
+        var (schema, rows, currentIndex) = handler;
+        var result = new ResultSet();
+        foreach (var col in schema.Columns)
+        {
+            result.Columns.Add(new ResultColumn { Name = col.Name, DataType = col.DataType });
+        }
+
+        int limit = stmt.Limit ?? 1;
+
+        // Determine starting position based on read type
+        int startIdx = stmt.ReadType switch
+        {
+            "FIRST" => 0,
+            "LAST" => rows.Count - 1,
+            "PREV" => currentIndex - 1,
+            _ => currentIndex // NEXT
+        };
+
+        int added = 0;
+        int newIndex = startIdx;
+        bool forward = stmt.ReadType is "FIRST" or "NEXT";
+
+        for (int i = startIdx; i >= 0 && i < rows.Count && added < limit; i += forward ? 1 : -1)
+        {
+            var row = rows[i];
+            if (stmt.Where != null)
+            {
+                var whereEval = BuildExpressionEvaluator(stmt.Where);
+                var val = whereEval.Evaluate(row);
+                if (val.Type != DataType.Boolean || !val.AsBoolean()) continue;
+            }
+            result.Rows.Add(row.Values);
+            added++;
+            newIndex = i + (forward ? 1 : -1);
+        }
+
+        _openHandlers[stmt.HandlerName] = (schema, rows, Math.Max(0, Math.Min(rows.Count, newIndex)));
+        return ExecutionResult.Query(result);
+    }
+
+    /// <summary>
+    /// Executes HANDLER table CLOSE.
+    /// </summary>
+    private ExecutionResult ExecuteHandlerClose(HandlerCloseStatement stmt)
+    {
+        _openHandlers ??= new(StringComparer.OrdinalIgnoreCase);
+        _openHandlers.Remove(stmt.HandlerName);
+        return ExecutionResult.Empty();
+    }
+
+    #endregion
+
     #region Expression Building
 
     /// <summary>
@@ -5829,8 +6234,8 @@ public sealed class Executor
             // ── System info functions ──
             "DATABASE" or "SCHEMA" => new ConstantEvaluator(DataValue.FromVarChar(_currentDatabase)),
             "VERSION" => new ConstantEvaluator(DataValue.FromVarChar(Constants.ServerVersion)),
-            "USER" or "CURRENT_USER" or "SESSION_USER" or "SYSTEM_USER" => new ConstantEvaluator(DataValue.FromVarChar("root@localhost")),
-            "CONNECTION_ID" => new ConstantEvaluator(DataValue.FromBigInt(1)),
+            "USER" or "CURRENT_USER" or "SESSION_USER" or "SYSTEM_USER" => new ConstantEvaluator(DataValue.FromVarChar($"{_currentUser}@{_currentHost}")),
+            "CONNECTION_ID" => new ConstantEvaluator(DataValue.FromBigInt(_connectionId)),
             "LAST_INSERT_ID" => new ConstantEvaluator(DataValue.FromBigInt(_lastInsertId)),
             "ROW_COUNT" => new ConstantEvaluator(DataValue.FromBigInt(0)),
             "FOUND_ROWS" => new ConstantEvaluator(DataValue.FromBigInt(0)),

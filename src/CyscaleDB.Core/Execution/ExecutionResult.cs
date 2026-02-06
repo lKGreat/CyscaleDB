@@ -210,4 +210,46 @@ public class ResultColumn
     /// The database name (optional).
     /// </summary>
     public string? DatabaseName { get; set; }
+
+    /// <summary>
+    /// MySQL column flags (NOT_NULL, PRI_KEY, AUTO_INCREMENT, etc.).
+    /// </summary>
+    public ushort Flags { get; set; }
+
+    /// <summary>
+    /// Decimal places for numeric columns.
+    /// </summary>
+    public byte Decimals { get; set; }
+
+    /// <summary>
+    /// The original column name (before alias).
+    /// </summary>
+    public string? OriginalName { get; set; }
+
+    /// <summary>
+    /// The original table name (before alias).
+    /// </summary>
+    public string? OriginalTableName { get; set; }
+}
+
+/// <summary>
+/// MySQL column flag constants (compatible with MySQL protocol).
+/// </summary>
+public static class ColumnFlags
+{
+    public const ushort NotNull = 0x0001;
+    public const ushort PrimaryKey = 0x0002;
+    public const ushort UniqueKey = 0x0004;
+    public const ushort MultipleKey = 0x0008;
+    public const ushort Blob = 0x0010;
+    public const ushort Unsigned = 0x0020;
+    public const ushort ZeroFill = 0x0040;
+    public const ushort Binary = 0x0080;
+    public const ushort Enum = 0x0100;
+    public const ushort AutoIncrement = 0x0200;
+    public const ushort Timestamp = 0x0400;
+    public const ushort Set = 0x0800;
+    public const ushort NoDefaultValue = 0x1000;
+    public const ushort OnUpdateNow = 0x2000;
+    public const ushort Numeric = 0x8000;
 }

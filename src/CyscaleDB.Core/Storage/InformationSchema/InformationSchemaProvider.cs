@@ -1,5 +1,6 @@
 using CyscaleDB.Core.Common;
 using CyscaleDB.Core.Execution;
+using CyscaleDB.Core.Transactions;
 
 namespace CyscaleDB.Core.Storage.InformationSchema;
 
@@ -10,6 +11,7 @@ namespace CyscaleDB.Core.Storage.InformationSchema;
 public sealed class InformationSchemaProvider
 {
     private readonly Catalog _catalog;
+    private readonly TransactionManager? _transactionManager;
 
     /// <summary>
     /// The name of the information_schema database.
@@ -127,9 +129,10 @@ public sealed class InformationSchemaProvider
         "INNODB_TRX"
     ];
 
-    public InformationSchemaProvider(Catalog catalog)
+    public InformationSchemaProvider(Catalog catalog, TransactionManager? transactionManager = null)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
+        _transactionManager = transactionManager;
     }
 
     /// <summary>
@@ -2888,8 +2891,64 @@ public sealed class InformationSchemaProvider
 
     private ResultSet GetInnodbTrx()
     {
-        // Return empty result - transaction info would require access to transaction manager
-        return ResultSet.FromSchema(CreateInnodbTrxSchema());
+        var result = ResultSet.FromSchema(CreateInnodbTrxSchema());
+
+        if (_transactionManager != null)
+        {
+            var activeIds = _transactionManager.GetActiveTransactionIds();
+            foreach (var txnId in activeIds)
+            {
+                var txn = _transactionManager.GetTransaction(txnId);
+                if (txn == null) continue;
+
+                var state = txn.State switch
+                {
+                    TransactionState.Active => "RUNNING",
+                    TransactionState.Committed => "COMMITTED",
+                    TransactionState.Aborted => "ROLLED BACK",
+                    _ => "RUNNING"
+                };
+
+                var isoLevel = txn.IsolationLevel switch
+                {
+                    Transactions.IsolationLevel.ReadUncommitted => "READ UNCOMMITTED",
+                    Transactions.IsolationLevel.ReadCommitted => "READ COMMITTED",
+                    Transactions.IsolationLevel.RepeatableRead => "REPEATABLE READ",
+                    Transactions.IsolationLevel.Serializable => "SERIALIZABLE",
+                    _ => "REPEATABLE READ"
+                };
+
+                result.Rows.Add([
+                    DataValue.FromVarChar(txnId.ToString()),           // TRX_ID
+                    DataValue.FromVarChar(state),                       // TRX_STATE
+                    DataValue.FromVarChar(txn.StartTime.ToString("yyyy-MM-dd HH:mm:ss")), // TRX_STARTED
+                    DataValue.Null,                                     // TRX_REQUESTED_LOCK_ID
+                    DataValue.Null,                                     // TRX_WAIT_STARTED
+                    DataValue.Null,                                     // TRX_WEIGHT
+                    DataValue.FromVarChar(""),                          // TRX_MYSQL_THREAD_ID
+                    DataValue.FromVarChar(""),                          // TRX_QUERY
+                    DataValue.Null,                                     // TRX_OPERATION_STATE
+                    DataValue.FromBigInt(0),                            // TRX_TABLES_IN_USE
+                    DataValue.FromBigInt(0),                            // TRX_TABLES_LOCKED
+                    DataValue.FromBigInt(0),                            // TRX_LOCK_STRUCTS
+                    DataValue.FromBigInt(0),                            // TRX_LOCK_MEMORY_BYTES
+                    DataValue.FromBigInt(0),                            // TRX_ROWS_LOCKED
+                    DataValue.FromBigInt(0),                            // TRX_ROWS_MODIFIED
+                    DataValue.FromBigInt(0),                            // TRX_CONCURRENCY_TICKETS
+                    DataValue.FromVarChar(isoLevel),                    // TRX_ISOLATION_LEVEL
+                    DataValue.FromInt(1),                               // TRX_UNIQUE_CHECKS
+                    DataValue.FromInt(1),                               // TRX_FOREIGN_KEY_CHECKS
+                    DataValue.Null,                                     // TRX_LAST_FOREIGN_KEY_ERROR
+                    DataValue.FromInt(0),                               // TRX_ADAPTIVE_HASH_LATCHED
+                    DataValue.FromBigInt(0),                            // TRX_ADAPTIVE_HASH_TIMEOUT
+                    DataValue.FromInt(txn.IsReadOnly ? 1 : 0),         // TRX_IS_READ_ONLY
+                    DataValue.FromInt(0),                               // TRX_AUTOCOMMIT_NON_LOCKING
+                    DataValue.FromBigInt(0)                             // TRX_SCHEDULE_WEIGHT
+                ]);
+            }
+        }
+
+        return result;
     }
 
     #endregion

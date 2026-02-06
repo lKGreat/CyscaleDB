@@ -149,6 +149,8 @@ public sealed class Parser
             TokenType.RESET => ParseResetStatement(),
             TokenType.BACKUP => ParseBackupRestoreStatement(true),
             TokenType.RESTORE => ParseBackupRestoreStatement(false),
+            TokenType.DO => ParseDoStatement(),
+            TokenType.HANDLER => ParseHandlerStatement(),
             _ => throw Error($"Unexpected token at start of statement: {_currentToken.Value}")
         };
     }
@@ -1062,6 +1064,77 @@ public sealed class Parser
         }
         stmt.Path = ExpectStringLiteral();
         return stmt;
+    }
+
+    /// <summary>
+    /// Parses a DO statement: DO expr [, expr] ...
+    /// </summary>
+    private DoStatement ParseDoStatement()
+    {
+        Expect(TokenType.DO);
+        var stmt = new DoStatement();
+        do
+        {
+            stmt.Expressions.Add(ParseExpression());
+        } while (Match(TokenType.Comma));
+        return stmt;
+    }
+
+    /// <summary>
+    /// Parses HANDLER table OPEN/READ/CLOSE statements.
+    /// </summary>
+    private Statement ParseHandlerStatement()
+    {
+        Expect(TokenType.HANDLER);
+        var name = ExpectIdentifier();
+
+        if (MatchIdentifier("OPEN"))
+        {
+            var stmt = new HandlerOpenStatement { TableName = name };
+            if (Check(TokenType.AS))
+            {
+                Advance();
+                stmt.Alias = ExpectIdentifier();
+            }
+            else if (!Check(TokenType.EOF) && !Check(TokenType.Semicolon))
+            {
+                // Optional alias without AS
+                stmt.Alias = ExpectIdentifier();
+            }
+            return stmt;
+        }
+
+        if (MatchIdentifier("READ"))
+        {
+            var stmt = new HandlerReadStatement { HandlerName = name };
+            if (MatchIdentifier("FIRST"))
+                stmt.ReadType = "FIRST";
+            else if (MatchIdentifier("NEXT"))
+                stmt.ReadType = "NEXT";
+            else if (MatchIdentifier("PREV"))
+                stmt.ReadType = "PREV";
+            else if (MatchIdentifier("LAST"))
+                stmt.ReadType = "LAST";
+            else
+                stmt.ReadType = "NEXT"; // default
+
+            if (Match(TokenType.WHERE))
+            {
+                stmt.Where = ParseExpression();
+            }
+            if (Match(TokenType.LIMIT))
+            {
+                stmt.Limit = (int)ExpectInteger();
+            }
+            return stmt;
+        }
+
+        if (Match(TokenType.CLOSE))
+        {
+            return new HandlerCloseStatement { HandlerName = name };
+        }
+
+        throw Error($"Expected OPEN, READ, or CLOSE after HANDLER {name}");
     }
 
     #endregion
@@ -2487,7 +2560,7 @@ public sealed class Parser
             {
                 if (Check(TokenType.COLUMNS)) Advance();
                 Expect(TokenType.FROM);
-                var stmt = new ShowColumnsStatement();
+                var stmt = new ShowColumnsStatement { IsFull = true };
                 stmt.TableName = ExpectIdentifier();
                 if (Match(TokenType.Dot))
                 {
@@ -2497,6 +2570,10 @@ public sealed class Parser
                 if (Match(TokenType.FROM))
                 {
                     stmt.DatabaseName = ExpectIdentifier();
+                }
+                if (Match(TokenType.LIKE))
+                {
+                    stmt.LikePattern = ExpectString();
                 }
                 return stmt;
             }
@@ -2543,6 +2620,10 @@ public sealed class Parser
             {
                 stmt.LikePattern = ExpectString();
             }
+            else if (Match(TokenType.WHERE))
+            {
+                stmt.Where = ParseExpression();
+            }
             return stmt;
         }
         else if (Check(TokenType.STATUS))
@@ -2552,6 +2633,10 @@ public sealed class Parser
             if (Match(TokenType.LIKE))
             {
                 stmt.LikePattern = ExpectString();
+            }
+            else if (Match(TokenType.WHERE))
+            {
+                stmt.Where = ParseExpression();
             }
             return stmt;
         }
@@ -2937,12 +3022,33 @@ public sealed class Parser
             return stmt;
         }
 
-        // Check for SET CHARSET
+        // Check for SET CHARSET or SET CHARACTER SET
         if (Check(TokenType.CHARSET))
         {
             Advance();
             stmt.IsSetNames = true;
             stmt.Charset = ExpectIdentifierOrKeyword();
+            return stmt;
+        }
+
+        // Check for SET CHARACTER SET charset_name
+        if (Check(TokenType.CHARACTER))
+        {
+            Advance();
+            if (Match(TokenType.SET))
+            {
+                stmt.IsSetNames = true;
+                stmt.Charset = ExpectIdentifierOrKeyword();
+                return stmt;
+            }
+            // If it's just "SET CHARACTER" without "SET" keyword, roll back
+            // This shouldn't happen in valid SQL, handle as variable name
+            stmt.Variables.Add(new SetVariable
+            {
+                Scope = scope,
+                Name = "character",
+                Value = ParseExpression()
+            });
             return stmt;
         }
 

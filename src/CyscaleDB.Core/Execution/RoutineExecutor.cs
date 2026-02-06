@@ -106,7 +106,7 @@ internal sealed class CursorState
 /// </summary>
 public sealed class SignalException : CyscaleException
 {
-    public string SqlState { get; }
+    public new string SqlState { get; }
     public string? MessageText { get; }
     public int? MysqlErrno { get; }
 
