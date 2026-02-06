@@ -802,6 +802,79 @@ DROP INDEX idx_name ON users;
 | 降序索引 | ✅ |
 | 函数索引 (Functional Index) | ✅ |
 
+### 查询执行引擎增强
+
+| 功能 | 状态 |
+|------|------|
+| 外部排序 (ExternalSortOperator) | ✅ |
+| sort_buffer_size 管理 + 磁盘溢写 | ✅ |
+| K-Way Merge Sort | ✅ |
+| Hash Join (HashJoinOperator) | ✅ |
+| GROUP BY WITH ROLLUP | ✅ |
+| 可溢写哈希聚合 (SpillableHashAggOperator) | ✅ |
+| 可溢写去重 (SpillableDistinctOperator) | ✅ |
+| 内部临时表引擎 (TempTableEngine) | ✅ |
+| 磁盘溢写文件 (SpillFile) | ✅ |
+
+### SQL Server TDS 协议
+
+| 功能 | 状态 |
+|------|------|
+| TDS 7.4 协议栈 (PreLogin/LOGIN7/Token Stream) | ✅ |
+| TDS 包读写 (TdsPacketReader/TdsPacketWriter) | ✅ |
+| SQL Batch 命令处理 | ✅ |
+| T-SQL 方言转换 (TsqlTranslator) | ✅ |
+| sys.* 系统视图 (databases/tables/columns/objects/types/schemas/indexes) | ✅ |
+| sp_* 系统存储过程 (sp_databases/sp_tables/sp_columns/sp_helpdb/sp_who) | ✅ |
+| SERVERPROPERTY() 函数 | ✅ |
+| @@VERSION/@@SERVERNAME/@@SPID 系统变量 | ✅ |
+| SSMS Object Explorer 兼容 | ✅ |
+| SQL Server 格式备份还原 (BACKUP/RESTORE DATABASE) | ✅ |
+
+### 存储引擎增强 (InnoDB 兼容)
+
+| 功能 | 状态 |
+|------|------|
+| 自适应哈希索引 (Adaptive Hash Index) | ✅ |
+| 变更缓冲 (Change Buffer) | ✅ |
+| 表空间加密 (AES-256-CBC) | ✅ |
+| 主密钥轮换 (Master Key Rotation) | ✅ |
+
+### 查询优化器
+
+| 功能 | 状态 |
+|------|------|
+| Cost-based Optimizer (CBO) | ✅ |
+| 统计信息管理 (StatisticsManager) | ✅ |
+| 表扫描 / 索引扫描代价估算 | ✅ |
+| JOIN 顺序优化 | ✅ |
+| JOIN 算法选择 (NL vs Hash) | ✅ |
+| 谓词选择性估算 | ✅ |
+
+### 千亿级大数据量支持
+
+| 功能 | 状态 |
+|------|------|
+| 全局内存预算管理器 (MemoryBudgetManager) | ✅ |
+| 并行扫描 (ParallelScanOperator) | ✅ |
+| 并行聚合 (ParallelAggregateOperator) | ✅ |
+| 异步页面管理器 (AsyncPageManager) | ✅ |
+| 大块预读 (Read-Ahead) | ✅ |
+| Bloom Filter + 运行时下推 | ✅ |
+| Zone Map (MIN/MAX 页面索引) | ✅ |
+
+### 文件组与多磁盘分布式存储
+
+| 功能 | 状态 |
+|------|------|
+| 文件组数据模型 (FileGroupInfo/DataFileInfo) | ✅ |
+| 多文件页面管理器 (MultiFilePageManager) | ✅ |
+| IPageManager 接口 (单文件/多文件统一) | ✅ |
+| 页面分配策略 (ProportionalFill/RoundRobin/Striped) | ✅ |
+| Extent 分配器 (8 页连续分配) | ✅ |
+| 文件组级并行 I/O 调度器 (FileGroupIoScheduler) | ✅ |
+| 在线添加/移除数据文件 | ✅ |
+
 ---
 
 > 此文档记录了 CyscaleDB 当前支持的所有功能。在添加新功能时请同步更新此文档。

@@ -16,58 +16,58 @@ todos:
     status: completed
   - id: tds-core
     content: "Phase 2.1: TDS 核心协议栈 - TdsServer/TdsPacketReader/TdsPacketWriter/TdsPreLogin/TdsLogin7/TdsTokenStream/TdsSession，监听 1433 端口"
-    status: in_progress
+    status: completed
   - id: tsql-translator
     content: "Phase 2.2: T-SQL 方言转换层 - TsqlTranslator 将 T-SQL 语法转换为 CyscaleDB AST (TOP->LIMIT, []->反引号, GETDATE->NOW 等)"
-    status: pending
+    status: completed
   - id: ssms-metadata
     content: "Phase 2.3: SSMS 兼容元数据 - sys.databases/tables/columns/objects/types/schemas 视图 + sp_databases/sp_tables/sp_who 系统存储过程"
-    status: pending
+    status: completed
   - id: adaptive-hash
     content: "Phase 3.1: Adaptive Hash Index - 热点 B-Tree 页自动构建内存哈希索引"
-    status: pending
+    status: completed
   - id: change-buffer
     content: "Phase 3.2: Change Buffer - 非唯一二级索引变更缓冲，减少随机 I/O"
-    status: pending
+    status: completed
   - id: tablespace-encryption
     content: "Phase 3.3: 表空间加密 - AES-256 透明 Data-at-Rest 加密"
-    status: pending
+    status: completed
   - id: cost-optimizer
     content: "Phase 4.1: Cost-based Optimizer + StatisticsManager - ANALYZE TABLE/直方图/基数估算/JOIN 顺序优化"
-    status: pending
+    status: completed
   - id: sqlserver-backup
     content: "Phase 4.2: SQL Server 格式备份还原 - BACKUP DATABASE TO DISK / RESTORE DATABASE FROM DISK，支持 SSMS 图形化操作"
-    status: pending
+    status: completed
   - id: tds-advanced
     content: "Phase 4.3: TDS 高级特性 - RPC 请求(sp_executesql)、Bulk Insert、MARS 多活动结果集、TDS 8.0 强制 TLS"
-    status: pending
+    status: completed
   - id: memory-budget
     content: "Phase 5.1: 全局内存预算管理器 (MemoryBudgetManager) - 每个算子分配内存配额，超限自动触发磁盘溢写，避免千亿数据量 OOM"
-    status: pending
+    status: completed
   - id: streaming-operators
     content: "Phase 5.2: 全链路流式算子改造 - TableScan/Filter/Project/Limit 零物化流式处理；GroupBy/OrderBy/Distinct/Join 支持 spill-to-disk；结果集流式发送"
-    status: pending
+    status: completed
   - id: parallel-scan
     content: "Phase 5.3: 并行扫描与并行查询 - 多线程 TableScan/IndexScan 分片扫描、并行聚合(Partition-wise aggregation)、并行排序(Parallel external merge sort)"
-    status: pending
+    status: completed
   - id: large-scale-io
     content: "Phase 5.4: 大规模 I/O 优化 - 异步 I/O (io_uring/IOCP)、大页预读(Aggressive read-ahead)、Buffer Pool 动态扩缩容、Direct I/O 绕过 OS 缓存"
-    status: pending
+    status: completed
   - id: bloom-filter
     content: "Phase 5.5: Bloom Filter 与执行优化 - Join 时 build 侧构建 Bloom Filter 提前过滤 probe 侧；分区裁剪优化；MIN/MAX 索引跳跃扫描"
-    status: pending
+    status: completed
   - id: filegroup-core
     content: "Phase 6.1: 文件组核心 (FileGroup/DataFile/MultiFilePageManager) - 一个逻辑库支持多个文件组，每个文件组包含多个数据文件分布在不同磁盘，按比例填充分配页面"
-    status: pending
+    status: completed
   - id: filegroup-table-mapping
     content: "Phase 6.2: 表/索引到文件组映射 - CREATE TABLE ... FILEGROUP='fg1', CREATE INDEX ... FILEGROUP='fg2', 分区表的分区可映射到不同文件组"
-    status: pending
+    status: completed
   - id: filegroup-parallel-io
     content: "Phase 6.3: 文件组并行 I/O - 跨文件并行读写、Striped I/O、文件级别的独立 Buffer Pool 段、每个磁盘独立 I/O 线程"
-    status: pending
+    status: completed
   - id: filegroup-management
     content: "Phase 6.4: 文件组管理命令 - ALTER DATABASE ADD FILEGROUP/FILE, 在线扩容/缩容, 文件自动增长, DBCC SHRINKFILE, 文件组只读设置"
-    status: pending
+    status: completed
 isProject: false
 ---
 

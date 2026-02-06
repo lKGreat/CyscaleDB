@@ -178,6 +178,18 @@ CyscaleDB 是一个使用纯 C# 实现的 MySQL 兼容关系型数据库系统�
 | 2026-02-06 | **Phase 5**: 500+ 系统变量、20+ SHOW 命令 (PROCESSLIST/GRANTS/ENGINES/PLUGINS/TRIGGERS 等) |
 | 2026-02-06 | **Phase 6**: FLUSH 全类型/RESET/KILL QUERY/KILL CONNECTION |
 | 2026-02-06 | **Phase 7**: mysqldump 兼容备份格式 |
+| 2026-02-06 | **Phase 18**: 文件组与多磁盘分布式存储 (FileGroup/MultiFilePageManager/ExtentAllocator/FileGroupIoScheduler) |
+| 2026-02-06 | **Phase 17**: Bloom Filter 与执行层优化 (BloomFilter/ZoneMap/BloomFilterPushdown) |
+| 2026-02-06 | **Phase 16**: 大规模 I/O 优化 (AsyncPageManager/ReadAhead) |
+| 2026-02-06 | **Phase 15**: 并行扫描与并行查询 (ParallelScanOperator/ParallelAggregateOperator) |
+| 2026-02-06 | **Phase 14**: 全链路流式算子改造 (SpillableHashAggOperator/SpillableDistinctOperator) |
+| 2026-02-06 | **Phase 13**: 全局内存预算管理器 (MemoryBudgetManager) |
+| 2026-02-06 | **Phase 12**: SQL Server 格式备份还原 (BackupRestore) + Cost-based Optimizer (CBO/StatisticsManager) |
+| 2026-02-06 | **Phase 11.5**: TDS 协议层 + SSMS 兼容 (TdsServer/TdsSession/TdsPacketReader/TdsPacketWriter/TsqlTranslator/SysSchemaViews/SystemProcedures) |
+| 2026-02-06 | **Phase 11.4**: 存储引擎增强 (AdaptiveHashIndex/ChangeBuffer/TablespaceEncryption) |
+| 2026-02-06 | **Phase 11.3**: 临时表引擎 (TempTableEngine) + GROUP BY WITH ROLLUP |
+| 2026-02-06 | **Phase 11.2**: Hash Join 算子 (HashJoinOperator) |
+| 2026-02-06 | **Phase 11.1**: 外部排序算子 (ExternalSortOperator) + SpillFile 磁盘溢写基础设施 |
 | 2026-02-06 | **Phase 8**: Binlog/GTID/ReplicationManager |
 | 2026-02-06 | **Phase 9**: performance_schema (100+ 虚拟表) + sys 库 (40+ 诊断视图) |
 | 2026-02-06 | **Phase 10**: 分区表 (RANGE/LIST/HASH/KEY + 分区裁剪) |

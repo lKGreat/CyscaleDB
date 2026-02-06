@@ -321,6 +321,77 @@ src/CyscaleDB.Core/
 - **BinlogManager** / **GtidManager** 被 `Executor` 在 DML 操作后调用记录变更
 - **UserManager** 在连接认证和 `GRANT`/`REVOKE` 时被 `Executor` 调用
 
+## InnoDB 引擎增强 + SQL Server TDS 协议 + 大数据量支持
+
+### 新增目录结构
+
+```
+src/CyscaleDB.Core/
+├── Common/
+│   └── MemoryBudgetManager.cs          # 全局内存预算管理 (防止 OOM)
+├── Execution/
+│   ├── SpillFile.cs                    # 磁盘溢写文件基础设施
+│   ├── Operators/
+│   │   ├── ExternalSortOperator.cs     # 外部排序 (sort_buffer + k-way merge)
+│   │   ├── HashJoinOperator.cs         # 哈希连接 (Build/Probe)
+│   │   ├── SpillableHashAggOperator.cs # 可溢写哈希聚合
+│   │   ├── SpillableDistinctOperator.cs # 可溢写去重
+│   │   ├── ParallelScanOperator.cs     # 并行表扫描
+│   │   └── ParallelAggregateOperator.cs # 并行聚合 (MapReduce)
+│   └── Optimizer/
+│       ├── CostBasedOptimizer.cs       # 基于代价的查询优化器
+│       ├── StatisticsManager.cs        # 表/列统计信息
+│       └── BloomFilterPushdown.cs      # Bloom Filter 运行时下推
+├── Protocol/
+│   └── Tds/                            # SQL Server TDS 协议层
+│       ├── TdsServer.cs               # TDS 协议服务器 (端口 1433)
+│       ├── TdsSession.cs              # TDS 会话管理
+│       ├── TdsPacketReader.cs         # TDS 包读取
+│       ├── TdsPacketWriter.cs         # TDS 包写入
+│       ├── TdsTokenWriter.cs          # Token 流编解码
+│       ├── TdsConstants.cs            # TDS 协议常量
+│       └── TsqlTranslator.cs          # T-SQL → MySQL 方言转换
+├── SqlServer/
+│   ├── SysSchemaViews.cs              # sys.* 系统视图实现
+│   ├── SystemProcedures.cs            # sp_* 存储过程实现
+│   └── BackupRestore.cs              # SQL Server 格式备份还原
+└── Storage/
+    ├── AdaptiveHashIndex.cs           # 自适应哈希索引 (AHI)
+    ├── ChangeBuffer.cs                # 变更缓冲
+    ├── TempTableEngine.cs             # 临时表引擎 (内存→磁盘)
+    ├── AsyncPageManager.cs            # 异步 I/O 页面管理
+    ├── ZoneMap.cs                     # MIN/MAX 页面索引 (数据跳过)
+    ├── IPageManager.cs                # 页面管理器接口
+    ├── FileGroup.cs                   # 文件组/数据文件模型
+    ├── MultiFilePageManager.cs        # 多文件页面管理器
+    ├── ExtentAllocator.cs             # Extent (8页) 分配器
+    ├── FileGroupIoScheduler.cs        # 文件组级并行 I/O 调度
+    └── Encryption/
+        └── TablespaceEncryption.cs    # AES-256 表空间加密
+```
+
+### 架构概览
+
+```
+客户端连接
+├── MySQL Client → MySqlServer (Port 3306) → MySQL Protocol
+└── SSMS/DBeaver → TdsServer (Port 1433) → TDS Protocol → TsqlTranslator
+          ↓
+    共享执行引擎 (Executor)
+    ├── CostBasedOptimizer (代价估算 + JOIN 顺序优化)
+    ├── ExternalSortOperator (外部排序 + 磁盘溢写)
+    ├── HashJoinOperator (等值连接优化)
+    ├── ParallelScanOperator (多线程扫描)
+    └── BloomFilter (运行时过滤下推)
+          ↓
+    存储引擎层
+    ├── MultiFilePageManager (多磁盘文件组)
+    ├── AdaptiveHashIndex (热点加速)
+    ├── ChangeBuffer (写优化)
+    ├── ZoneMap (读优化 - 数据跳过)
+    └── TablespaceEncryption (数据加密)
+```
+
 ---
 
 > 此文档描述了 CyscaleDB 的系统架构。在进行架构变更时请同步更新此文档。
