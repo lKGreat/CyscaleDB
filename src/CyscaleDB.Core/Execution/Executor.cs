@@ -4705,29 +4705,221 @@ public sealed class Executor
     private IExpressionEvaluator BuildFunctionCall(FunctionCall func, TableSchema schema)
     {
         var funcName = func.FunctionName.ToUpperInvariant();
+        var args = func.Arguments;
+
+        IExpressionEvaluator Arg(int i) => BuildExpression(args[i], schema);
+        List<IExpressionEvaluator> AllArgs() => args.Select(a => BuildExpression(a, schema)).ToList();
+        List<IExpressionEvaluator> ArgsFrom(int start) => args.Skip(start).Select(a => BuildExpression(a, schema)).ToList();
 
         // Handle built-in functions
         return funcName switch
         {
-            "NOW" or "CURRENT_TIMESTAMP" => new ConstantEvaluator(DataValue.FromDateTime(DateTime.Now)),
+            // ── Date/Time constants ──
+            "NOW" or "CURRENT_TIMESTAMP" or "LOCALTIME" or "LOCALTIMESTAMP" => new ConstantEvaluator(DataValue.FromDateTime(DateTime.Now)),
+            "SYSDATE" => new ConstantEvaluator(DataValue.FromDateTime(DateTime.Now)),
             "CURDATE" or "CURRENT_DATE" => new ConstantEvaluator(DataValue.FromDate(DateOnly.FromDateTime(DateTime.Now))),
             "CURTIME" or "CURRENT_TIME" => new ConstantEvaluator(DataValue.FromTime(TimeOnly.FromDateTime(DateTime.Now))),
+            "UTC_DATE" => new ConstantEvaluator(DataValue.FromDate(DateOnly.FromDateTime(DateTime.UtcNow))),
+            "UTC_TIME" => new ConstantEvaluator(DataValue.FromTime(TimeOnly.FromDateTime(DateTime.UtcNow))),
+            "UTC_TIMESTAMP" => new ConstantEvaluator(DataValue.FromDateTime(DateTime.UtcNow)),
+
+            // ── System info functions ──
             "DATABASE" or "SCHEMA" => new ConstantEvaluator(DataValue.FromVarChar(_currentDatabase)),
             "VERSION" => new ConstantEvaluator(DataValue.FromVarChar(Constants.ServerVersion)),
-            "USER" or "CURRENT_USER" => new ConstantEvaluator(DataValue.FromVarChar("root@localhost")),
+            "USER" or "CURRENT_USER" or "SESSION_USER" or "SYSTEM_USER" => new ConstantEvaluator(DataValue.FromVarChar("root@localhost")),
             "CONNECTION_ID" => new ConstantEvaluator(DataValue.FromBigInt(1)),
             "LAST_INSERT_ID" => new ConstantEvaluator(DataValue.FromBigInt(_lastInsertId)),
             "ROW_COUNT" => new ConstantEvaluator(DataValue.FromBigInt(0)),
             "FOUND_ROWS" => new ConstantEvaluator(DataValue.FromBigInt(0)),
+            "CURRENT_ROLE" => new ConstantEvaluator(DataValue.FromVarChar("NONE")),
+            "ICU_VERSION" => new ConstantEvaluator(DataValue.FromVarChar("73.1")),
+
+            // ── Original string functions ──
             "UPPER" or "UCASE" => BuildStringFunction(func, schema, s => s.ToUpperInvariant()),
             "LOWER" or "LCASE" => BuildStringFunction(func, schema, s => s.ToLowerInvariant()),
-            "LENGTH" or "CHAR_LENGTH" or "CHARACTER_LENGTH" => BuildLengthFunction(func, schema),
+            "LENGTH" or "OCTET_LENGTH" => BuildLengthFunction(func, schema),
+            "CHAR_LENGTH" or "CHARACTER_LENGTH" => BuildLengthFunction(func, schema),
             "CONCAT" => BuildConcatFunction(func, schema),
+
+            // ── Control flow functions ──
             "IFNULL" or "COALESCE" => BuildIfNullFunction(func, schema),
             "ISNULL" => BuildIsNullFunction(func, schema),
             "IF" => BuildIfFunction(func, schema),
             "FIELD" => BuildFieldFunction(func, schema),
-            // JSON functions
+            "NULLIF" => new NullIfEvaluator(Arg(0), Arg(1)),
+
+            // ── Math functions ──
+            "ABS" => new MathUnaryEvaluator(Arg(0), Math.Abs),
+            "CEIL" or "CEILING" => new MathUnaryEvaluator(Arg(0), Math.Ceiling),
+            "FLOOR" => new MathUnaryEvaluator(Arg(0), Math.Floor),
+            "ROUND" => new RoundEvaluator(Arg(0), args.Count > 1 ? Arg(1) : null),
+            "TRUNCATE" => new TruncateEvaluator(Arg(0), Arg(1)),
+            "MOD" => new MathBinaryEvaluator(Arg(0), Arg(1), (a, b) => b == 0 ? double.NaN : a % b),
+            "SIGN" => new SignEvaluator(Arg(0)),
+            "POW" or "POWER" => new MathBinaryEvaluator(Arg(0), Arg(1), Math.Pow),
+            "SQRT" => new MathUnaryEvaluator(Arg(0), Math.Sqrt),
+            "EXP" => new MathUnaryEvaluator(Arg(0), Math.Exp),
+            "LOG" => args.Count >= 2
+                ? new MathBinaryEvaluator(Arg(0), Arg(1), (b, x) => Math.Log(x, b))
+                : new MathUnaryEvaluator(Arg(0), Math.Log),
+            "LOG2" => new MathUnaryEvaluator(Arg(0), Math.Log2),
+            "LOG10" => new MathUnaryEvaluator(Arg(0), Math.Log10),
+            "LN" => new MathUnaryEvaluator(Arg(0), Math.Log),
+            "SIN" => new MathUnaryEvaluator(Arg(0), Math.Sin),
+            "COS" => new MathUnaryEvaluator(Arg(0), Math.Cos),
+            "TAN" => new MathUnaryEvaluator(Arg(0), Math.Tan),
+            "ASIN" => new MathUnaryEvaluator(Arg(0), Math.Asin),
+            "ACOS" => new MathUnaryEvaluator(Arg(0), Math.Acos),
+            "ATAN" => args.Count >= 2
+                ? new MathBinaryEvaluator(Arg(0), Arg(1), Math.Atan2)
+                : new MathUnaryEvaluator(Arg(0), Math.Atan),
+            "ATAN2" => new MathBinaryEvaluator(Arg(0), Arg(1), Math.Atan2),
+            "COT" => new MathUnaryEvaluator(Arg(0), x => 1.0 / Math.Tan(x)),
+            "DEGREES" => new MathUnaryEvaluator(Arg(0), x => x * (180.0 / Math.PI)),
+            "RADIANS" => new MathUnaryEvaluator(Arg(0), x => x * (Math.PI / 180.0)),
+            "PI" => new ConstantEvaluator(DataValue.FromDouble(Math.PI)),
+            "RAND" => new RandEvaluator(args.Count > 0 ? Arg(0) : null),
+            "CRC32" => new Crc32Evaluator(Arg(0)),
+            "CONV" => new ConvEvaluator(Arg(0), Arg(1), Arg(2)),
+
+            // ── String functions ──
+            "SUBSTRING" or "SUBSTR" or "MID" => new SubstringEvaluator(Arg(0), Arg(1), args.Count > 2 ? Arg(2) : null),
+            "LEFT" => new LeftEvaluator(Arg(0), Arg(1)),
+            "RIGHT" => new RightEvaluator(Arg(0), Arg(1)),
+            "TRIM" => new TrimEvaluator(Arg(0), null, TrimEvaluator.TrimMode.Both),
+            "LTRIM" => new TrimEvaluator(Arg(0), null, TrimEvaluator.TrimMode.Leading),
+            "RTRIM" => new TrimEvaluator(Arg(0), null, TrimEvaluator.TrimMode.Trailing),
+            "LPAD" => new PadEvaluator(Arg(0), Arg(1), Arg(2), true),
+            "RPAD" => new PadEvaluator(Arg(0), Arg(1), Arg(2), false),
+            "REPLACE" => new ReplaceEvaluator(Arg(0), Arg(1), Arg(2)),
+            "LOCATE" or "POSITION" => new LocateEvaluator(Arg(0), Arg(1), args.Count > 2 ? Arg(2) : null),
+            "INSTR" => new LocateEvaluator(Arg(1), Arg(0), null),
+            "INSERT" => new InsertStringEvaluator(Arg(0), Arg(1), Arg(2), Arg(3)),
+            "REPEAT" => new RepeatEvaluator(Arg(0), Arg(1)),
+            "REVERSE" => new ReverseEvaluator(Arg(0)),
+            "SPACE" => new SpaceEvaluator(Arg(0)),
+            "FORMAT" => new FormatEvaluator(Arg(0), Arg(1)),
+            "ASCII" => new AsciiEvaluator(Arg(0)),
+            "ORD" => new OrdEvaluator(Arg(0)),
+            "CHAR" => new CharFunctionEvaluator(AllArgs()),
+            "HEX" => new HexEvaluator(Arg(0)),
+            "UNHEX" => new UnhexEvaluator(Arg(0)),
+            "BIN" => new BinEvaluator(Arg(0)),
+            "OCT" => new OctEvaluator(Arg(0)),
+            "FROM_BASE64" => new Base64Evaluator(Arg(0), false),
+            "TO_BASE64" => new Base64Evaluator(Arg(0), true),
+            "CONCAT_WS" => new ConcatWsEvaluator(Arg(0), ArgsFrom(1)),
+            "STRCMP" => new StrcmpEvaluator(Arg(0), Arg(1)),
+            "SOUNDEX" => new SoundexEvaluator(Arg(0)),
+            "SUBSTRING_INDEX" => new SubstringIndexEvaluator(Arg(0), Arg(1), Arg(2)),
+            "ELT" => new EltEvaluator(Arg(0), ArgsFrom(1)),
+            "FIND_IN_SET" => new FindInSetEvaluator(Arg(0), Arg(1)),
+            "EXPORT_SET" => new ExportSetEvaluator(AllArgs()),
+            "MAKE_SET" => new MakeSetEvaluator(Arg(0), ArgsFrom(1)),
+            "QUOTE" => new QuoteEvaluator(Arg(0)),
+            "BIT_LENGTH" => new BitLengthEvaluator(Arg(0)),
+            "WEIGHT_STRING" => new WeightStringEvaluator(Arg(0)),
+
+            // ── Date/Time functions ──
+            "YEAR" => new DatePartEvaluator(Arg(0), dt => dt.Year),
+            "MONTH" => new DatePartEvaluator(Arg(0), dt => dt.Month),
+            "DAY" or "DAYOFMONTH" => new DatePartEvaluator(Arg(0), dt => dt.Day),
+            "HOUR" => new DatePartEvaluator(Arg(0), dt => dt.Hour),
+            "MINUTE" => new DatePartEvaluator(Arg(0), dt => dt.Minute),
+            "SECOND" => new DatePartEvaluator(Arg(0), dt => dt.Second),
+            "MICROSECOND" => new DatePartEvaluator(Arg(0), dt => dt.Millisecond * 1000),
+            "DAYOFWEEK" => new DatePartEvaluator(Arg(0), dt => (int)dt.DayOfWeek + 1),
+            "DAYOFYEAR" => new DatePartEvaluator(Arg(0), dt => dt.DayOfYear),
+            "WEEKDAY" => new DatePartEvaluator(Arg(0), dt => ((int)dt.DayOfWeek + 6) % 7),
+            "WEEK" or "WEEKOFYEAR" => new DatePartEvaluator(Arg(0), dt =>
+                System.Globalization.CultureInfo.InvariantCulture.Calendar.GetWeekOfYear(dt, System.Globalization.CalendarWeekRule.FirstDay, DayOfWeek.Sunday)),
+            "YEARWEEK" => new DatePartEvaluator(Arg(0), dt =>
+                dt.Year * 100 + System.Globalization.CultureInfo.InvariantCulture.Calendar.GetWeekOfYear(dt, System.Globalization.CalendarWeekRule.FirstDay, DayOfWeek.Sunday)),
+            "QUARTER" => new DatePartEvaluator(Arg(0), dt => (dt.Month - 1) / 3 + 1),
+            "DAYNAME" => new DayNameEvaluator(Arg(0)),
+            "MONTHNAME" => new MonthNameEvaluator(Arg(0)),
+            "DATE" => new DateExtractEvaluator(Arg(0)),
+            "TIME" => new TimeExtractEvaluator(Arg(0)),
+            "DATE_ADD" or "ADDDATE" => new DateAddEvaluator(Arg(0), Arg(1), args.Count > 2 ? GetIntervalUnit(args[2]) : "DAY", false),
+            "DATE_SUB" or "SUBDATE" => new DateAddEvaluator(Arg(0), Arg(1), args.Count > 2 ? GetIntervalUnit(args[2]) : "DAY", true),
+            "ADDTIME" => new AddTimeEvaluator(Arg(0), Arg(1), false),
+            "SUBTIME" => new AddTimeEvaluator(Arg(0), Arg(1), true),
+            "DATEDIFF" => new DateDiffEvaluator(Arg(0), Arg(1)),
+            "TIMEDIFF" => new TimeDiffEvaluator(Arg(0), Arg(1)),
+            "TIMESTAMPDIFF" => new TimestampDiffEvaluator(GetIntervalUnit(args[0]), Arg(1), Arg(2)),
+            "TIMESTAMPADD" => new TimestampAddEvaluator(GetIntervalUnit(args[0]), Arg(1), Arg(2)),
+            "DATE_FORMAT" => new DateFormatEvaluator(Arg(0), Arg(1)),
+            "TIME_FORMAT" => new TimeFormatEvaluator(Arg(0), Arg(1)),
+            "STR_TO_DATE" => new StrToDateEvaluator(Arg(0), Arg(1)),
+            "GET_FORMAT" => new GetFormatEvaluator(Arg(0), Arg(1)),
+            "UNIX_TIMESTAMP" => new UnixTimestampEvaluator(args.Count > 0 ? Arg(0) : null),
+            "FROM_UNIXTIME" => new FromUnixTimeEvaluator(Arg(0), args.Count > 1 ? Arg(1) : null),
+            "FROM_DAYS" => new FromDaysEvaluator(Arg(0)),
+            "TO_DAYS" => new ToDaysEvaluator(Arg(0)),
+            "TO_SECONDS" => new ToSecondsEvaluator(Arg(0)),
+            "SEC_TO_TIME" => new SecToTimeEvaluator(Arg(0)),
+            "TIME_TO_SEC" => new TimeToSecEvaluator(Arg(0)),
+            "MAKEDATE" => new MakeDateEvaluator(Arg(0), Arg(1)),
+            "MAKETIME" => new MakeTimeEvaluator(Arg(0), Arg(1), Arg(2)),
+            "LAST_DAY" => new LastDayEvaluator(Arg(0)),
+            "PERIOD_ADD" => new PeriodAddEvaluator(Arg(0), Arg(1)),
+            "PERIOD_DIFF" => new PeriodDiffEvaluator(Arg(0), Arg(1)),
+            "CONVERT_TZ" => new ConvertTzEvaluator(Arg(0), Arg(1), Arg(2)),
+            "EXTRACT" => new ExtractEvaluator(GetIntervalUnit(args[0]), Arg(1)),
+            "TIMESTAMP" => args.Count >= 2
+                ? new AddTimeEvaluator(Arg(0), Arg(1), false)
+                : (IExpressionEvaluator)new ConstantEvaluator(DataValue.FromDateTime(DateTime.Now)),
+
+            // ── Encryption / Hash functions ──
+            "MD5" => new Md5Evaluator(Arg(0)),
+            "SHA1" or "SHA" => new Sha1Evaluator(Arg(0)),
+            "SHA2" => new Sha2Evaluator(Arg(0), Arg(1)),
+            "AES_ENCRYPT" => new AesEvaluator(Arg(0), Arg(1), true),
+            "AES_DECRYPT" => new AesEvaluator(Arg(0), Arg(1), false),
+            "COMPRESS" => new CompressEvaluator(Arg(0), true),
+            "UNCOMPRESS" => new CompressEvaluator(Arg(0), false),
+            "UNCOMPRESSED_LENGTH" => new UncompressedLengthEvaluator(Arg(0)),
+            "RANDOM_BYTES" => new RandomBytesEvaluator(Arg(0)),
+
+            // ── Regex functions ──
+            "REGEXP_LIKE" => new RegexpLikeEvaluator(Arg(0), Arg(1), args.Count > 2 ? Arg(2) : null),
+            "REGEXP_INSTR" => new RegexpInstrEvaluator(AllArgs()),
+            "REGEXP_REPLACE" => new RegexpReplaceEvaluator(AllArgs()),
+            "REGEXP_SUBSTR" => new RegexpSubstrEvaluator(AllArgs()),
+
+            // ── UUID functions ──
+            "UUID" => new UuidEvaluator(),
+            "UUID_SHORT" => new UuidShortEvaluator(),
+            "UUID_TO_BIN" => new UuidToBinEvaluator(Arg(0), args.Count > 1 ? Arg(1) : null),
+            "BIN_TO_UUID" => new BinToUuidEvaluator(Arg(0), args.Count > 1 ? Arg(1) : null),
+            "IS_UUID" => new IsUuidEvaluator(Arg(0)),
+
+            // ── Locking functions ──
+            "GET_LOCK" => new GetLockEvaluator(Arg(0), Arg(1)),
+            "RELEASE_LOCK" => new ReleaseLockEvaluator(Arg(0)),
+            "RELEASE_ALL_LOCKS" => new ReleaseAllLocksEvaluator(),
+            "IS_FREE_LOCK" => new IsFreeLockEvaluator(Arg(0)),
+            "IS_USED_LOCK" => new IsUsedLockEvaluator(Arg(0)),
+
+            // ── Network functions ──
+            "INET_ATON" => new InetAtonEvaluator(Arg(0)),
+            "INET_NTOA" => new InetNtoaEvaluator(Arg(0)),
+
+            // ── Miscellaneous functions ──
+            "SLEEP" => new SleepEvaluator(Arg(0)),
+            "BENCHMARK" => new BenchmarkEvaluator(Arg(0), Arg(1)),
+            "ANY_VALUE" => new AnyValueEvaluator(Arg(0)),
+            "BIT_COUNT" => new BitCountEvaluator(Arg(0)),
+            "GREATEST" => new GreatestLeastEvaluator(AllArgs(), true),
+            "LEAST" => new GreatestLeastEvaluator(AllArgs(), false),
+            "CHARSET" => new CharsetFuncEvaluator(Arg(0)),
+            "COERCIBILITY" => new CoercibilityEvaluator(Arg(0)),
+            "COLLATION" => new CollationFuncEvaluator(Arg(0)),
+            "GROUPING" => new GroupingEvaluator(Arg(0)),
+            "VALUES" => args.Count > 0 ? new ValuesEvaluator(Arg(0)) : new ConstantEvaluator(DataValue.Null),
+            "INTERVAL" => new IntervalEvaluator(Arg(0), ArgsFrom(1)),
+
+            // ── JSON functions ──
             "JSON_EXTRACT" => BuildJsonExtractFunction(func, schema),
             "JSON_UNQUOTE" => BuildJsonUnquoteFunction(func, schema),
             "JSON_OBJECT" => BuildJsonObjectFunction(func, schema),
@@ -4745,7 +4937,8 @@ public sealed class Executor
             "JSON_SEARCH" => BuildJsonSearchFunction(func, schema),
             "JSON_MERGE_PATCH" => BuildJsonMergePatchFunction(func, schema),
             "JSON_MERGE_PRESERVE" or "JSON_MERGE" => BuildJsonMergePreserveFunction(func, schema),
-            // Spatial functions
+
+            // ── Spatial functions ──
             "ST_POINT" or "POINT" => BuildStPointFunction(func, schema),
             "ST_GEOMFROMTEXT" or "ST_GEOMETRYFROMTEXT" => BuildStGeomFromTextFunction(func, schema),
             "ST_ASTEXT" or "ST_ASWKT" => BuildStAsTextFunction(func, schema),
@@ -4758,10 +4951,24 @@ public sealed class Executor
             "ST_X" => BuildStXFunction(func, schema),
             "ST_Y" => BuildStYFunction(func, schema),
             "ST_SRID" => BuildStSridFunction(func, schema),
+
             _ when IsAggregateFunction(funcName) => 
                 // Aggregates in non-GROUP BY context - return constant for now
                 new ConstantEvaluator(DataValue.Null),
             _ => BuildUserDefinedFunction(func, schema)
+        };
+    }
+
+    /// <summary>
+    /// Extracts an interval unit name from an expression (e.g., a column reference used as interval unit keyword).
+    /// </summary>
+    private static string GetIntervalUnit(Parsing.Ast.Expression expr)
+    {
+        return expr switch
+        {
+            Parsing.Ast.ColumnReference col => col.ColumnName.ToUpperInvariant(),
+            Parsing.Ast.LiteralExpression lit => lit.Value.IsNull ? "DAY" : lit.Value.AsString().ToUpperInvariant(),
+            _ => "DAY"
         };
     }
 

@@ -412,7 +412,10 @@ public readonly struct DataValue : IEquatable<DataValue>, IComparable<DataValue>
         return a.Length.CompareTo(b.Length);
     }
 
-    private double ToDouble()
+    /// <summary>
+    /// Converts this numeric DataValue to a double. Also attempts to parse string types.
+    /// </summary>
+    public double ToDouble()
     {
         return Type switch
         {
@@ -423,7 +426,46 @@ public readonly struct DataValue : IEquatable<DataValue>, IComparable<DataValue>
             DataType.Float => AsFloat(),
             DataType.Double => AsDouble(),
             DataType.Decimal => (double)AsDecimal(),
+            DataType.Boolean => AsBoolean() ? 1.0 : 0.0,
+            DataType.VarChar or DataType.Char or DataType.Text or DataType.TinyText or DataType.MediumText or DataType.LongText =>
+                double.TryParse(AsString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : 0.0,
             _ => throw new InvalidOperationException($"Cannot convert {Type} to double")
+        };
+    }
+
+    /// <summary>
+    /// Converts this numeric DataValue to a long integer. Also attempts to parse string types.
+    /// </summary>
+    public long ToLong()
+    {
+        return Type switch
+        {
+            DataType.TinyInt => AsTinyInt(),
+            DataType.SmallInt => AsSmallInt(),
+            DataType.Int => AsInt(),
+            DataType.BigInt => AsBigInt(),
+            DataType.Float => (long)AsFloat(),
+            DataType.Double => (long)AsDouble(),
+            DataType.Decimal => (long)AsDecimal(),
+            DataType.Boolean => AsBoolean() ? 1L : 0L,
+            DataType.VarChar or DataType.Char or DataType.Text or DataType.TinyText or DataType.MediumText or DataType.LongText =>
+                long.TryParse(AsString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var l) ? l : 0L,
+            _ => throw new InvalidOperationException($"Cannot convert {Type} to long")
+        };
+    }
+
+    /// <summary>
+    /// Tries to interpret this value as a DateTime.
+    /// </summary>
+    public DateTime ToDateTime()
+    {
+        return Type switch
+        {
+            DataType.DateTime or DataType.Timestamp => AsDateTime(),
+            DataType.Date => AsDate().ToDateTime(TimeOnly.MinValue),
+            DataType.VarChar or DataType.Char or DataType.Text =>
+                DateTime.TryParse(AsString(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var dt) ? dt : throw new InvalidOperationException($"Cannot parse '{AsString()}' as DateTime"),
+            _ => throw new InvalidOperationException($"Cannot convert {Type} to DateTime")
         };
     }
 
