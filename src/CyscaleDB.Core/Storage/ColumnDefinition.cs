@@ -69,6 +69,21 @@ public sealed class ColumnDefinition
     public SetTypeDefinition? SetType { get; }
 
     /// <summary>
+    /// Whether this is a generated (computed) column.
+    /// </summary>
+    public bool IsGenerated { get; }
+
+    /// <summary>
+    /// The generation expression for a generated column (SQL text).
+    /// </summary>
+    public string? GenerationExpression { get; }
+
+    /// <summary>
+    /// Whether the generated column is STORED (materialized) or VIRTUAL (computed on read).
+    /// </summary>
+    public bool IsStoredGenerated { get; }
+
+    /// <summary>
     /// Creates a new column definition.
     /// </summary>
     public ColumnDefinition(
@@ -82,7 +97,10 @@ public sealed class ColumnDefinition
         bool isAutoIncrement = false,
         DataValue? defaultValue = null,
         EnumTypeDefinition? enumType = null,
-        SetTypeDefinition? setType = null)
+        SetTypeDefinition? setType = null,
+        bool isGenerated = false,
+        string? generationExpression = null,
+        bool isStoredGenerated = false)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("Column name cannot be empty", nameof(name));
@@ -107,6 +125,9 @@ public sealed class ColumnDefinition
         DefaultValue = defaultValue;
         EnumType = enumType;
         SetType = setType;
+        IsGenerated = isGenerated;
+        GenerationExpression = generationExpression;
+        IsStoredGenerated = isStoredGenerated;
     }
 
     private static int GetDefaultMaxLength(DataType dataType)

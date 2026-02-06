@@ -13,46 +13,46 @@ todos:
     status: completed
   - id: phase1-aggregate
     content: "Phase 1.4: 实现 12 个聚合函数 (BIT_AND, BIT_OR, BIT_XOR, STDDEV, VARIANCE, JSON_ARRAYAGG, JSON_OBJECTAGG 等)"
-    status: in_progress
+    status: completed
   - id: phase1-other
     content: "Phase 1.5-1.12: 加密哈希函数、正则函数、CAST/CONVERT、锁定函数、UUID函数、XML函数等 (~50 个)"
     status: completed
   - id: phase2-dml
     content: "Phase 2.1: DML 增强 (REPLACE INTO, INSERT ON DUPLICATE KEY UPDATE, INSERT SELECT, LOAD DATA INFILE, SELECT INTO OUTFILE)"
-    status: pending
+    status: completed
   - id: phase2-ddl
     content: "Phase 2.2: DDL 增强 (TEMPORARY TABLE, 生成列, CHECK 约束执行, RENAME TABLE, 不可见索引)"
-    status: pending
+    status: completed
   - id: phase2-prepare
     content: "Phase 2.3: 预处理语句 (PREPARE, EXECUTE, DEALLOCATE PREPARE, COM_STMT_* 协议)"
-    status: pending
+    status: completed
   - id: phase3-routines
     content: "Phase 3: 存储过程/函数/触发器/事件调度器执行引擎"
-    status: pending
+    status: completed
   - id: phase4-auth
     content: "Phase 4: 用户管理持久化、认证协议、权限检查、角色管理"
-    status: pending
+    status: completed
   - id: phase5-sysvars
     content: "Phase 5: 系统变量扩展到 500+，SHOW 命令增强"
-    status: pending
+    status: completed
   - id: phase6-admin
     content: "Phase 6: FLUSH 命令完善、RESET、KILL QUERY、CHECK/REPAIR TABLE"
-    status: pending
+    status: completed
   - id: phase7-backup
     content: "Phase 7: 逻辑备份(mysqldump兼容)、物理备份、Point-in-time Recovery"
-    status: pending
+    status: completed
   - id: phase8-replication
     content: "Phase 8: Binlog 实现、主从复制、GTID"
-    status: pending
+    status: completed
   - id: phase9-perfschema
     content: "Phase 9: performance_schema、sys 库"
-    status: pending
+    status: completed
   - id: phase10-partition
     content: "Phase 10: 分区表 (RANGE, LIST, HASH, KEY)"
-    status: pending
+    status: completed
   - id: phase11-advanced
     content: "Phase 11: 生成列、不可见索引、函数索引、并行查询等高级特性"
-    status: pending
+    status: completed
 isProject: false
 ---
 

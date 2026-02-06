@@ -366,6 +366,67 @@ public enum TokenType
 
     // ENUM/SET data types
     ENUM,               // ENUM('a','b','c')
+
+    // Phase 2 additions
+    DUPLICATE,          // ON DUPLICATE KEY UPDATE
+    IGNORE,             // INSERT IGNORE
+    PREPARE,            // PREPARE statement
+    EXECUTE,            // EXECUTE statement
+    DEALLOCATE,         // DEALLOCATE PREPARE
+    TEMPORARY,          // CREATE TEMPORARY TABLE
+    ROLE,               // CREATE/DROP ROLE
+    OUTFILE,            // SELECT ... INTO OUTFILE
+    DUMPFILE,           // SELECT ... INTO DUMPFILE
+    LOAD,               // LOAD DATA INFILE
+    DATA,               // LOAD DATA
+    INFILE,             // LOAD DATA INFILE
+    TERMINATED,         // FIELDS TERMINATED BY
+    ENCLOSED,           // FIELDS ENCLOSED BY
+    ESCAPED,            // FIELDS ESCAPED BY
+    LINES,              // LINES TERMINATED BY
+    OPTIONALLY,         // OPTIONALLY ENCLOSED BY
+
+    // Phase 3 - stored routine keywords
+    SIGNAL,             // SIGNAL
+    RESIGNAL,           // RESIGNAL
+    SQLSTATE,           // SQLSTATE
+    CONDITION,          // DECLARE CONDITION
+    HANDLER,            // DECLARE HANDLER
+    CONTINUE,           // CONTINUE HANDLER
+    EXIT,               // EXIT HANDLER
+    UNDO,               // UNDO HANDLER
+    OPEN,               // OPEN cursor
+    FETCH,              // FETCH cursor
+    CLOSE,              // CLOSE cursor
+
+    // Phase 6 additions
+    REPAIR,             // REPAIR TABLE
+    CHECKSUM,           // CHECKSUM TABLE
+    RESET,              // RESET
+    BINARY_TOKEN,       // BINARY LOG
+    MASTER,             // SHOW MASTER STATUS
+    SLAVE,              // SHOW SLAVE STATUS
+    REPLICA,            // SHOW REPLICA STATUS
+    SOURCE,             // CHANGE REPLICATION SOURCE
+
+    // Phase 7 - Backup keywords  
+    BACKUP,             // BACKUP DATABASE
+    RESTORE,            // RESTORE DATABASE
+
+    // Phase 8 - Replication keywords
+    REPLICATION,        // CHANGE REPLICATION
+    RELAY,              // RELAY LOG
+    GTID,               // GTID
+    IO_THREAD,          // IO_THREAD
+    SQL_THREAD,         // SQL_THREAD
+
+    // Misc keywords
+    INVISIBLE,          // INVISIBLE index
+    VISIBLE,            // VISIBLE index
+    GENERATED,          // GENERATED column
+    ALWAYS,             // GENERATED ALWAYS AS
+    VIRTUAL,            // VIRTUAL generated column
+    STORED,             // STORED generated column
 }
 
 /// <summary>
@@ -655,6 +716,64 @@ public static class Keywords
 
         // ENUM/SET data types
         ["ENUM"] = TokenType.ENUM,
+
+        // Phase 2 additions
+        ["DUPLICATE"] = TokenType.DUPLICATE,
+        ["IGNORE"] = TokenType.IGNORE,
+        ["PREPARE"] = TokenType.PREPARE,
+        ["EXECUTE"] = TokenType.EXECUTE,
+        ["DEALLOCATE"] = TokenType.DEALLOCATE,
+        ["TEMPORARY"] = TokenType.TEMPORARY,
+        ["ROLE"] = TokenType.ROLE,
+        ["OUTFILE"] = TokenType.OUTFILE,
+        ["DUMPFILE"] = TokenType.DUMPFILE,
+        ["LOAD"] = TokenType.LOAD,
+        ["DATA"] = TokenType.DATA,
+        ["INFILE"] = TokenType.INFILE,
+        ["TERMINATED"] = TokenType.TERMINATED,
+        ["ENCLOSED"] = TokenType.ENCLOSED,
+        ["ESCAPED"] = TokenType.ESCAPED,
+        ["LINES"] = TokenType.LINES,
+        ["OPTIONALLY"] = TokenType.OPTIONALLY,
+
+        // Phase 3 - stored routine keywords
+        ["SIGNAL"] = TokenType.SIGNAL,
+        ["RESIGNAL"] = TokenType.RESIGNAL,
+        ["SQLSTATE"] = TokenType.SQLSTATE,
+        ["CONDITION"] = TokenType.CONDITION,
+        ["HANDLER"] = TokenType.HANDLER,
+        ["CONTINUE"] = TokenType.CONTINUE,
+        ["EXIT"] = TokenType.EXIT,
+        ["UNDO"] = TokenType.UNDO,
+        ["OPEN"] = TokenType.OPEN,
+        ["FETCH"] = TokenType.FETCH,
+        ["CLOSE"] = TokenType.CLOSE,
+
+        // Phase 6 additions
+        ["REPAIR"] = TokenType.REPAIR,
+        ["CHECKSUM"] = TokenType.CHECKSUM,
+        ["RESET"] = TokenType.RESET,
+        ["BINARY"] = TokenType.BINARY_TOKEN,
+        ["MASTER"] = TokenType.MASTER,
+        ["SLAVE"] = TokenType.SLAVE,
+        ["REPLICA"] = TokenType.REPLICA,
+        ["SOURCE"] = TokenType.SOURCE,
+
+        // Phase 7 - Backup
+        ["BACKUP"] = TokenType.BACKUP,
+        ["RESTORE"] = TokenType.RESTORE,
+
+        // Phase 8 - Replication
+        ["REPLICATION"] = TokenType.REPLICATION,
+        ["RELAY"] = TokenType.RELAY,
+
+        // Misc keywords
+        ["INVISIBLE"] = TokenType.INVISIBLE,
+        ["VISIBLE"] = TokenType.VISIBLE,
+        ["GENERATED"] = TokenType.GENERATED,
+        ["ALWAYS"] = TokenType.ALWAYS,
+        ["VIRTUAL"] = TokenType.VIRTUAL,
+        ["STORED"] = TokenType.STORED,
     };
 
     /// <summary>

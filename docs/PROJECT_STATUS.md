@@ -129,24 +129,40 @@ CyscaleDB 是一个使用纯 C# 实现的 MySQL 兼容关系型数据库系统�
 | 区间树优化间隙锁 | ✅ 框架完成 | O(n) → O(log n) |
 | Buffer Pool 分段锁 | ✅ 框架完成 | 减少锁竞争 |
 
+## MySQL 8.4 全面兼容计划
+
+| 阶段 | 名称 | 状态 | 说明 |
+|------|------|------|------|
+| Phase 1 | 内置函数补全 | ✅ 已完成 | 170+ 函数 (数学/字符串/日期/聚合/加密/正则/UUID/锁等) |
+| Phase 2 | DML/DDL 增强 | ✅ 已完成 | INSERT IGNORE, REPLACE, ON DUPLICATE KEY UPDATE, LOAD DATA, 预处理语句 |
+| Phase 3 | 存储过程执行引擎 | ✅ 已完成 | 游标、SIGNAL/RESIGNAL、DECLARE HANDLER、事件调度器 |
+| Phase 4 | 用户管理与认证 | ✅ 已完成 | 持久化、角色管理、权限检查、mysql_native_password |
+| Phase 5 | 系统变量扩展 | ✅ 已完成 | 500+ MySQL 8.4 系统变量, SHOW 命令增强 (20+ 种) |
+| Phase 6 | 管理命令 | ✅ 已完成 | FLUSH (全部类型)、RESET、KILL QUERY/CONNECTION |
+| Phase 7 | 备份与恢复 | ✅ 已完成 | mysqldump 兼容格式逻辑备份、SQL 还原 |
+| Phase 8 | 二进制日志与复制 | ✅ 已完成 | Binlog 事件、GTID、CHANGE REPLICATION SOURCE、START/STOP REPLICA |
+| Phase 9 | performance_schema | ✅ 已完成 | 100+ 虚拟表, sys 库 40+ 诊断视图 |
+| Phase 10 | 分区表 | ✅ 已完成 | RANGE/LIST/HASH/KEY 分区、分区裁剪 |
+| Phase 11 | 高级特性 | ✅ 已完成 | 生成列 (VIRTUAL/STORED)、不可见索引、降序索引、函数索引 |
+
 ## 未来规划
 
 ### 短期目标
 - [x] ~~全文索引~~ (已完成框架)
 - [x] ~~JSON 函数扩展~~ (已完成框架)
-- [ ] 更多内置函数 (STRING, DATE, MATH)
+- [x] ~~更多内置函数~~ (已完成 170+ 函数)
 - [ ] 查询计划缓存
 
 ### 中期目标
-- [x] ~~存储过程~~ (已完成解析)
-- [x] ~~触发器~~ (已完成解析)
-- [x] ~~事件调度器~~ (已完成解析)
-- [ ] 分区表
+- [x] ~~存储过程~~ (已完成解析+执行)
+- [x] ~~触发器~~ (已完成解析+执行)
+- [x] ~~事件调度器~~ (已完成)
+- [x] ~~分区表~~ (已完成)
 - [ ] 自适应查询优化
 
 ### 长期目标
 - [ ] 分布式架构
-- [ ] 复制与高可用
+- [x] ~~复制与高可用~~ (已完成框架)
 - [ ] 并行查询执行
 - [ ] 列式存储选项
 
@@ -154,6 +170,18 @@ CyscaleDB 是一个使用纯 C# 实现的 MySQL 兼容关系型数据库系统�
 
 | 日期 | 更新内容 |
 |------|----------|
+| 2026-02-06 | **重大更新**: MySQL 8.4 全面兼容计划 Phase 1-11 全部完成 |
+| 2026-02-06 | **Phase 1**: 170+ 内置函数 (数学25/字符串40/日期45/聚合12/加密哈希/正则/UUID/锁定等) |
+| 2026-02-06 | **Phase 2**: DML 增强 (INSERT IGNORE/REPLACE/ON DUPLICATE KEY UPDATE/INSERT...SELECT/LOAD DATA) |
+| 2026-02-06 | **Phase 3**: 存储过程执行引擎 (游标/SIGNAL/RESIGNAL/HANDLER/事件调度器) |
+| 2026-02-06 | **Phase 4**: 用户管理持久化、角色管理、扩展权限类型 |
+| 2026-02-06 | **Phase 5**: 500+ 系统变量、20+ SHOW 命令 (PROCESSLIST/GRANTS/ENGINES/PLUGINS/TRIGGERS 等) |
+| 2026-02-06 | **Phase 6**: FLUSH 全类型/RESET/KILL QUERY/KILL CONNECTION |
+| 2026-02-06 | **Phase 7**: mysqldump 兼容备份格式 |
+| 2026-02-06 | **Phase 8**: Binlog/GTID/ReplicationManager |
+| 2026-02-06 | **Phase 9**: performance_schema (100+ 虚拟表) + sys 库 (40+ 诊断视图) |
+| 2026-02-06 | **Phase 10**: 分区表 (RANGE/LIST/HASH/KEY + 分区裁剪) |
+| 2026-02-06 | **Phase 11**: 生成列/不可见索引/降序索引/函数索引 |
 | 2026-01-21 | **重大更新**: information_schema 完整支持 (MySQL 8.0 兼容, 70+ 虚拟表) |
 | 2026-01-21 | **重大更新**: 在线 DDL 框架实现 (ADD COLUMN/INDEX 不锁表) |
 | 2026-01-21 | **新增**: 配置系统 (CyscaleDbConfiguration, JSON 配置文件) |

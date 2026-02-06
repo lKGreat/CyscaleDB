@@ -84,6 +84,26 @@ public sealed class IndexInfo
     public string FilePath { get; private set; } = string.Empty;
 
     /// <summary>
+    /// Whether this index is invisible to the optimizer.
+    /// Invisible indexes are maintained but not used by the query optimizer.
+    /// MySQL 8.0+ feature.
+    /// </summary>
+    public bool IsInvisible { get; set; }
+
+    /// <summary>
+    /// Whether this is a descending index.
+    /// MySQL 8.0+ feature.
+    /// </summary>
+    public bool IsDescending { get; set; }
+
+    /// <summary>
+    /// The expression for functional (expression-based) indexes.
+    /// If set, this index is on an expression rather than a plain column.
+    /// MySQL 8.0.13+ feature.
+    /// </summary>
+    public string? FunctionalExpression { get; set; }
+
+    /// <summary>
     /// Creates a new IndexInfo instance.
     /// </summary>
     public IndexInfo(

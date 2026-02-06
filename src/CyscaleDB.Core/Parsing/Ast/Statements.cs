@@ -462,7 +462,139 @@ public class InsertStatement : Statement
     /// </summary>
     public List<List<Expression>> ValuesList { get; set; } = [];
 
+    /// <summary>
+    /// Whether this is a REPLACE INTO instead of INSERT INTO.
+    /// </summary>
+    public bool IsReplace { get; set; }
+
+    /// <summary>
+    /// Whether INSERT IGNORE is used.
+    /// </summary>
+    public bool IsIgnore { get; set; }
+
+    /// <summary>
+    /// ON DUPLICATE KEY UPDATE clauses.
+    /// </summary>
+    public List<SetClause>? OnDuplicateKeyUpdate { get; set; }
+
+    /// <summary>
+    /// Source SELECT statement for INSERT ... SELECT.
+    /// </summary>
+    public SelectStatement? SelectSource { get; set; }
+
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitInsertStatement(this);
+}
+
+/// <summary>
+/// Represents a PREPARE statement.
+/// </summary>
+public class PrepareStatement : Statement
+{
+    public string StatementName { get; set; } = null!;
+    public Expression SqlExpression { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents an EXECUTE statement.
+/// </summary>
+public class ExecuteStatement : Statement
+{
+    public string StatementName { get; set; } = null!;
+    public List<string> UsingVariables { get; set; } = [];
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a DEALLOCATE PREPARE statement.
+/// </summary>
+public class DeallocatePrepareStatement : Statement
+{
+    public string StatementName { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a LOAD DATA INFILE statement.
+/// </summary>
+public class LoadDataStatement : Statement
+{
+    public string FilePath { get; set; } = null!;
+    public string TableName { get; set; } = null!;
+    public string? DatabaseName { get; set; }
+    public List<string> Columns { get; set; } = [];
+    public string FieldTerminator { get; set; } = "\t";
+    public string FieldEnclosedBy { get; set; } = "";
+    public string LineTerminator { get; set; } = "\n";
+    public int IgnoreRows { get; set; }
+    public bool IsLocal { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a RENAME TABLE statement.
+/// </summary>
+public class RenameTableStatement : Statement
+{
+    public List<(string OldName, string NewName)> Renames { get; set; } = [];
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a CHECK TABLE statement.
+/// </summary>
+public class CheckTableStatement : Statement
+{
+    public List<string> TableNames { get; set; } = [];
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a REPAIR TABLE statement.
+/// </summary>
+public class RepairTableStatement : Statement
+{
+    public List<string> TableNames { get; set; } = [];
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a KILL [CONNECTION | QUERY] statement.
+/// </summary>
+public class KillStatement : Statement
+{
+    public bool IsQuery { get; set; }
+    public long ConnectionId { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a CHECKSUM TABLE statement.
+/// </summary>
+public class ChecksumTableStatement : Statement
+{
+    public List<string> TableNames { get; set; } = [];
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a RESET statement.
+/// </summary>
+public class ResetStatement : Statement
+{
+    public string ResetType { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a BACKUP/RESTORE statement (CyscaleDB extension).
+/// </summary>
+public class BackupRestoreStatement : Statement
+{
+    public bool IsBackup { get; set; }
+    public string DatabaseName { get; set; } = null!;
+    public string Path { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
 }
 
 #endregion
@@ -1636,6 +1768,162 @@ public class ShowCharsetStatement : Statement
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitShowCharsetStatement(this);
 }
 
+/// <summary>
+/// Represents a SHOW PROCESSLIST statement.
+/// </summary>
+public class ShowProcesslistStatement : Statement
+{
+    public bool Full { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW GRANTS statement.
+/// </summary>
+public class ShowGrantsStatement : Statement
+{
+    public string? ForUser { get; set; }
+    public string? ForHost { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW CREATE DATABASE statement.
+/// </summary>
+public class ShowCreateDatabaseStatement : Statement
+{
+    public string DatabaseName { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW CREATE VIEW statement.
+/// </summary>
+public class ShowCreateViewStatement : Statement
+{
+    public string ViewName { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW CREATE PROCEDURE/FUNCTION statement.
+/// </summary>
+public class ShowCreateRoutineStatement : Statement
+{
+    public bool IsFunction { get; set; }
+    public string RoutineName { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW PROCEDURE STATUS / SHOW FUNCTION STATUS statement.
+/// </summary>
+public class ShowRoutineStatusStatement : Statement
+{
+    public bool IsFunction { get; set; }
+    public string? LikePattern { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW TRIGGERS statement.
+/// </summary>
+public class ShowTriggersStatement : Statement
+{
+    public string? DatabaseName { get; set; }
+    public string? LikePattern { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW EVENTS statement.
+/// </summary>
+public class ShowEventsStatement : Statement
+{
+    public string? DatabaseName { get; set; }
+    public string? LikePattern { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW PLUGINS statement.
+/// </summary>
+public class ShowPluginsStatement : Statement
+{
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW ENGINE STATUS statement (e.g., SHOW ENGINE INNODB STATUS).
+/// </summary>
+public class ShowEngineStatusStatement : Statement
+{
+    public string EngineName { get; set; } = "INNODB";
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW ENGINES statement.
+/// </summary>
+public class ShowEnginesStatement : Statement
+{
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW PRIVILEGES statement.
+/// </summary>
+public class ShowPrivilegesStatement : Statement
+{
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW MASTER STATUS / SHOW BINARY LOG STATUS statement.
+/// </summary>
+public class ShowMasterStatusStatement : Statement
+{
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW REPLICA STATUS / SHOW SLAVE STATUS statement.
+/// </summary>
+public class ShowReplicaStatusStatement : Statement
+{
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW BINARY LOGS / SHOW MASTER LOGS statement.
+/// </summary>
+public class ShowBinaryLogsStatement : Statement
+{
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW OPEN TABLES statement.
+/// </summary>
+public class ShowOpenTablesStatement : Statement
+{
+    public string? DatabaseName { get; set; }
+    public string? LikePattern { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SHOW TABLE COUNT / SHOW COUNT(*) WARNINGS / SHOW COUNT(*) ERRORS.
+/// </summary>
+public class ShowCountStatement : Statement
+{
+    /// <summary>
+    /// What to count: "WARNINGS" or "ERRORS".
+    /// </summary>
+    public string CountType { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
 #endregion
 
 #region User Management Statements
@@ -2066,6 +2354,76 @@ public class ReturnStatement : Statement
     public Expression Value { get; set; } = null!;
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitReturnStatement(this);
+}
+
+/// <summary>
+/// Represents a DECLARE ... CURSOR FOR ... statement.
+/// </summary>
+public class DeclareCursorStatement : Statement
+{
+    public string CursorName { get; set; } = null!;
+    public SelectStatement Query { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents an OPEN cursor statement.
+/// </summary>
+public class OpenCursorStatement : Statement
+{
+    public string CursorName { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a FETCH cursor INTO ... statement.
+/// </summary>
+public class FetchCursorStatement : Statement
+{
+    public string CursorName { get; set; } = null!;
+    public List<string> IntoVariables { get; set; } = [];
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a CLOSE cursor statement.
+/// </summary>
+public class CloseCursorStatement : Statement
+{
+    public string CursorName { get; set; } = null!;
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a DECLARE ... HANDLER FOR ... statement.
+/// </summary>
+public class DeclareHandlerStatement : Statement
+{
+    public string HandlerAction { get; set; } = null!; // CONTINUE, EXIT, UNDO
+    public List<string> ConditionValues { get; set; } = []; // SQLEXCEPTION, SQLWARNING, NOT FOUND, or SQLSTATE values
+    public List<Statement> HandlerBody { get; set; } = [];
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a SIGNAL statement.
+/// </summary>
+public class SignalStatement : Statement
+{
+    public string SqlState { get; set; } = null!;
+    public string? MessageText { get; set; }
+    public int? MysqlErrno { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
+}
+
+/// <summary>
+/// Represents a RESIGNAL statement.
+/// </summary>
+public class ResignalStatement : Statement
+{
+    public string? SqlState { get; set; }
+    public string? MessageText { get; set; }
+    public override T Accept<T>(IAstVisitor<T> visitor) => default!;
 }
 
 /// <summary>

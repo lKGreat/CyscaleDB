@@ -285,6 +285,55 @@ public sealed class Catalog : IDisposable
     }
 
     /// <summary>
+    /// Renames a table.
+    /// </summary>
+    public void RenameTable(string databaseName, string oldName, string newName)
+    {
+        _lock.EnterWriteLock();
+        try
+        {
+            if (!_databases.TryGetValue(databaseName, out var db))
+                throw new DatabaseNotFoundException(databaseName);
+
+            if (!db.HasTable(oldName))
+                throw new TableNotFoundException(oldName);
+
+            var oldKey = GetTableKey(databaseName, oldName);
+
+            // Close the table if open
+            if (_openTables.TryGetValue(oldKey, out var table))
+            {
+                table.Dispose();
+                _openTables.Remove(oldKey);
+            }
+
+            // Rename the data file
+            var oldPath = Path.Combine(db.DataDirectory, $"{oldName}{Constants.DataFileExtension}");
+            var newPath = Path.Combine(db.DataDirectory, $"{newName}{Constants.DataFileExtension}");
+            if (File.Exists(oldPath))
+            {
+                File.Move(oldPath, newPath);
+            }
+
+            // Update catalog - create new schema with new name
+            var oldSchema = db.GetTable(oldName);
+            if (oldSchema != null)
+            {
+                var newSchema = new TableSchema(db.GetNextTableId(), databaseName, newName, oldSchema.Columns, oldSchema.CreatedAt);
+                db.RemoveTable(oldName);
+                db.AddTable(newSchema);
+            }
+
+            SaveCatalog();
+            _logger.Info("Renamed table: {0}.{1} -> {2}", databaseName, oldName, newName);
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
     /// Gets a table schema by name.
     /// </summary>
     public TableSchema? GetTableSchema(string databaseName, string tableName)

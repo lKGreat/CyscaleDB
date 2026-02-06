@@ -286,4 +286,41 @@ SQL String
 
 ---
 
+## MySQL 8.4 兼容性扩展模块
+
+### 新增目录结构
+
+```
+src/CyscaleDB.Core/
+├── Auth/
+│   └── UserManager.cs          # 用户/角色/权限管理 (JSON持久化)
+├── Replication/
+│   └── BinlogManager.cs        # Binlog事件/GTID/复制管理器
+├── Execution/
+│   ├── RoutineExecutor.cs      # 游标/Signal/Handler 执行组件
+│   └── Expressions/
+│       ├── MathFunctionEvaluators.cs     # 25+ 数学函数
+│       ├── StringFunctionEvaluators.cs   # 40+ 字符串函数
+│       ├── DateTimeFunctionEvaluators.cs # 45+ 日期函数
+│       └── MiscFunctionEvaluators.cs     # 加密/正则/UUID 等函数
+├── Storage/
+│   ├── PerformanceSchema/
+│   │   ├── PerformanceSchemaProvider.cs  # 100+ performance_schema 虚拟表
+│   │   └── SysSchemaProvider.cs          # 40+ sys 库诊断视图
+│   └── Partition/
+│       └── PartitionManager.cs           # RANGE/LIST/HASH/KEY 分区管理
+└── Common/
+    └── SystemVariables.cs      # 500+ MySQL 8.4 系统变量
+```
+
+### 模块交互
+
+- **PerformanceSchemaProvider** 引用 `SystemVariables` 填充 `global_variables` / `session_variables` 表
+- **SysSchemaProvider** 组合 `PerformanceSchemaProvider` 提供更高层诊断视图
+- **PartitionManager** 被 `Executor` 在表操作时调用来确定分区路由和裁剪
+- **BinlogManager** / **GtidManager** 被 `Executor` 在 DML 操作后调用记录变更
+- **UserManager** 在连接认证和 `GRANT`/`REVOKE` 时被 `Executor` 调用
+
+---
+
 > 此文档描述了 CyscaleDB 的系统架构。在进行架构变更时请同步更新此文档。

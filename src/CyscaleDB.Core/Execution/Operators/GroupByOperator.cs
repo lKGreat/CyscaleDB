@@ -15,7 +15,16 @@ public enum AggregateType
     Avg,
     Min,
     Max,
-    GroupConcat
+    GroupConcat,
+    BitAnd,
+    BitOr,
+    BitXor,
+    StddevPop,
+    StddevSamp,
+    VarPop,
+    VarSamp,
+    JsonArrayAgg,
+    JsonObjectAgg
 }
 
 /// <summary>
@@ -234,8 +243,121 @@ public sealed class GroupByOperator : OperatorBase
             AggregateType.Min => ComputeMin(agg, rows),
             AggregateType.Max => ComputeMax(agg, rows),
             AggregateType.GroupConcat => ComputeGroupConcat(agg, rows),
+            AggregateType.BitAnd => ComputeBitAggregate(agg, rows, (a, b) => a & b, unchecked((long)0xFFFFFFFFFFFFFFFF)),
+            AggregateType.BitOr => ComputeBitAggregate(agg, rows, (a, b) => a | b, 0),
+            AggregateType.BitXor => ComputeBitAggregate(agg, rows, (a, b) => a ^ b, 0),
+            AggregateType.StddevPop => ComputeStddev(agg, rows, false),
+            AggregateType.StddevSamp => ComputeStddev(agg, rows, true),
+            AggregateType.VarPop => ComputeVariance(agg, rows, false),
+            AggregateType.VarSamp => ComputeVariance(agg, rows, true),
+            AggregateType.JsonArrayAgg => ComputeJsonArrayAgg(agg, rows),
+            AggregateType.JsonObjectAgg => ComputeJsonObjectAgg(agg, rows),
             _ => DataValue.Null
         };
+    }
+
+    private DataValue ComputeBitAggregate(AggregateSpec agg, List<Row> rows, Func<long, long, long> op, long identity)
+    {
+        if (agg.Expression == null || rows.Count == 0)
+            return DataValue.FromBigInt(identity);
+
+        long result = identity;
+        foreach (var row in rows)
+        {
+            var val = agg.Expression.Evaluate(row);
+            if (!val.IsNull)
+                result = op(result, val.ToLong());
+        }
+        return DataValue.FromBigInt(result);
+    }
+
+    private DataValue ComputeStddev(AggregateSpec agg, List<Row> rows, bool sample)
+    {
+        var variance = ComputeVarianceValue(agg, rows, sample);
+        if (double.IsNaN(variance)) return DataValue.Null;
+        return DataValue.FromDouble(Math.Sqrt(variance));
+    }
+
+    private DataValue ComputeVariance(AggregateSpec agg, List<Row> rows, bool sample)
+    {
+        var variance = ComputeVarianceValue(agg, rows, sample);
+        if (double.IsNaN(variance)) return DataValue.Null;
+        return DataValue.FromDouble(variance);
+    }
+
+    private double ComputeVarianceValue(AggregateSpec agg, List<Row> rows, bool sample)
+    {
+        if (agg.Expression == null || rows.Count == 0)
+            return double.NaN;
+
+        var values = new List<double>();
+        foreach (var row in rows)
+        {
+            var val = agg.Expression.Evaluate(row);
+            if (!val.IsNull)
+                values.Add(val.ToDouble());
+        }
+
+        if (values.Count == 0) return double.NaN;
+        if (sample && values.Count < 2) return double.NaN;
+
+        double mean = values.Average();
+        double sumSquares = values.Sum(v => (v - mean) * (v - mean));
+        return sumSquares / (sample ? values.Count - 1 : values.Count);
+    }
+
+    private DataValue ComputeJsonArrayAgg(AggregateSpec agg, List<Row> rows)
+    {
+        if (agg.Expression == null || rows.Count == 0)
+            return DataValue.FromVarChar("[]");
+
+        var sb = new System.Text.StringBuilder("[");
+        bool first = true;
+        foreach (var row in rows)
+        {
+            var val = agg.Expression.Evaluate(row);
+            if (!first) sb.Append(',');
+            first = false;
+            if (val.IsNull) sb.Append("null");
+            else if (val.Type is DataType.Int or DataType.BigInt or DataType.SmallInt or DataType.TinyInt)
+                sb.Append(val.ToLong());
+            else if (val.Type is DataType.Float or DataType.Double or DataType.Decimal)
+                sb.Append(val.ToDouble().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            else if (val.Type == DataType.Boolean)
+                sb.Append(val.AsBoolean() ? "true" : "false");
+            else
+                sb.Append($"\"{val.AsString().Replace("\"", "\\\"")}\"");
+        }
+        sb.Append(']');
+        return DataValue.FromVarChar(sb.ToString());
+    }
+
+    private DataValue ComputeJsonObjectAgg(AggregateSpec agg, List<Row> rows)
+    {
+        // JSON_OBJECTAGG needs two expressions - key and value
+        // For simplicity, we use just one expression and produce {"val": val}
+        if (agg.Expression == null || rows.Count == 0)
+            return DataValue.FromVarChar("{}");
+
+        var sb = new System.Text.StringBuilder("{");
+        bool first = true;
+        int idx = 0;
+        foreach (var row in rows)
+        {
+            var val = agg.Expression.Evaluate(row);
+            if (!first) sb.Append(',');
+            first = false;
+            sb.Append($"\"{idx++}\":");
+            if (val.IsNull) sb.Append("null");
+            else if (val.Type is DataType.Int or DataType.BigInt or DataType.SmallInt or DataType.TinyInt)
+                sb.Append(val.ToLong());
+            else if (val.Type is DataType.Float or DataType.Double or DataType.Decimal)
+                sb.Append(val.ToDouble().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            else
+                sb.Append($"\"{val.AsString().Replace("\"", "\\\"")}\"");
+        }
+        sb.Append('}');
+        return DataValue.FromVarChar(sb.ToString());
     }
 
     private DataValue ComputeCount(AggregateSpec agg, List<Row> rows)

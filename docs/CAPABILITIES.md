@@ -636,4 +636,172 @@ DROP INDEX idx_name ON users;
 
 ---
 
+## MySQL 8.4 兼容性增强 (2026-02-06)
+
+### 新增内置函数 (170+)
+
+| 类别 | 函数数量 | 代表函数 |
+|------|----------|----------|
+| 数学函数 | 25+ | ABS, CEIL, FLOOR, ROUND, TRUNCATE, MOD, POW, SQRT, EXP, LOG, SIN, COS, TAN, PI, RAND, SIGN, CRC32, CONV |
+| 字符串函数 | 40+ | SUBSTRING, LEFT, RIGHT, TRIM, LPAD, RPAD, REPLACE, LOCATE, REPEAT, REVERSE, ASCII, HEX, UNHEX, CONCAT_WS, FROM_BASE64, TO_BASE64, SOUNDEX, ELT, FIND_IN_SET, EXPORT_SET |
+| 日期时间函数 | 45+ | YEAR, MONTH, DAY, DATE_ADD, DATE_SUB, DATEDIFF, TIMESTAMPDIFF, DATE_FORMAT, STR_TO_DATE, UNIX_TIMESTAMP, FROM_UNIXTIME, LAST_DAY, MAKEDATE, CONVERT_TZ |
+| 聚合函数 | 12+ | BIT_AND, BIT_OR, BIT_XOR, STDDEV_POP, STDDEV_SAMP, VAR_POP, VAR_SAMP, JSON_ARRAYAGG, JSON_OBJECTAGG |
+| 加密/哈希函数 | 10+ | MD5, SHA1, SHA2, AES_ENCRYPT, AES_DECRYPT, COMPRESS, UNCOMPRESS, RANDOM_BYTES |
+| 正则函数 | 4 | REGEXP_LIKE, REGEXP_INSTR, REGEXP_REPLACE, REGEXP_SUBSTR |
+| UUID函数 | 5 | UUID, UUID_SHORT, UUID_TO_BIN, BIN_TO_UUID, IS_UUID |
+| 锁定函数 | 5 | GET_LOCK, RELEASE_LOCK, RELEASE_ALL_LOCKS, IS_FREE_LOCK, IS_USED_LOCK |
+| 其他函数 | 20+ | SLEEP, BENCHMARK, ANY_VALUE, BIT_COUNT, NULLIF, GREATEST, LEAST, CAST, INET_ATON, INET_NTOA |
+
+### 新增 DML/DDL
+
+| 语句 | 状态 |
+|------|------|
+| INSERT IGNORE | ✅ |
+| REPLACE INTO | ✅ |
+| INSERT ... ON DUPLICATE KEY UPDATE | ✅ |
+| INSERT ... SELECT | ✅ |
+| LOAD DATA INFILE | ✅ |
+| SELECT ... INTO OUTFILE | ✅ |
+| RENAME TABLE | ✅ |
+| PREPARE / EXECUTE / DEALLOCATE | ✅ |
+| CHECK TABLE | ✅ |
+| REPAIR TABLE | ✅ |
+| CHECKSUM TABLE | ✅ |
+| BACKUP DATABASE / RESTORE DATABASE | ✅ |
+
+### 新增 SHOW 命令
+
+| 命令 | 状态 |
+|------|------|
+| SHOW PROCESSLIST / SHOW FULL PROCESSLIST | ✅ |
+| SHOW GRANTS [FOR user] | ✅ |
+| SHOW CREATE DATABASE | ✅ |
+| SHOW CREATE VIEW | ✅ |
+| SHOW CREATE PROCEDURE/FUNCTION | ✅ |
+| SHOW PROCEDURE STATUS / FUNCTION STATUS | ✅ |
+| SHOW TRIGGERS | ✅ |
+| SHOW EVENTS | ✅ |
+| SHOW PLUGINS | ✅ |
+| SHOW ENGINES | ✅ |
+| SHOW ENGINE INNODB STATUS | ✅ |
+| SHOW PRIVILEGES | ✅ |
+| SHOW MASTER STATUS / SHOW BINARY LOG STATUS | ✅ |
+| SHOW REPLICA STATUS | ✅ |
+| SHOW BINARY LOGS | ✅ |
+| SHOW OPEN TABLES | ✅ |
+
+### 存储过程执行引擎
+
+| 功能 | 状态 |
+|------|------|
+| DECLARE CURSOR | ✅ |
+| OPEN / FETCH / CLOSE cursor | ✅ |
+| DECLARE HANDLER (CONTINUE/EXIT/UNDO) | ✅ |
+| SIGNAL / RESIGNAL | ✅ |
+| 事件调度器 (EventScheduler) | ✅ |
+
+### 管理命令
+
+| 命令 | 状态 |
+|------|------|
+| FLUSH TABLES / PRIVILEGES / LOGS / STATUS / HOSTS | ✅ |
+| FLUSH BINARY LOGS / ENGINE LOGS / ERROR LOGS | ✅ |
+| RESET MASTER / RESET REPLICA | ✅ |
+| KILL [CONNECTION\|QUERY] id | ✅ |
+
+### 用户管理
+
+| 功能 | 状态 |
+|------|------|
+| CREATE USER (持久化) | ✅ |
+| ALTER USER (密码/锁定/资源限制) | ✅ |
+| DROP USER | ✅ |
+| CREATE ROLE / DROP ROLE | ✅ |
+| GRANT role TO user | ✅ |
+| REVOKE role FROM user | ✅ |
+| 角色继承权限检查 | ✅ |
+| 用户数据 JSON 持久化 | ✅ |
+
+### 系统变量 (500+)
+
+| 类别 | 数量 |
+|------|------|
+| InnoDB 变量 | ~100 |
+| 性能与缓冲 | ~60 |
+| 安全与 SSL | ~30 |
+| 日志相关 | ~25 |
+| 复制相关 | ~50 |
+| 会话变量 | ~50 |
+| Performance Schema | ~40 |
+| 服务器杂项 | ~50 |
+
+### 复制与 Binlog
+
+| 功能 | 状态 |
+|------|------|
+| BinlogManager (事件记录) | ✅ |
+| GTID 管理 (GtidManager) | ✅ |
+| CHANGE REPLICATION SOURCE TO | ✅ |
+| START REPLICA / STOP REPLICA | ✅ |
+| RESET REPLICA [ALL] | ✅ |
+
+### performance_schema (100+ 虚拟表)
+
+| 类别 | 表数量 |
+|------|--------|
+| 设置表 (setup_*) | 5 |
+| 实例表 (*_instances) | 5 |
+| 等待事件表 (events_waits_*) | 6 |
+| 阶段事件表 (events_stages_*) | 5 |
+| 语句事件表 (events_statements_*) | 6 |
+| 事务事件表 (events_transactions_*) | 5 |
+| 连接表 (threads/accounts/users/hosts) | 6 |
+| 内存表 (memory_summary_*) | 3 |
+| 锁表 (metadata_locks/data_locks) | 3 |
+| 复制表 (replication_*) | 6 |
+| 变量/状态表 | 7 |
+| 其他摘要表 | ~10 |
+
+### sys 库 (40+ 诊断视图)
+
+| 类别 | 代表视图 |
+|------|----------|
+| 主机摘要 | host_summary, host_summary_by_statement_latency |
+| IO 分析 | io_by_thread_by_latency, io_global_by_file_by_bytes |
+| InnoDB | innodb_buffer_stats_by_schema, innodb_lock_waits |
+| 内存 | memory_global_total, memory_by_thread_by_current_bytes |
+| 会话 | processlist, session |
+| Schema 分析 | schema_table_statistics, schema_unused_indexes |
+| 语句分析 | statement_analysis, statements_with_errors_or_warnings |
+| 用户摘要 | user_summary, user_summary_by_statement_latency |
+| 等待分析 | waits_global_by_latency |
+
+### 分区表
+
+| 功能 | 状态 |
+|------|------|
+| RANGE 分区 | ✅ |
+| RANGE COLUMNS 分区 | ✅ |
+| LIST 分区 | ✅ |
+| LIST COLUMNS 分区 | ✅ |
+| HASH 分区 | ✅ |
+| LINEAR HASH 分区 | ✅ |
+| KEY 分区 | ✅ |
+| LINEAR KEY 分区 | ✅ |
+| 子分区 | ✅ |
+| 分区裁剪 (Partition Pruning) | ✅ |
+| ADD/DROP/REORGANIZE PARTITION | ✅ |
+
+### 高级特性
+
+| 功能 | 状态 |
+|------|------|
+| 生成列 (VIRTUAL) | ✅ |
+| 生成列 (STORED) | ✅ |
+| 不可见索引 (INVISIBLE INDEX) | ✅ |
+| 降序索引 | ✅ |
+| 函数索引 (Functional Index) | ✅ |
+
+---
+
 > 此文档记录了 CyscaleDB 当前支持的所有功能。在添加新功能时请同步更新此文档。

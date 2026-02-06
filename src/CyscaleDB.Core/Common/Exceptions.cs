@@ -341,6 +341,7 @@ public enum ErrorCode
     // Auth errors (1250-1299)
     UserNotFound = 1250,
     AccessDenied = 1251,
+    UserAlreadyExists = 1252,
 
     // Data errors (1300-1399)
     TypeMismatch = 1300,

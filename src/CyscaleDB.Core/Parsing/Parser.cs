@@ -96,6 +96,7 @@ public sealed class Parser
             TokenType.SELECT => ParseSelectStatement(),
             TokenType.UNION => throw Error("UNION cannot appear at the start of a statement. Use SELECT ... UNION SELECT ..."),
             TokenType.INSERT => ParseInsertStatement(),
+            TokenType.REPLACE => ParseReplaceStatement(),
             TokenType.UPDATE => ParseUpdateStatement(),
             TokenType.DELETE => ParseDeleteStatement(),
             TokenType.CREATE => ParseCreateStatement(),
@@ -123,12 +124,31 @@ public sealed class Parser
             TokenType.LEAVE => ParseLeaveStatement(),
             TokenType.ITERATE => ParseIterateStatement(),
             TokenType.RETURN => ParseReturnStatement(),
+            // Cursor and signal statements
+            TokenType.OPEN => ParseOpenCursorStatement(),
+            TokenType.FETCH => ParseFetchCursorStatement(),
+            TokenType.CLOSE => ParseCloseCursorStatement(),
+            TokenType.SIGNAL => ParseSignalStatement(),
+            TokenType.RESIGNAL => ParseResignalStatement(),
             // Admin statements
             TokenType.ANALYZE => ParseAnalyzeStatement(),
             TokenType.FLUSH => ParseFlushStatement(),
             TokenType.LOCK => ParseLockTablesStatement(),
             TokenType.UNLOCK => ParseUnlockTablesStatement(),
             TokenType.EXPLAIN => ParseExplainStatement(),
+            // Prepared statements
+            TokenType.PREPARE => ParsePrepareStatement(),
+            TokenType.EXECUTE => ParseExecuteStatement(),
+            TokenType.DEALLOCATE => ParseDeallocatePrepareStatement(),
+            // Additional admin statements
+            TokenType.CHECK => ParseCheckTableStatement(),
+            TokenType.LOAD => ParseLoadDataStatement(),
+            TokenType.RENAME => ParseRenameTableStatement(),
+            TokenType.REPAIR => ParseRepairTableStatement(),
+            TokenType.CHECKSUM => ParseChecksumTableStatement(),
+            TokenType.RESET => ParseResetStatement(),
+            TokenType.BACKUP => ParseBackupRestoreStatement(true),
+            TokenType.RESTORE => ParseBackupRestoreStatement(false),
             _ => throw Error($"Unexpected token at start of statement: {_currentToken.Value}")
         };
     }
@@ -774,9 +794,84 @@ public sealed class Parser
     private InsertStatement ParseInsertStatement()
     {
         Expect(TokenType.INSERT);
-        Expect(TokenType.INTO);
 
         var stmt = new InsertStatement();
+
+        // INSERT IGNORE
+        if (Match(TokenType.IGNORE))
+            stmt.IsIgnore = true;
+
+        Expect(TokenType.INTO);
+
+        stmt.TableName = ExpectIdentifier();
+
+        if (Match(TokenType.Dot))
+        {
+            stmt.DatabaseName = stmt.TableName;
+            stmt.TableName = ExpectIdentifier();
+        }
+
+        // Column list (optional): INSERT INTO t (col1, col2, ...) VALUES/SELECT
+        // Only parse column list if LeftParen is followed by identifiers (not SELECT or literals)
+        if (Check(TokenType.LeftParen))
+        {
+            var peeked = Peek();
+            if (peeked.Type == TokenType.Identifier || IsKeyword(peeked.Type))
+            {
+                // This could be column list or VALUES - check if it looks like column list
+                // Column lists are followed by ) VALUES or ) SELECT
+                // We assume it's a column list if it doesn't start with a keyword that's a function
+                Advance(); // skip (
+                stmt.Columns = ParseIdentifierList();
+                Expect(TokenType.RightParen);
+            }
+        }
+
+        // INSERT ... SELECT
+        if (Check(TokenType.SELECT))
+        {
+            stmt.SelectSource = ParseSelectStatement();
+        }
+        else
+        {
+            // VALUES clause
+            Expect(TokenType.VALUES);
+            do
+            {
+                Expect(TokenType.LeftParen);
+                stmt.ValuesList.Add(ParseExpressionList());
+                Expect(TokenType.RightParen);
+            } while (Match(TokenType.Comma));
+        }
+
+        // ON DUPLICATE KEY UPDATE
+        if (Match(TokenType.ON))
+        {
+            Expect(TokenType.DUPLICATE);
+            Expect(TokenType.KEY);
+            Expect(TokenType.UPDATE);
+
+            stmt.OnDuplicateKeyUpdate = [];
+            do
+            {
+                var columnName = ExpectIdentifier();
+                Expect(TokenType.Equal);
+                var value = ParseExpression();
+                stmt.OnDuplicateKeyUpdate.Add(new SetClause { ColumnName = columnName, Value = value });
+            } while (Match(TokenType.Comma));
+        }
+
+        return stmt;
+    }
+
+    private InsertStatement ParseReplaceStatement()
+    {
+        Expect(TokenType.REPLACE);
+
+        var stmt = new InsertStatement { IsReplace = true };
+
+        if (Match(TokenType.INTO)) { /* optional INTO */ }
+
         stmt.TableName = ExpectIdentifier();
 
         if (Match(TokenType.Dot))
@@ -795,7 +890,6 @@ public sealed class Parser
 
         Expect(TokenType.VALUES);
 
-        // Values lists
         do
         {
             Expect(TokenType.LeftParen);
@@ -803,6 +897,170 @@ public sealed class Parser
             Expect(TokenType.RightParen);
         } while (Match(TokenType.Comma));
 
+        return stmt;
+    }
+
+    private PrepareStatement ParsePrepareStatement()
+    {
+        Expect(TokenType.PREPARE);
+        var stmt = new PrepareStatement();
+        stmt.StatementName = ExpectIdentifier();
+        Expect(TokenType.FROM);
+        stmt.SqlExpression = ParseExpression();
+        return stmt;
+    }
+
+    private ExecuteStatement ParseExecuteStatement()
+    {
+        Expect(TokenType.EXECUTE);
+        var stmt = new ExecuteStatement();
+        stmt.StatementName = ExpectIdentifier();
+        if (MatchKeyword("USING"))
+        {
+            do
+            {
+                stmt.UsingVariables.Add(ExpectIdentifier());
+            } while (Match(TokenType.Comma));
+        }
+        return stmt;
+    }
+
+    private DeallocatePrepareStatement ParseDeallocatePrepareStatement()
+    {
+        Expect(TokenType.DEALLOCATE);
+        Expect(TokenType.PREPARE);
+        var stmt = new DeallocatePrepareStatement();
+        stmt.StatementName = ExpectIdentifier();
+        return stmt;
+    }
+
+    private LoadDataStatement ParseLoadDataStatement()
+    {
+        Expect(TokenType.LOAD);
+        Expect(TokenType.DATA);
+        var stmt = new LoadDataStatement();
+        if (MatchKeyword("LOCAL"))
+            stmt.IsLocal = true;
+        Expect(TokenType.INFILE);
+        stmt.FilePath = ExpectStringLiteral();
+        Expect(TokenType.INTO);
+        Expect(TokenType.TABLE);
+        stmt.TableName = ExpectIdentifier();
+        if (Match(TokenType.Dot))
+        {
+            stmt.DatabaseName = stmt.TableName;
+            stmt.TableName = ExpectIdentifier();
+        }
+        // Parse field/line terminators (simplified)
+        if (MatchKeyword("FIELDS") || MatchKeyword("COLUMNS"))
+        {
+            if (Match(TokenType.TERMINATED))
+            {
+                Expect(TokenType.BY);
+                stmt.FieldTerminator = ExpectStringLiteral();
+            }
+            if (Match(TokenType.OPTIONALLY)) { /* skip */ }
+            if (Match(TokenType.ENCLOSED))
+            {
+                Expect(TokenType.BY);
+                stmt.FieldEnclosedBy = ExpectStringLiteral();
+            }
+            if (Match(TokenType.ESCAPED))
+            {
+                Expect(TokenType.BY);
+                // skip escape char
+                ExpectStringLiteral();
+            }
+        }
+        if (Match(TokenType.LINES))
+        {
+            if (Match(TokenType.TERMINATED))
+            {
+                Expect(TokenType.BY);
+                stmt.LineTerminator = ExpectStringLiteral();
+            }
+        }
+        if (Match(TokenType.IGNORE))
+        {
+            var n = ExpectInteger();
+            stmt.IgnoreRows = (int)n;
+            if (Match(TokenType.LINES) || MatchKeyword("ROWS")) { /* skip */ }
+        }
+        // Column list
+        if (Check(TokenType.LeftParen))
+        {
+            Advance();
+            stmt.Columns = ParseIdentifierList();
+            Expect(TokenType.RightParen);
+        }
+        return stmt;
+    }
+
+    private RenameTableStatement ParseRenameTableStatement()
+    {
+        Expect(TokenType.RENAME);
+        Expect(TokenType.TABLE);
+        var stmt = new RenameTableStatement();
+        do
+        {
+            var oldName = ExpectIdentifier();
+            Expect(TokenType.TO);
+            var newName = ExpectIdentifier();
+            stmt.Renames.Add((oldName, newName));
+        } while (Match(TokenType.Comma));
+        return stmt;
+    }
+
+    private CheckTableStatement ParseCheckTableStatement()
+    {
+        Advance(); // skip CHECK
+        Expect(TokenType.TABLE);
+        var stmt = new CheckTableStatement();
+        do { stmt.TableNames.Add(ExpectIdentifier()); } while (Match(TokenType.Comma));
+        return stmt;
+    }
+
+    private RepairTableStatement ParseRepairTableStatement()
+    {
+        Expect(TokenType.REPAIR);
+        Expect(TokenType.TABLE);
+        var stmt = new RepairTableStatement();
+        do { stmt.TableNames.Add(ExpectIdentifier()); } while (Match(TokenType.Comma));
+        return stmt;
+    }
+
+    private ChecksumTableStatement ParseChecksumTableStatement()
+    {
+        Expect(TokenType.CHECKSUM);
+        Expect(TokenType.TABLE);
+        var stmt = new ChecksumTableStatement();
+        do { stmt.TableNames.Add(ExpectIdentifier()); } while (Match(TokenType.Comma));
+        return stmt;
+    }
+
+    private ResetStatement ParseResetStatement()
+    {
+        Expect(TokenType.RESET);
+        var stmt = new ResetStatement();
+        stmt.ResetType = ExpectIdentifier();
+        return stmt;
+    }
+
+    private BackupRestoreStatement ParseBackupRestoreStatement(bool isBackup)
+    {
+        Advance(); // skip BACKUP or RESTORE
+        Expect(TokenType.DATABASE);
+        var stmt = new BackupRestoreStatement { IsBackup = isBackup };
+        stmt.DatabaseName = ExpectIdentifier();
+        if (isBackup)
+        {
+            Expect(TokenType.TO);
+        }
+        else
+        {
+            Expect(TokenType.FROM);
+        }
+        stmt.Path = ExpectStringLiteral();
         return stmt;
     }
 
@@ -2242,9 +2500,13 @@ public sealed class Parser
                 }
                 return stmt;
             }
+            else if (MatchIdentifier("PROCESSLIST"))
+            {
+                return new ShowProcesslistStatement { Full = true };
+            }
             else
             {
-                throw Error($"Expected TABLES or COLUMNS after SHOW FULL, got: {_currentToken.Value}");
+                throw Error($"Expected TABLES, COLUMNS, or PROCESSLIST after SHOW FULL, got: {_currentToken.Value}");
             }
         }
 
@@ -2309,11 +2571,26 @@ public sealed class Parser
             }
             else if (Match(TokenType.DATABASE))
             {
-                // SHOW CREATE DATABASE - return as ShowDatabasesStatement for compatibility
-                ExpectIdentifier(); // Consume database name
-                return new ShowDatabasesStatement();
+                var dbName = ExpectIdentifier();
+                return new ShowCreateDatabaseStatement { DatabaseName = dbName };
             }
-            throw Error($"Expected TABLE or DATABASE after SHOW CREATE, got: {_currentToken.Value}");
+            else if (MatchIdentifier("VIEW"))
+            {
+                var viewName = ExpectIdentifier();
+                return new ShowCreateViewStatement { ViewName = viewName };
+            }
+            else if (MatchIdentifier("PROCEDURE"))
+            {
+                var name = ExpectIdentifier();
+                return new ShowCreateRoutineStatement { IsFunction = false, RoutineName = name };
+            }
+            else if (Check(TokenType.FUNCTION))
+            {
+                Advance();
+                var name = ExpectIdentifier();
+                return new ShowCreateRoutineStatement { IsFunction = true, RoutineName = name };
+            }
+            throw Error($"Expected TABLE, DATABASE, VIEW, PROCEDURE, or FUNCTION after SHOW CREATE, got: {_currentToken.Value}");
         }
         else if (Check(TokenType.COLUMNS) || MatchIdentifier("FIELDS"))
         {
@@ -2392,20 +2669,145 @@ public sealed class Parser
             }
             return stmt;
         }
-        // SHOW PROCESSLIST - return empty for compatibility
+        // SHOW [FULL] PROCESSLIST
         else if (MatchIdentifier("PROCESSLIST"))
         {
-            return new ShowStatusStatement();
+            return new ShowProcesslistStatement { Full = false };
         }
-        // SHOW ENGINE - return empty for compatibility
-        else if (MatchIdentifier("ENGINE") || MatchIdentifier("ENGINES"))
+        // SHOW GRANTS [FOR user@host]
+        else if (MatchIdentifier("GRANTS"))
         {
-            // Skip remaining tokens until end of statement
-            while (!Check(TokenType.Semicolon) && !Check(TokenType.EOF))
+            var stmt = new ShowGrantsStatement();
+            if (Match(TokenType.FOR))
             {
-                Advance();
+                stmt.ForUser = ExpectIdentifier();
+                if (Match(TokenType.AT))
+                {
+                    stmt.ForHost = ExpectIdentifier();
+                }
             }
-            return new ShowStatusStatement();
+            return stmt;
+        }
+        // SHOW ENGINES
+        else if (MatchIdentifier("ENGINES"))
+        {
+            return new ShowEnginesStatement();
+        }
+        // SHOW ENGINE <name> STATUS
+        else if (MatchIdentifier("ENGINE"))
+        {
+            var stmt = new ShowEngineStatusStatement();
+            if (!Check(TokenType.Semicolon) && !Check(TokenType.EOF))
+            {
+                stmt.EngineName = ExpectIdentifier().ToUpperInvariant();
+            }
+            if (Match(TokenType.STATUS)) { /* consume STATUS */ }
+            return stmt;
+        }
+        // SHOW PLUGINS
+        else if (MatchIdentifier("PLUGINS"))
+        {
+            return new ShowPluginsStatement();
+        }
+        // SHOW PRIVILEGES
+        else if (MatchIdentifier("PRIVILEGES"))
+        {
+            return new ShowPrivilegesStatement();
+        }
+        // SHOW TRIGGERS
+        else if (MatchIdentifier("TRIGGERS"))
+        {
+            var stmt = new ShowTriggersStatement();
+            if (Match(TokenType.FROM) || Match(TokenType.IN))
+            {
+                stmt.DatabaseName = ExpectIdentifier();
+            }
+            if (Match(TokenType.LIKE))
+            {
+                stmt.LikePattern = ExpectString();
+            }
+            return stmt;
+        }
+        // SHOW EVENTS
+        else if (MatchIdentifier("EVENTS"))
+        {
+            var stmt = new ShowEventsStatement();
+            if (Match(TokenType.FROM) || Match(TokenType.IN))
+            {
+                stmt.DatabaseName = ExpectIdentifier();
+            }
+            if (Match(TokenType.LIKE))
+            {
+                stmt.LikePattern = ExpectString();
+            }
+            return stmt;
+        }
+        // SHOW PROCEDURE STATUS / SHOW FUNCTION STATUS
+        else if (MatchIdentifier("PROCEDURE"))
+        {
+            if (Match(TokenType.STATUS))
+            {
+                var stmt = new ShowRoutineStatusStatement { IsFunction = false };
+                if (Match(TokenType.LIKE))
+                    stmt.LikePattern = ExpectString();
+                return stmt;
+            }
+            throw Error($"Expected STATUS after SHOW PROCEDURE, got: {_currentToken.Value}");
+        }
+        else if (Check(TokenType.FUNCTION))
+        {
+            Advance();
+            if (Match(TokenType.STATUS))
+            {
+                var stmt = new ShowRoutineStatusStatement { IsFunction = true };
+                if (Match(TokenType.LIKE))
+                    stmt.LikePattern = ExpectString();
+                return stmt;
+            }
+            throw Error($"Expected STATUS after SHOW FUNCTION, got: {_currentToken.Value}");
+        }
+        // SHOW MASTER STATUS / SHOW BINARY LOG STATUS
+        else if (Match(TokenType.MASTER))
+        {
+            if (Match(TokenType.STATUS)) { /* consume STATUS */ }
+            return new ShowMasterStatusStatement();
+        }
+        // SHOW SLAVE STATUS / SHOW REPLICA STATUS
+        else if (Match(TokenType.SLAVE) || Match(TokenType.REPLICA))
+        {
+            if (Match(TokenType.STATUS)) { /* consume STATUS */ }
+            return new ShowReplicaStatusStatement();
+        }
+        // SHOW BINARY LOGS / SHOW MASTER LOGS
+        else if (Match(TokenType.BINARY_TOKEN))
+        {
+            // SHOW BINARY LOGS
+            if (MatchIdentifier("LOGS"))
+            {
+                return new ShowBinaryLogsStatement();
+            }
+            // SHOW BINARY LOG STATUS (MySQL 8.4 new syntax)
+            if (MatchIdentifier("LOG"))
+            {
+                if (Match(TokenType.STATUS)) { /* consume STATUS */ }
+                return new ShowMasterStatusStatement();
+            }
+            throw Error($"Expected LOGS or LOG after SHOW BINARY, got: {_currentToken.Value}");
+        }
+        // SHOW OPEN TABLES
+        else if (Match(TokenType.OPEN))
+        {
+            Expect(TokenType.TABLES);
+            var stmt = new ShowOpenTablesStatement();
+            if (Match(TokenType.FROM) || Match(TokenType.IN))
+            {
+                stmt.DatabaseName = ExpectIdentifier();
+            }
+            if (Match(TokenType.LIKE))
+            {
+                stmt.LikePattern = ExpectString();
+            }
+            return stmt;
         }
         // SHOW TABLE STATUS - returns table metadata
         else if (Check(TokenType.TABLE))
@@ -2683,13 +3085,22 @@ public sealed class Parser
     private Statement ParseKillStatement()
     {
         Expect(TokenType.KILL);
-        // Skip the connection ID - we don't actually support killing connections
+        var stmt = new KillStatement();
+        // KILL [CONNECTION | QUERY] <id>
+        if (MatchIdentifier("QUERY"))
+        {
+            stmt.IsQuery = true;
+        }
+        else if (MatchIdentifier("CONNECTION"))
+        {
+            stmt.IsQuery = false;
+        }
         if (Check(TokenType.IntegerLiteral))
         {
+            stmt.ConnectionId = long.Parse(_currentToken.Value);
             Advance();
         }
-        // Return a no-op statement (just acknowledge the command)
-        return new SetStatement { Variables = [] };
+        return stmt;
     }
 
     /// <summary>
@@ -3718,6 +4129,32 @@ public sealed class Parser
         return _lexer.Peek();
     }
 
+    /// <summary>
+    /// Matches a keyword by string value (case-insensitive), useful for non-reserved keywords.
+    /// </summary>
+    private bool MatchKeyword(string keyword)
+    {
+        if (_currentToken.Type == TokenType.Identifier && 
+            string.Equals(_currentToken.Value, keyword, StringComparison.OrdinalIgnoreCase))
+        {
+            Advance();
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Expects and returns an integer literal.
+    /// </summary>
+    private long ExpectInteger()
+    {
+        if (_currentToken.Type != TokenType.IntegerLiteral)
+            throw Error($"Expected integer, got {_currentToken.Value}");
+        long value = long.Parse(_currentToken.Value);
+        Advance();
+        return value;
+    }
+
     private void Advance()
     {
         _currentToken = _lexer.NextToken();
@@ -4577,20 +5014,52 @@ public sealed class Parser
 
     private Statement ParseDeclareVariableStatement()
     {
-        // DECLARE var_name [, var_name] ... type [DEFAULT value]
         Expect(TokenType.DECLARE);
 
-        var stmt = new DeclareVariableStatement();
+        // DECLARE name CURSOR FOR select_statement
+        // DECLARE CONTINUE|EXIT|UNDO HANDLER FOR condition_value [,...] statement
+        // DECLARE var_name [, var_name] ... type [DEFAULT value]
 
-        // Parse variable names
-        do
+        // Check for handler keywords: CONTINUE, EXIT, UNDO
+        if (Check(TokenType.CONTINUE))
+        {
+            Advance();
+            return ParseDeclareHandler("CONTINUE");
+        }
+        if (Check(TokenType.EXIT))
+        {
+            Advance();
+            return ParseDeclareHandler("EXIT");
+        }
+        if (Check(TokenType.UNDO))
+        {
+            Advance();
+            return ParseDeclareHandler("UNDO");
+        }
+
+        // First identifier - could be a cursor name or variable name
+        var firstName = ExpectIdentifier();
+
+        // DECLARE name CURSOR FOR select_statement
+        if (MatchIdentifier("CURSOR"))
+        {
+            Expect(TokenType.FOR);
+            var query = ParseSelectStatement();
+            return new DeclareCursorStatement { CursorName = firstName, Query = query };
+        }
+
+        // Regular variable declaration
+        var stmt = new DeclareVariableStatement();
+        stmt.VariableNames.Add(firstName);
+
+        // More variable names
+        while (Match(TokenType.Comma))
         {
             stmt.VariableNames.Add(ExpectIdentifier());
-        } while (Match(TokenType.Comma));
+        }
 
         // Parse data type
         stmt.DataType = ParseDataType(out var length, out var precision, out var scale);
-        // For variables, use length/precision interchangeably as "size"
         stmt.Size = length ?? precision;
         stmt.Scale = scale;
 
@@ -4601,6 +5070,146 @@ public sealed class Parser
         }
 
         return stmt;
+    }
+
+    private Statement ParseDeclareHandler(string action)
+    {
+        Expect(TokenType.HANDLER);
+        Expect(TokenType.FOR);
+
+        var conditions = new List<string>();
+        do
+        {
+            if (MatchIdentifier("SQLEXCEPTION"))
+                conditions.Add("SQLEXCEPTION");
+            else if (MatchIdentifier("SQLWARNING"))
+                conditions.Add("SQLWARNING");
+            else if (MatchIdentifier("NOT"))
+            {
+                // NOT FOUND
+                if (MatchIdentifier("FOUND"))
+                    conditions.Add("NOT FOUND");
+                else
+                    throw Error("Expected FOUND after NOT in handler condition");
+            }
+            else if (Match(TokenType.SQLSTATE))
+            {
+                // SQLSTATE [VALUE] 'xxxxx'
+                MatchIdentifier("VALUE");
+                conditions.Add(ExpectString());
+            }
+            else
+            {
+                // Could be a numeric mysql_error_code or a condition name
+                conditions.Add(ExpectIdentifier());
+            }
+        } while (Match(TokenType.Comma));
+
+        // Handler body - single statement
+        var body = new List<Statement>();
+        body.Add(ParseProcedureStatement());
+
+        return new DeclareHandlerStatement
+        {
+            HandlerAction = action,
+            ConditionValues = conditions,
+            HandlerBody = body
+        };
+    }
+
+    private Statement ParseOpenCursorStatement()
+    {
+        Expect(TokenType.OPEN);
+        var name = ExpectIdentifier();
+        return new OpenCursorStatement { CursorName = name };
+    }
+
+    private Statement ParseFetchCursorStatement()
+    {
+        Expect(TokenType.FETCH);
+        // Optional: FETCH [NEXT] FROM cursor_name INTO var_name [, var_name] ...
+        MatchIdentifier("NEXT");
+        if (Match(TokenType.FROM)) { /* consume FROM */ }
+        var name = ExpectIdentifier();
+        var into = new List<string>();
+        if (Match(TokenType.INTO))
+        {
+            do
+            {
+                into.Add(ExpectIdentifier());
+            } while (Match(TokenType.Comma));
+        }
+        return new FetchCursorStatement { CursorName = name, IntoVariables = into };
+    }
+
+    private Statement ParseCloseCursorStatement()
+    {
+        Expect(TokenType.CLOSE);
+        var name = ExpectIdentifier();
+        return new CloseCursorStatement { CursorName = name };
+    }
+
+    private Statement ParseSignalStatement()
+    {
+        Expect(TokenType.SIGNAL);
+        Expect(TokenType.SQLSTATE);
+        MatchIdentifier("VALUE");
+        var sqlState = ExpectString();
+        string? messageText = null;
+        int? mysqlErrno = null;
+        if (Match(TokenType.SET))
+        {
+            // SET MESSAGE_TEXT = '...', MYSQL_ERRNO = ...
+            do
+            {
+                var infoItem = ExpectIdentifier().ToUpperInvariant();
+                Expect(TokenType.Equal);
+                if (infoItem == "MESSAGE_TEXT")
+                    messageText = ExpectString();
+                else if (infoItem == "MYSQL_ERRNO")
+                {
+                    mysqlErrno = int.Parse(_currentToken.Value);
+                    Advance();
+                }
+                else
+                {
+                    // Other signal info items - just skip the value
+                    if (Check(TokenType.StringLiteral)) { ExpectString(); }
+                    else if (Check(TokenType.IntegerLiteral)) { Advance(); }
+                    else { ExpectIdentifier(); }
+                }
+            } while (Match(TokenType.Comma));
+        }
+        return new SignalStatement { SqlState = sqlState, MessageText = messageText, MysqlErrno = mysqlErrno };
+    }
+
+    private Statement ParseResignalStatement()
+    {
+        Expect(TokenType.RESIGNAL);
+        string? sqlState = null;
+        string? messageText = null;
+        if (Match(TokenType.SQLSTATE))
+        {
+            MatchIdentifier("VALUE");
+            sqlState = ExpectString();
+        }
+        if (Match(TokenType.SET))
+        {
+            do
+            {
+                var infoItem = ExpectIdentifier().ToUpperInvariant();
+                Expect(TokenType.Equal);
+                if (infoItem == "MESSAGE_TEXT")
+                    messageText = ExpectString();
+                else
+                {
+                    if (Check(TokenType.StringLiteral)) { ExpectString(); }
+                    else if (Check(TokenType.IntegerLiteral)) { Advance(); }
+                    else { ExpectIdentifier(); }
+                }
+            } while (Match(TokenType.Comma));
+        }
+        return new ResignalStatement { SqlState = sqlState, MessageText = messageText };
     }
 
     private Statement ParseIfStatement()
